@@ -114,7 +114,7 @@ class MoeUnpermuteKernel(Kernel):
         >>> output = kernel(mm2_pad, fwd_idx, topk_weights)
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

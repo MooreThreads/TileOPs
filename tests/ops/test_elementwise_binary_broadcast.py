@@ -15,6 +15,10 @@ behavior: bidirectional broadcast against a PyTorch reference.
 
 from __future__ import annotations
 
+from tileops.utils import get_backend_name, is_available
+
+DEVICE = get_backend_name()
+
 import pytest
 import torch
 
@@ -22,27 +26,27 @@ import tileops.ops.elementwise as elementwise_mod
 
 
 def _randn(s, d):
-    return torch.randn(*s, dtype=d, device="cuda")
+    return torch.randn(*s, dtype=d, device=DEVICE)
 
 
 def _rand_pos(s, d):
-    return torch.rand(*s, dtype=d, device="cuda") + 0.1
+    return torch.rand(*s, dtype=d, device=DEVICE) + 0.1
 
 
 def _rand_bool(s, d):
-    return (torch.randn(*s, dtype=d, device="cuda") > 0).to(d)
+    return (torch.randn(*s, dtype=d, device=DEVICE) > 0).to(d)
 
 
 def _randint(s, d):
-    return torch.randint(-1000, 1000, s, dtype=d, device="cuda")
+    return torch.randint(-1000, 1000, s, dtype=d, device=DEVICE)
 
 
 def _pow_base(s, d):
-    return torch.rand(*s, dtype=d, device="cuda") + 0.5
+    return torch.rand(*s, dtype=d, device=DEVICE) + 0.5
 
 
 def _pow_exp(s, d):
-    return torch.rand(*s, dtype=d, device="cuda") * 2.0
+    return torch.rand(*s, dtype=d, device=DEVICE) * 2.0
 
 
 # (op_name, dtype, gen_a, gen_b, ref_fn).
@@ -79,7 +83,7 @@ _BROADCAST_OPS = [
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize(
     "op_name, dtype, gen_a, gen_b, ref_fn",
     _BROADCAST_OPS,

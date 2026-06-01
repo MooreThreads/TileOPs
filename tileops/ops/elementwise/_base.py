@@ -24,6 +24,7 @@ from typing import Callable, Dict, List, Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 
@@ -693,8 +694,8 @@ class UnaryOp(Op):
 
     def _validate_input(self, input: torch.Tensor) -> None:  # noqa: A002
         """Validate input tensor against the op's dtype / numel contract."""
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("Input"))
         if input.dtype != self.dtype:
             raise ValueError(
                 f"Expected input.dtype {self.dtype}, got {input.dtype}"
@@ -838,8 +839,10 @@ class BinaryOp(Op):
     ) -> torch.Tensor:
         a_name = getattr(self, "_input_name", "input")
         b_name = getattr(self, "_other_name", "other")
-        if not input.is_cuda or not other.is_cuda:
-            raise ValueError("Inputs must be CUDA tensors")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error(a_name))
+        if not is_backend_tensor(other):
+            raise ValueError(backend_tensor_error(b_name))
         if input.dtype != self.dtype:
             raise ValueError(f"Expected {a_name}.dtype {self.dtype}, got {input.dtype}")
         if other.dtype != self.dtype:
@@ -928,8 +931,8 @@ class FusedGatedOp(Op):
         return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not x.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(x):
+            raise ValueError(backend_tensor_error("Input"))
         if x.dtype != self.dtype:
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.shape != (self.M, 2 * self.N):

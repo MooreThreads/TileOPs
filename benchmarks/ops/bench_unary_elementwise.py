@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for the elementwise unary_math op family.
 
 Measures latency, FLOPS, and DRAM bandwidth against PyTorch baselines.
@@ -61,20 +64,20 @@ class _UnaryWorkload:
 
 
 def _randn(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
-    return (torch.randn(shape, device="cuda", dtype=dtype),)
+    return (torch.randn(shape, device=DEVICE, dtype=dtype),)
 
 
 def _positive(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
     # Domain restriction for log / sqrt / rsqrt / log1p / reciprocal.
-    return (torch.rand(shape, device="cuda", dtype=dtype) + 0.5,)
+    return (torch.rand(shape, device=DEVICE, dtype=dtype) + 0.5,)
 
 
 def _bool_input(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
     if dtype == torch.bool:
-        x = torch.randint(0, 2, shape, device="cuda", dtype=torch.bool)
+        x = torch.randint(0, 2, shape, device=DEVICE, dtype=torch.bool)
     else:
-        x = torch.randn(shape, device="cuda", dtype=dtype)
-        mask = torch.rand(shape, device="cuda") > 0.5
+        x = torch.randn(shape, device=DEVICE, dtype=dtype)
+        mask = torch.rand(shape, device=DEVICE) > 0.5
         x[mask] = 0
     return (x,)
 
@@ -83,12 +86,12 @@ def _int_input(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
     info = torch.iinfo(dtype)
     lo = max(info.min, -1024)
     hi = min(info.max, 1024)
-    return (torch.randint(lo, hi, shape, device="cuda", dtype=dtype),)
+    return (torch.randint(lo, hi, shape, device=DEVICE, dtype=dtype),)
 
 
 def _special_floats(shape: tuple, dtype: torch.dtype) -> tuple[torch.Tensor]:
     # Mix of normal floats, +/-inf, and NaN — exercises isnan/isinf/isfinite.
-    x = torch.randn(shape, device="cuda", dtype=dtype)
+    x = torch.randn(shape, device=DEVICE, dtype=dtype)
     flat = x.view(-1)
     quarter = flat.numel() // 4
     flat[:quarter] = float("nan")

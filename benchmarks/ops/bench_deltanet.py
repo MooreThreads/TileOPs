@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmark: TileOPs DeltaNet (ungated) chunkwise vs FLA chunk_delta_rule.
 
 Compares forward and backward latency across sequence lengths and dtypes.
@@ -292,11 +295,11 @@ def test_deltanet_vs_fla_bwd(
     bm = DeltaNetBwdBenchmark(test)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
+    beta = torch.rand(B, H, S, device=DEVICE, dtype=dtype) * 0.5
+    do = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
 
     # --- TileOPs: fwd to get S, Aw, Au, w, u; then profile bwd only ---
     fwd_op = DeltaNetFwdOp(B, H, S, DK, DV, BC, dtype)
@@ -389,11 +392,11 @@ def test_deltanet_vs_fla_fwdbwd(
     # --- TileOPs: combined fwd+bwd via DeltaNetOp ---
     op = DeltaNetOp(B, H, S, DK, DV, BC, dtype, tune=tune)
 
-    q = (torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)
-    k = (torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)
-    v = (torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1).detach().requires_grad_(True)
-    beta = (torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5).detach().requires_grad_(True)
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    q = (torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1).detach().requires_grad_(True)
+    k = (torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1).detach().requires_grad_(True)
+    v = (torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1).detach().requires_grad_(True)
+    beta = (torch.rand(B, H, S, device=DEVICE, dtype=dtype) * 0.5).detach().requires_grad_(True)
+    do = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
 
     def tileops_fwdbwd():
         q.grad = k.grad = v.grad = beta.grad = None

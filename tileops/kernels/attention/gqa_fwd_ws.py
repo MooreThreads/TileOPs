@@ -701,7 +701,7 @@ def _gqa_fwd_ws_persistent_causal_kernel(
 
 
 class GQAFwdWsPersistentKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -739,7 +739,7 @@ class GQAFwdWsPersistentKernel(Kernel):
 
 
 class GQAFwdWsPersistentCausalKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

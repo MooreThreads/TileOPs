@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import functools
 import itertools
 from typing import Optional
@@ -461,7 +464,7 @@ class SparseMlaKernel(Kernel):
                         the first chunk of data (i.e., whether `cp_rank == 0`).
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -564,19 +567,19 @@ class SparseMlaKernel(Kernel):
             self.seq_len,
             self.heads,
             self.dim + self.tail_dim,
-            device='cuda',
+            device=DEVICE,
             dtype=self.dtype)
         kv = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
             self.dim + self.tail_dim,
-            device='cuda',
+            device=DEVICE,
             dtype=self.dtype)
         indices = torch.full((self.batch, self.seq_len, self.kv_group, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
-                             device='cuda')
+                             device=DEVICE)
         for b in range(self.batch):
             for t in range(self.seq_len):
                 for h in range(self.kv_group):

@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import pytest
 import torch
 import torch.nn.functional as F
@@ -80,10 +83,10 @@ def test_group_norm_non_contiguous(n: int, c: int, spatial: tuple, g: int,
                                    dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
     shape = (n, c * 2, *spatial)
-    x_full = torch.randn(shape, dtype=dtype, device="cuda")
+    x_full = torch.randn(shape, dtype=dtype, device=DEVICE)
     x = x_full[:, :c]  # non-contiguous slice
-    weight = torch.randn(c, dtype=dtype, device="cuda")
-    bias = torch.randn(c, dtype=dtype, device="cuda")
+    weight = torch.randn(c, dtype=dtype, device=DEVICE)
+    bias = torch.randn(c, dtype=dtype, device=DEVICE)
 
     op = GroupNormFwdOp(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
 
@@ -103,9 +106,9 @@ def test_group_norm_rejects_none_weight_or_bias() -> None:
     """Affine op rejects ``weight=None`` / ``bias=None``; affine-free path lives on NoAffine."""
     n, c, spatial, g, dtype = 2, 32, (8, 8), 8, torch.float16
     op = GroupNormFwdOp(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    weight = torch.randn((c,), dtype=dtype, device="cuda")
-    bias = torch.randn((c,), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=DEVICE)
+    weight = torch.randn((c,), dtype=dtype, device=DEVICE)
+    bias = torch.randn((c,), dtype=dtype, device=DEVICE)
 
     with pytest.raises((ValueError, TypeError)):
         op(x, None, bias)
@@ -208,7 +211,7 @@ def test_group_norm_no_affine_op(n: int, c: int, spatial: tuple, g: int,
                                  dtype: torch.dtype) -> None:
     """No-affine GroupNorm op matches torch.nn.functional.group_norm with weight=bias=None."""
     op = GroupNormFwdOpNoAffine(N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=DEVICE)
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None, eps=1e-5).to(dtype)
     atol, rtol = _get_tolerances(dtype)
@@ -250,7 +253,7 @@ def test_group_norm_no_affine_rejects_shape_mismatch() -> None:
     op = GroupNormFwdOpNoAffine(
         N=n, C=c, spatial=spatial, num_groups=g, dtype=dtype,
     )
-    x_bad = torch.randn((n, c, 4, 8), dtype=dtype, device="cuda")
+    x_bad = torch.randn((n, c, 4, 8), dtype=dtype, device=DEVICE)
     with pytest.raises(ValueError, match="shape"):
         op(x_bad)
 
@@ -262,7 +265,7 @@ def test_group_norm_no_affine_rejects_dtype_mismatch() -> None:
     op = GroupNormFwdOpNoAffine(
         N=n, C=c, spatial=spatial, num_groups=g, dtype=torch.float16,
     )
-    x = torch.randn((n, c, *spatial), dtype=torch.float32, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=torch.float32, device=DEVICE)
     with pytest.raises(ValueError, match="dtype"):
         op(x)
 
@@ -281,7 +284,7 @@ def test_group_norm_no_affine_tail_block(n: int, c: int, spatial: tuple,
     dtype = torch.float16
     op = GroupNormFwdOpNoAffine(N=n, C=c, spatial=spatial, num_groups=g,
                                 dtype=dtype)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=DEVICE)
     y = op(x)
     y_ref = F.group_norm(x.float(), g, weight=None, bias=None,
                         eps=1e-5).to(dtype)

@@ -7,6 +7,7 @@ import torch
 
 from tileops.kernels.elementwise import PreluFwdKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from ._base import _OP_REGISTRY, _apply_fp8_post_cast
@@ -76,8 +77,8 @@ class PreluFwdOp(Op):
         input: torch.Tensor,  # noqa: A002 — manifest-aligned PyTorch param name
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("Input"))
         if input.dtype != self.dtype:
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if tuple(input.shape) != tuple(self.shape):
@@ -87,8 +88,8 @@ class PreluFwdOp(Op):
         # ``weight`` is part of the manifest contract; validate device,
         # dtype, and length so a malformed weight fails fast at the op
         # boundary instead of corrupting the kernel.
-        if not weight.is_cuda:
-            raise ValueError("Weight must be a CUDA tensor")
+        if not is_backend_tensor(weight):
+            raise ValueError(backend_tensor_error("Weight"))
         if weight.dtype != self.dtype:
             raise ValueError(
                 f"Expected weight.dtype {self.dtype}, got {weight.dtype}"

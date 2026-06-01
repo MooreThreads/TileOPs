@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmark: TileOPs GLA vs FLA chunk_gla.
 
 Compares forward and backward latency across sequence lengths and dtypes.
@@ -103,10 +106,10 @@ class GLATest(WorkloadBase):
 
     def gen_inputs(self):
         B, T, H, K, V = self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v
-        q = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(B, T, H, K, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(B, T, H, V, device="cuda", dtype=self.dtype) * 0.1
-        g = -torch.rand(B, T, H, K, device="cuda", dtype=self.dtype)
+        q = torch.randn(B, T, H, K, device=DEVICE, dtype=self.dtype) * 0.1
+        k = torch.randn(B, T, H, K, device=DEVICE, dtype=self.dtype) * 0.1
+        v = torch.randn(B, T, H, V, device=DEVICE, dtype=self.dtype) * 0.1
+        g = -torch.rand(B, T, H, K, device=DEVICE, dtype=self.dtype)
         return q, k, v, g
 
     def ref_program(self, q, k, v, g):
@@ -233,17 +236,17 @@ def test_gla_bwd_bench(
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
     scale = K ** -0.5
 
-    q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
-    do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype) * 0.1
+    g = -torch.rand(B, T, H, K, device=DEVICE, dtype=dtype)
+    do = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype) * 0.1
 
     # --- TileOPs: fwd to get h, then profile bwd only ---
     fwd_op = GLAFwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype)
     fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out
-    dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
+    dht = torch.zeros(B, H, K, V, device=DEVICE, dtype=torch.float32)
 
     bwd_op = GLABwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype, tune=tune)
     result = bm.profile(bwd_op.forward, q, k, v, g, h, do, dht)
@@ -326,11 +329,11 @@ def test_gla_fwdbwd_bench(
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
     scale = K ** -0.5
 
-    q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
-    do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype) * 0.1
+    g = -torch.rand(B, T, H, K, device=DEVICE, dtype=dtype)
+    do = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype) * 0.1
 
     # --- TileOPs: fwd + bwd ---
     fwd_op = GLAFwdOp(B, T, H, K, V, BC, scale=scale, dtype=dtype)
@@ -339,7 +342,7 @@ def test_gla_fwdbwd_bench(
     def tileops_fwdbwd():
         fwd_op.forward(q, k, v, g)
         h = fwd_op.kernel._h_out
-        dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
+        dht = torch.zeros(B, H, K, V, device=DEVICE, dtype=torch.float32)
         return bwd_op.forward(q, k, v, g, h, do, dht)
 
     result = bm.profile_autograd(tileops_fwdbwd)

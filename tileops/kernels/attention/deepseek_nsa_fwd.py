@@ -3,7 +3,7 @@ from typing import Any, Callable, Optional
 
 import tilelang
 import torch
-from tilelang import language as T
+import tilelang.language as T
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.online_softmax import LOG2E, make_online_softmax, make_rescale
@@ -197,7 +197,7 @@ def _(
 
 
 class NSAFwdVarlenKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,

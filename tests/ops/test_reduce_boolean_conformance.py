@@ -18,6 +18,10 @@ manifest-only PR per the trust model.
 
 from __future__ import annotations
 
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
+
 from typing import Callable
 
 import pytest
@@ -70,8 +74,8 @@ def test_logical_reduce_conformance(
     """
     torch.manual_seed(0)
     # Mix in exact zeros so All/Any actually see a False contribution.
-    raw = torch.randn(*_SHAPE, dtype=dtype, device="cuda")
-    zero_mask = torch.rand(_SHAPE, device="cuda") < 0.1
+    raw = torch.randn(*_SHAPE, dtype=dtype, device=DEVICE)
+    zero_mask = torch.rand(_SHAPE, device=DEVICE) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = op_cls(dtype=dtype, dim=dim, keepdim=keepdim)
@@ -117,8 +121,8 @@ def test_logical_reduce_unaligned_innermost(
     """
     torch.manual_seed(0)
     dtype = torch.float16
-    raw = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device="cuda")
-    zero_mask = torch.rand(_UNALIGNED_SHAPE, device="cuda") < 0.1
+    raw = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device=DEVICE)
+    zero_mask = torch.rand(_UNALIGNED_SHAPE, device=DEVICE) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = op_cls(dtype=dtype, dim=dim, keepdim=False)
@@ -159,8 +163,8 @@ def test_count_nonzero_conformance(dim, dtype: torch.dtype) -> None:
     the output dtype.
     """
     torch.manual_seed(0)
-    raw = torch.randn(*_SHAPE, dtype=dtype, device="cuda")
-    zero_mask = torch.rand(_SHAPE, device="cuda") < 0.1
+    raw = torch.randn(*_SHAPE, dtype=dtype, device=DEVICE)
+    zero_mask = torch.rand(_SHAPE, device=DEVICE) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = CountNonzeroFwdOp(dtype=dtype, dim=dim)
@@ -191,8 +195,8 @@ def test_count_nonzero_unaligned_innermost(dim) -> None:
     """Unaligned innermost dim must still match ``torch.count_nonzero``."""
     torch.manual_seed(0)
     dtype = torch.float16
-    raw = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device="cuda")
-    zero_mask = torch.rand(_UNALIGNED_SHAPE, device="cuda") < 0.1
+    raw = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device=DEVICE)
+    zero_mask = torch.rand(_UNALIGNED_SHAPE, device=DEVICE) < 0.1
     x = raw.masked_fill(zero_mask, 0)
 
     op = CountNonzeroFwdOp(dtype=dtype, dim=dim)

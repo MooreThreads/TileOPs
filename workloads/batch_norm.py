@@ -1,9 +1,12 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
 
 
-def _make_tensors(N, C, spatial, dtype, device="cuda"):
+def _make_tensors(N, C, spatial, dtype, device=DEVICE):
     shape = (N, C, *spatial)
     x = torch.randn(*shape, device=device, dtype=dtype)
     weight = torch.randn(C, device=device, dtype=torch.float32)

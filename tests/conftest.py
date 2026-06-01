@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from tests.test_base import _check_result
+from tileops.utils import is_available, manual_seed_all
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -14,8 +15,8 @@ def _under_repo_tests(item: pytest.Item) -> bool:
 @pytest.fixture(autouse=True)
 def setup() -> None:
     torch.manual_seed(1235)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1235)
+    if is_available():
+        manual_seed_all(1235)
 
 
 NON_RUNTIME_OPS_TIER_FILES = {

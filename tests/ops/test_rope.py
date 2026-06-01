@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Tests for Rotary Position Embedding (RoPE) ops — 5 variants x 2 layouts.
 
 Variants:
@@ -275,10 +278,10 @@ class RopeTest(TestBase):
     def gen_inputs(self) -> tuple[torch.Tensor]:
         """Generate only x; cos/sin are computed by the op internally."""
         if self.layout == "1d":
-            x = torch.randn(self.seq_len, self.head_dim, device="cuda", dtype=self.dtype)
+            x = torch.randn(self.seq_len, self.head_dim, device=DEVICE, dtype=self.dtype)
         else:
             x = torch.randn(self.batch, self.seq_len, self.num_heads, self.head_dim,
-                             device="cuda", dtype=self.dtype)
+                             device=DEVICE, dtype=self.dtype)
         return (x,)
 
     def _compute_cos_sin(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -381,11 +384,11 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None) -> None:
     num_tokens, num_heads, head_dim, max_position = 96, 8, 64, 512
     table_dim = head_dim if rotary_dim is None else rotary_dim
     dtype = torch.float16
-    x = torch.randn(num_tokens, num_heads, head_dim, device="cuda", dtype=dtype)
+    x = torch.randn(num_tokens, num_heads, head_dim, device=DEVICE, dtype=dtype)
     position_ids = (
-        torch.arange(num_tokens, device="cuda", dtype=torch.int32) * 3 + 17
+        torch.arange(num_tokens, device=DEVICE, dtype=torch.int32) * 3 + 17
     ) % max_position
-    cos, sin = _compute_freqs_cis_base(table_dim, max_position, dtype=dtype, device="cuda")
+    cos, sin = _compute_freqs_cis_base(table_dim, max_position, dtype=dtype, device=DEVICE)
     ref = ref_rope_neox_position_ids(x, cos, sin, position_ids.long(), rotary_dim=rotary_dim)
 
     op = RopeNeoxPositionIdsOp(
@@ -411,9 +414,9 @@ def test_rope_neox_position_ids_validates_range() -> None:
         max_position=8,
         dtype=torch.float16,
     )
-    x = torch.randn(2, 1, 16, device="cuda", dtype=torch.float16)
+    x = torch.randn(2, 1, 16, device=DEVICE, dtype=torch.float16)
     with pytest.raises(ValueError, match="position_ids"):
-        op(x, torch.tensor([0, 8], device="cuda", dtype=torch.int32))
+        op(x, torch.tensor([0, 8], device=DEVICE, dtype=torch.int32))
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +527,7 @@ def test_rope_longrope_1d(batch: int, seq_len: int, num_heads: int,
     from tileops.ops.rope import RopeLongRopeOp
 
     half = head_dim // 2
-    rescale = torch.linspace(1.0, 2.0, half, device="cuda")
+    rescale = torch.linspace(1.0, 2.0, half, device=DEVICE)
     max_pos = 16384
     orig_max_pos = 4096
     extra = {"rescale_factors": rescale,
@@ -545,7 +548,7 @@ def test_rope_longrope_2d(batch: int, seq_len: int, num_heads: int,
     from tileops.ops.rope import RopeLongRopeOp
 
     half = head_dim // 2
-    rescale = torch.linspace(1.0, 2.0, half, device="cuda")
+    rescale = torch.linspace(1.0, 2.0, half, device=DEVICE)
     max_pos = 16384
     orig_max_pos = 4096
     extra = {"rescale_factors": rescale,
@@ -606,7 +609,7 @@ def test_rope_rejects_wrong_shape_2d() -> None:
     op = RopeNeoxOp(seq_len=2, head_dim=4, dtype=torch.float16, layout="2d",
                     batch=2, num_heads=1)
     # Wrong shape: (1, 4, 1, 4) has same numel (16) as (2, 2, 1, 4) but different layout
-    x = torch.randn(1, 4, 1, 4, device="cuda", dtype=torch.float16)
+    x = torch.randn(1, 4, 1, 4, device=DEVICE, dtype=torch.float16)
     with pytest.raises(ValueError, match="Expected input shape"):
         op(x)
 
@@ -620,7 +623,7 @@ def test_rope_noncontiguous_1d_works() -> None:
     op = RopeNeoxOp(seq_len=seq_len, head_dim=head_dim, dtype=torch.float32, layout="1d")
 
     # Create a non-contiguous view: transpose makes it non-contiguous
-    base = torch.randn(head_dim, seq_len, device="cuda", dtype=torch.float32)
+    base = torch.randn(head_dim, seq_len, device=DEVICE, dtype=torch.float32)
     x_nc = base.t()  # shape (seq_len, head_dim), non-contiguous
     assert not x_nc.is_contiguous()
 

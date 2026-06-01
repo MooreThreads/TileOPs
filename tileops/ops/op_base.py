@@ -5,7 +5,7 @@ from typing import Hashable, Optional, Union
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import get_backend_name, get_sm_version
 
 # Module-level dedup for empty-static_dims warnings; keyed by Op subclass.
 _EMPTY_STATIC_DIMS_WARNED: set = set()
@@ -43,7 +43,7 @@ class Op(ABC):
     kernel: Kernel
     kernel_map: Optional[dict[str, Kernel]] = None
     dtype: Optional[torch.dtype] = None
-    device: Optional[Union[torch.device, str]] = 'cuda'
+    device: Optional[Union[torch.device, str]] = get_backend_name()
     input_shapes: Optional[list[tuple]] = None
 
     # Set of (input_index, axis) pairs identifying static (ctor-committed) axes.
@@ -171,6 +171,7 @@ class Op(ABC):
             self.kernel_map = dict(candidate_map) if candidate_map else {}
             return
         resolved: dict[str, Kernel] = {}
+        self.kernel_map = resolved
         current_arch = get_sm_version()
         for name, default_kernel in default_map.items():
             if candidate_map is not None and name in candidate_map:
@@ -183,13 +184,14 @@ class Op(ABC):
                 and current_arch not in kernel_type.supported_archs
             ):
                 raise ValueError(
-                    f'{kernel_type.__name__} is not supported on architecture {current_arch}')
-            resolved[name] = kernel_type
-        self.kernel_map = resolved
+                    f"{kernel_type.__name__} is not supported on "
+                    f"{get_backend_name().upper()} architecture {current_arch}"
+                )
+            self.kernel_map[name] = kernel_type
 
-    def dispatch_kernel(self, kernel_map: Optional[dict[str, Kernel]] = None) -> None:
-        """Resolve and install the kernel map (auto-discovery entry point)."""
-        self._install_kernel_map(kernel_map)
+    def dispatch_kernel(self, candidate_map: Optional[dict[str, Kernel]] = None) -> None:
+        """Backward-compatible kernel dispatch entry point used by existing ops."""
+        self._install_kernel_map(candidate_map)
 
     def autotune(self) -> None:
         """Autotune all kernels of the op"""

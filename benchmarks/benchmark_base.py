@@ -15,9 +15,18 @@ from typing import (
 
 import pytest
 import torch
-from torch.autograd.profiler import DeviceType
 
 from tileops.manifest import load_workloads
+from tileops.utils import (
+    current_device,
+    empty_cache,
+    get_backend_name,
+    get_device_name,
+    get_profiler_activity,
+    get_profiler_device_type,
+    is_available,
+    synchronize,
+)
 
 # Workload dict keys reserved by the benchmark harness. Everything else on
 # a workload entry (e.g. ``dim``, ``keepdim``, ``correction``) is treated
@@ -85,15 +94,16 @@ _bench_results = threading.local()
 
 
 def _sum_kernel_time_us(kineto_results):
-    """Extract total CUDA kernel time directly from C++ Kineto events.
+    """Extract total backend kernel time directly from C++ Kineto events.
 
     Bypasses ``profiler.key_averages()`` which triggers expensive Python
     event parsing (~120ms) and tree building (~10ms) for large traces.
     Direct C++ iteration is ~16x faster for n_repeat=1280.
     """
     total_us = 0.0
+    backend_device_type = get_profiler_device_type()
     for evt in kineto_results.events():
-        if evt.device_type() == DeviceType.CUDA:
+        if evt.device_type() == backend_device_type:
             name = evt.name()
             if "vectorized_elementwise" in name and "FillFunctor" in name:
                 continue
@@ -111,10 +121,16 @@ _l2_flush_cache: Optional[torch.Tensor] = None
 def _get_l2_flush_cache() -> torch.Tensor:
     global _l2_flush_cache
     if _l2_flush_cache is None:
-        l2_bytes = torch.cuda.get_device_properties(0).L2_cache_size
-        if l2_bytes <= 0:
+        backend_mod = getattr(torch, get_backend_name())
+        props = backend_mod.get_device_properties(current_device())
+        l2_bytes = getattr(props, "L2_cache_size", None)
+        if l2_bytes is None:
+            l2_bytes = getattr(props, "l2_cache_size", None)
+        if l2_bytes is None or l2_bytes <= 0:
             l2_bytes = int(256e6)  # fallback
-        _l2_flush_cache = torch.empty(l2_bytes // 4, dtype=torch.int, device="cuda")
+        _l2_flush_cache = torch.empty(
+            l2_bytes // 4, dtype=torch.int, device=get_backend_name()
+        )
     return _l2_flush_cache
 
 
@@ -196,7 +212,7 @@ def bench_kernel(
     for i in range(n_warmup):
         cache.zero_()
         _run(i % n_repeat)
-    torch.cuda.synchronize()
+    synchronize()
 
     # Timed trials with CUPTI (single profiler, n_trials cycles)
     trial_means: list[float] = []
@@ -212,7 +228,7 @@ def bench_kernel(
                 wait=0, warmup=1, active=1, repeat=n_trials,
             )
             profiler = torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CUDA],
+                activities=[get_profiler_activity()],
                 schedule=schedule,
                 on_trace_ready=_on_trace_ready,
             )
@@ -231,17 +247,18 @@ def bench_kernel(
     except RuntimeError:
         pass
 
-    # Fallback to CUDA events if CUPTI failed
+    # Fallback to backend timing events if profiler timing failed
     if not trial_means:
+        backend_mod = getattr(torch, get_backend_name())
         for _ in range(n_trials):
-            start_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
-            end_events = [torch.cuda.Event(enable_timing=True) for _ in range(n_repeat)]
+            start_events = [backend_mod.Event(enable_timing=True) for _ in range(n_repeat)]
+            end_events = [backend_mod.Event(enable_timing=True) for _ in range(n_repeat)]
             for i in range(n_repeat):
                 cache.zero_()
                 start_events[i].record()
                 _run(i)
                 end_events[i].record()
-            torch.cuda.synchronize()
+            synchronize()
             times = [s.elapsed_time(e) for s, e in zip(start_events, end_events, strict=True)]
             trial_means.append(sum(times) / len(times))
 
@@ -249,30 +266,30 @@ def bench_kernel(
     # accumulation across hundreds of benchmark calls.
     if arg_pool is not None:
         del arg_pool
-    torch.cuda.empty_cache()
+    empty_cache()
 
     trial_means.sort()
     return trial_means[len(trial_means) // 2]
 
 
 def _get_env_metadata() -> list[str]:
-    """Collect GPU model, driver version, CUDA version, and torch version."""
+    """Collect GPU model, backend version, and torch version."""
     lines = []
     lines.append(f"- **Torch version**: {torch.__version__}")
-    lines.append(f"- **CUDA version (torch)**: {torch.version.cuda or 'N/A'}")
+    backend = get_backend_name()
+    backend_version = getattr(torch.version, backend, None)
+    lines.append(f"- **{backend.upper()} version (torch)**: {backend_version or 'N/A'}")
 
-    if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(0)
+    if is_available():
+        gpu_name = get_device_name(0)
         lines.append(f"- **GPU model**: {gpu_name}")
     else:
-        lines.append("- **GPU model**: N/A (no CUDA device)")
+        lines.append(f"- **GPU model**: N/A (no {backend.upper()} device)")
 
-    # Try to get NVIDIA driver version from nvidia-smi
+    tool = "musa-smi" if backend == "musa" else "nvidia-smi"
+    cmd = [tool, "--query-gpu=driver_version", "--format=csv,noheader"]
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         driver = result.stdout.strip().split("\n")[0] if result.returncode == 0 else "N/A"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         driver = "N/A"

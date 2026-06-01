@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 import pytest
 import torch
@@ -29,12 +32,12 @@ class DsaDecodeTest(_DsaDecodeTestWorkload, TestBase):
         h_index = h // g
         compressed_causal_mask = torch.arange(
             q_start_index_s, sq + q_start_index_s, dtype=torch.int32,
-            device="cuda").view(-1, 1) >= torch.arange(
+            device=DEVICE).view(-1, 1) >= torch.arange(
                 self.stride_kv - 1,
                 sk * self.stride_kv,
                 self.stride_kv,
                 dtype=torch.int32,
-                device="cuda").view(1, -1)
+                device=DEVICE).view(1, -1)
 
         mask = q.new_zeros(b, g_index, sq, sk + 1, dtype=torch.bool).scatter(3, indices.long(), 1)
         mask = mask[..., :-1]

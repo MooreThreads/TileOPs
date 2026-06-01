@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import pytest
@@ -33,12 +36,12 @@ class Conv1dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.l_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.l_in, self.c_in, device=DEVICE, dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size,
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
+        bias = torch.zeros(self.c_out, device=DEVICE, dtype=self.dtype).contiguous()
         return x, weight, bias
 
     def ref_program(
@@ -152,12 +155,12 @@ class Conv2dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.h, self.w, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.h, self.w, self.c_in, device=DEVICE, dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
+        bias = torch.zeros(self.c_out, device=DEVICE, dtype=self.dtype).contiguous()
         return x, weight, bias
 
     def ref_program_nchw(
@@ -305,13 +308,13 @@ class Conv3dBenchCase:
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(
             self.n, self.d_in, self.h_in, self.w_in, self.c_in,
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1], self.kernel_size[2],
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
+        bias = torch.zeros(self.c_out, device=DEVICE, dtype=self.dtype).contiguous()
         return x, weight, bias
 
     def ref_program(

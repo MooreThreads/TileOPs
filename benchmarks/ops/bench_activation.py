@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for unary activation ops covering risk points R2-R7.
 
 Risk points covered:
@@ -93,7 +96,7 @@ class UnaryBenchCase:
         self.output_dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(*self.shape, device="cuda", dtype=self.dtype),)
+        return (torch.randn(*self.shape, device=DEVICE, dtype=self.dtype),)
 
 
 class UnaryBenchmark(BenchmarkBase[_UnaryWorkload]):
@@ -206,7 +209,7 @@ def test_r3_jit_compilation_cost(shape: tuple[int, ...]) -> None:
 
     dtype = torch.float16
     n_total = prod(shape)
-    x = torch.randn(*shape, device="cuda", dtype=dtype)
+    x = torch.randn(*shape, device=DEVICE, dtype=dtype)
 
     # Cold: time the first call including JIT compilation
     torch.cuda.synchronize()

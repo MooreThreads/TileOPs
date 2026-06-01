@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import pytest
 import torch
 import torch.nn.functional as F
@@ -95,8 +98,8 @@ def test_da_cumsum_fwd_missing_bias_raises():
         batch=1, num_chunks=2, chunk_len=64, n_heads=4,
         seq_len=128, has_dt_bias=True,
     )
-    dt = torch.randn(1, 128, 4, dtype=torch.float32, device="cuda")
-    A = -torch.rand(4, dtype=torch.float32, device="cuda")
+    dt = torch.randn(1, 128, 4, dtype=torch.float32, device=DEVICE)
+    A = -torch.rand(4, dtype=torch.float32, device=DEVICE)
     with pytest.raises(ValueError, match="dt_bias is required"):
         kernel(dt, A, dt_bias=None)
 

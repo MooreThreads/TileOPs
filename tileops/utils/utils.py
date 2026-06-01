@@ -2,6 +2,8 @@ import functools
 
 import torch
 
+from .backend import get_compute_version
+
 str2dtype = {
     'float16': torch.float16,
     'bfloat16': torch.bfloat16,
@@ -70,7 +72,7 @@ def ensure_contiguous(func: callable) -> callable:
 
 
 def is_hopper():
-    return torch.cuda.get_device_capability() == (9, 0)
+    return get_compute_version() == 90
 
 
 @functools.lru_cache(maxsize=1)
@@ -81,5 +83,4 @@ def is_h200():
 
 
 def get_sm_version():
-    major, minor = torch.cuda.get_device_capability()
-    return major * 10 + minor
+    return get_compute_version()

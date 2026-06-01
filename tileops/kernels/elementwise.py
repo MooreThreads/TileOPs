@@ -647,7 +647,7 @@ class UnaryKernel(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     # Benchmark (H200): register_copy wins for fp16/bf16 across all tested shapes;
     # fp32 small shapes show variance between register_copy and explicit_parallel.
@@ -821,7 +821,7 @@ class BinaryKernel(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
@@ -1028,7 +1028,7 @@ class FusedGatedKernel(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
     STRATEGIES = ["direct", "explicit_parallel"]
     # Benchmark (H200, 4096x4096 fp16): explicit_parallel ~2x faster than direct
     #   silu_and_mul:       3.04 TB/s explicit vs 1.50 TB/s direct
@@ -1523,6 +1523,8 @@ class MaximumFwdKernel(BinaryKernel):
         if not _is_float_dtype_str(str(a.dtype)):
             # Integer / bool: no NaN representation, T.max is sufficient.
             return result
+        zero = T.cast(0.0, a.dtype)
+        result = T.if_then_else((a == zero) & (b == zero), a, result)
         # Float path: T.max handles signed-zero correctly but does NOT
         # propagate NaN -- it returns the non-NaN operand. Cast to fp32
         # for isnan (bfloat16 lacks native isnan).
@@ -1556,6 +1558,8 @@ class MinimumFwdKernel(BinaryKernel):
         result = T.min(a, b)
         if not _is_float_dtype_str(str(a.dtype)):
             return result
+        zero = T.cast(0.0, a.dtype)
+        result = T.if_then_else((a == zero) & (b == zero), b, result)
         a_is_nan = T.isnan(T.Cast("float32", a))
         b_is_nan = T.isnan(T.Cast("float32", b))
         result = T.if_then_else(b_is_nan, b, result)
@@ -2134,7 +2138,7 @@ class ParametricUnaryKernel(Kernel):
       op). When True, ``_fp8_output_dtype`` is ``None``.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     _DEFAULT_THREADS: int = 256
@@ -2303,7 +2307,7 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    if is_fp8:
+    if is_fp8 or dtype in ("float16", "bfloat16", "float32"):
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
@@ -2313,12 +2317,14 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
-                            val = x[idx]
                             zero = T.cast(0, "float32")
                             a = T.cast(alpha, "float32")
                             one = T.cast(1.0, "float32")
-                            v32 = T.cast(val, "float32")
-                            y[idx] = T.if_then_else(v32 > zero, T.Cast(out_dtype, v32), T.Cast(out_dtype, a * (T.exp(v32) - one)))
+                            v32 = T.cast(x[idx], "float32")
+                            y[idx] = T.Cast(
+                                out_dtype,
+                                T.if_then_else(v32 > zero, v32, a * (T.exp(v32) - one)),
+                            )
 
             return main
     else:
@@ -2446,7 +2452,7 @@ def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    if is_fp8:
+    if is_fp8 or dtype in ("float16", "bfloat16", "float32"):
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
@@ -2456,14 +2462,16 @@ def _make_softplus_kernel(N, dtype, beta, threshold, output_dtype=None,
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
-                            val = x[idx]
-                            v32 = T.cast(val, "float32")
+                            v32 = T.cast(x[idx], "float32")
                             b = T.cast(beta, "float32")
                             t = T.cast(threshold, "float32")
                             one = T.cast(1.0, "float32")
                             scaled = v32 * b
                             sp = T.log(one + T.exp(scaled)) / b
-                            y[idx] = T.if_then_else(scaled > t, T.Cast(out_dtype, v32), T.Cast(out_dtype, sp))
+                            y[idx] = T.Cast(
+                                out_dtype,
+                                T.if_then_else(scaled > t, v32, sp),
+                            )
 
             return main
     else:
@@ -2551,6 +2559,30 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
                             wf = T.cast(w, accum)
                             zero = T.cast(0, accum)
                             y[idx] = T.if_then_else(v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v))
+
+            return main
+    elif dtype in ("float16", "bfloat16", "float32"):
+
+        @tilelang.jit(out_idx=[2])
+        def kernel(threads_arg, npt_arg):
+            @T.prim_func
+            def main(
+                x: T.Tensor((N,), dtype),
+                weight: T.Tensor((C,), dtype),
+                y: T.Tensor((N,), out_dtype),
+            ):
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        idx = bx * block_size + k
+                        if idx < N:
+                            ch = (idx // inner_size) % C
+                            zero = T.cast(0, dtype)
+                            y[idx] = T.if_then_else(
+                                x[idx] > zero,
+                                x[idx],
+                                weight[ch] * x[idx],
+                            )
 
             return main
     else:
@@ -2780,10 +2812,15 @@ def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
                             v32 = T.cast(x[idx], "float32")
-                            if has_min:
+                            if has_min and has_max and min_val > max_val:
+                                v32 = T.cast(min_val, "float32")
+                            elif has_min:
                                 lo = T.cast(min_val, "float32")
                                 v32 = T.max(v32, lo)
-                            if has_max:
+                                if has_max:
+                                    hi = T.cast(max_val, "float32")
+                                    v32 = T.min(v32, hi)
+                            elif has_max:
                                 hi = T.cast(max_val, "float32")
                                 v32 = T.min(v32, hi)
                             y[idx] = T.Cast(out_dtype, v32)
@@ -2802,10 +2839,15 @@ def _make_clamp_kernel(N, dtype, has_min, has_max, min_val, max_val,
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         val = x_reg[i * npt_arg + j]
                         v32 = T.cast(val, "float32")
-                        if has_min:
+                        if has_min and has_max and min_val > max_val:
+                            v32 = T.cast(min_val, "float32")
+                        elif has_min:
                             lo = T.cast(min_val, "float32")
                             v32 = T.max(v32, lo)
-                        if has_max:
+                            if has_max:
+                                hi = T.cast(max_val, "float32")
+                                v32 = T.min(v32, hi)
+                        elif has_max:
                             hi = T.cast(max_val, "float32")
                             v32 = T.min(v32, hi)
                         y_reg[i * npt_arg + j] = T.Cast(val.dtype, v32)
@@ -2851,15 +2893,14 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
     Output:
         y: clamp result, same dtype as ``output_dtype`` (or ``dtype``).
 
-    For fp8 the cast/compute uses fp32 to preserve precision; for non-fp8
-    the kernel uses register_copy with fp32 accumulation.
+    The cast/compute uses fp32 to preserve precision and explicit elementwise
+    access. The older register-fragment path is left as a fallback below, but
+    the direct path is used for all currently supported dtypes because MUSA
+    vectorization cannot scalarize the fragment-based clamp body reliably.
 
-    NaN semantics: matches ``torch.clamp`` / ``torch.clamp_min`` /
-    ``torch.clamp_max``. If ``x``, ``lo``, or ``hi`` is NaN at a position,
-    the output at that position is NaN. ``T.max`` / ``T.min`` on CUDA do
-    not propagate NaN by themselves (they return the non-NaN operand), so
-    we add explicit ``isnan`` guards in fp32 -- mirroring the pattern used
-    by ``MaximumFwdKernel`` / ``MinimumFwdKernel``.
+    NaN semantics match CPU/CUDA PyTorch: if any participating input is NaN,
+    the output at that position is NaN. ``T.max`` / ``T.min`` do not propagate
+    NaN by themselves, so the kernel adds explicit fp32 ``isnan`` guards.
     """
     if not (has_min or has_max):
         raise ValueError(
@@ -2868,7 +2909,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    if is_fp8:
+    if is_fp8 or dtype in ("float16", "bfloat16", "float32"):
         if has_min and has_max:
             @tilelang.jit(out_idx=[3])
             def kernel(threads_arg, npt_arg):
@@ -2886,10 +2927,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                                 x32 = T.cast(x[idx], "float32")
                                 lo32 = T.cast(lo[idx], "float32")
                                 hi32 = T.cast(hi[idx], "float32")
-                                r = T.max(x32, lo32)
-                                r = T.min(r, hi32)
-                                # NaN propagation (PyTorch semantics):
-                                # if any of x/lo/hi is NaN -> output NaN.
+                                r = T.min(T.max(x32, lo32), hi32)
                                 r = T.if_then_else(T.isnan(hi32), hi32, r)
                                 r = T.if_then_else(T.isnan(lo32), lo32, r)
                                 r = T.if_then_else(T.isnan(x32), x32, r)
@@ -2913,11 +2951,11 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                             if idx < N:
                                 x32 = T.cast(x[idx], "float32")
                                 lo32 = T.cast(lo[idx], "float32")
-                                r = T.max(x32, lo32)
                                 # NaN propagation (PyTorch clamp_min):
                                 # if x or lo is NaN -> output NaN.
-                                r = T.if_then_else(T.isnan(lo32), lo32, r)
-                                r = T.if_then_else(T.isnan(x32), x32, r)
+                                r_max = T.max(x32, lo32)
+                                r_lo_nan = T.if_then_else(T.isnan(lo32), lo32, r_max)
+                                r = T.if_then_else(T.isnan(x32), x32, r_lo_nan)
                                 y[idx] = T.Cast(out_dtype, r)
 
                 return main
@@ -2939,11 +2977,11 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max,
                         if idx < N:
                             x32 = T.cast(x[idx], "float32")
                             hi32 = T.cast(hi[idx], "float32")
-                            r = T.min(x32, hi32)
                             # NaN propagation (PyTorch clamp_max):
                             # if x or hi is NaN -> output NaN.
-                            r = T.if_then_else(T.isnan(hi32), hi32, r)
-                            r = T.if_then_else(T.isnan(x32), x32, r)
+                            r_min = T.min(x32, hi32)
+                            r_hi_nan = T.if_then_else(T.isnan(hi32), hi32, r_min)
+                            r = T.if_then_else(T.isnan(x32), x32, r_hi_nan)
                             y[idx] = T.Cast(out_dtype, r)
 
             return main
@@ -3075,6 +3113,13 @@ class ClampTensorFwdKernel(ParametricUnaryKernel):
 
     def _builder_args(self):
         return (self.has_min, self.has_max)
+
+    @property
+    def default_config(self):
+        # Keep one output element per thread. The clamp body has nested
+        # min/max/isnan selects that MUSA's TileLang vectorizer cannot
+        # scalarize reliably for npt > 1.
+        return {"threads": self._DEFAULT_THREADS, "num_per_thread": 1}
 
     def forward(self, x, lo=None, hi=None):
         if self.has_min and self.has_max:
@@ -3296,7 +3341,7 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
     out_dtype = output_dtype or dtype
     block_size = threads * npt
 
-    if is_fp8:
+    if is_fp8 or dtype in ("float16", "bfloat16", "float32"):
 
         @tilelang.jit(out_idx=[1])
         def kernel(threads_arg, npt_arg):
@@ -3306,8 +3351,7 @@ def _make_nan_to_num_kernel(N, dtype, nan_val, posinf_val, neginf_val,
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
-                            val = x[idx]
-                            v32 = T.cast(val, "float32")
+                            v32 = T.cast(x[idx], "float32")
                             nan_r = T.cast(nan_val, out_dtype)
                             pos_r = T.cast(posinf_val, out_dtype)
                             neg_r = T.cast(neginf_val, out_dtype)
@@ -3380,6 +3424,10 @@ class NanToNumFwdKernel(ParametricUnaryKernel):
     def _builder_args(self):
         return (self.nan_val, self.posinf_val, self.neginf_val)
 
+    @property
+    def default_config(self):
+        return {"threads": self._DEFAULT_THREADS, "num_per_thread": 1}
+
 
 @functools.lru_cache(maxsize=32)
 def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
@@ -3432,7 +3480,7 @@ class AlibiFwdKernel(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
@@ -3456,8 +3504,7 @@ class AlibiFwdKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
+        return {"threads": 256, "num_per_thread": 1}
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""
@@ -3479,6 +3526,7 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
     """
     N_total = seq_len * d_model
     block_size = threads * npt
+    compute_dtype = "float64" if dtype == "float32" else "float32"
 
     @tilelang.jit(out_idx=[0])
     def kernel(threads_arg, npt_arg):
@@ -3493,10 +3541,14 @@ def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, npt=8):
                         # dim_pair = dim // 2 (the "i" in the formula)
                         dim_pair = dim // 2
                         # angle = pos / 10000^(2*dim_pair / d_model)
-                        base = T.cast(10000.0, "float32")
-                        exp_frac = T.cast(dim_pair, "float32") * T.cast(2.0, "float32") / T.cast(d_model, "float32")
+                        base = T.cast(10000.0, compute_dtype)
+                        exp_frac = (
+                            T.cast(dim_pair, compute_dtype)
+                            * T.cast(2.0, compute_dtype)
+                            / T.cast(d_model, compute_dtype)
+                        )
                         divisor = T.pow(base, exp_frac)
-                        angle = T.cast(pos, "float32") / divisor
+                        angle = T.cast(pos, compute_dtype) / divisor
                         # Even dim -> sin, odd dim -> cos
                         is_even = dim % 2 == 0
                         result = T.if_then_else(is_even, T.sin(angle), T.cos(angle))
@@ -3521,7 +3573,7 @@ class SinusoidalFwdKernel(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
@@ -3545,8 +3597,7 @@ class SinusoidalFwdKernel(Kernel):
 
     @property
     def default_config(self):
-        npt = 4 if self.dtype == torch.float32 else (16 if _is_fp8(self.dtype) else 8)
-        return {"threads": 256, "num_per_thread": npt}
+        return {"threads": 256, "num_per_thread": 1}
 
     def init_config(self, config=None, tune=False):
         """Override to cache the compiled kernel function after config is set."""

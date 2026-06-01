@@ -256,7 +256,7 @@ def _deltanet_fwd_wrapped_kernel_fake(
 
 
 class DeltaNetFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

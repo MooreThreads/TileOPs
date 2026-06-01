@@ -49,9 +49,9 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = 'bfloat
                     x_res_shared[i, j] = x_res[bx, i * c_x + by * block_C + j]
 
                 for i, j in T.Parallel(n_expand, block_C):
-                    x_out_shared[i * n_expand +
+                    x_out_shared[i * block_C +
                                  j] = h_post_shared[i] * x_layer_out_shared[j] + x_res_shared[i, j]
-                    x_out[bx, i * c_x + block_C * by + j] = x_out_shared[i * n_expand + j]
+                    x_out[bx, i * c_x + block_C * by + j] = x_out_shared[i * block_C + j]
 
         @T.prim_func
         def mhc_post(
@@ -91,7 +91,7 @@ def _(
 
 
 class MHCPostKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch,

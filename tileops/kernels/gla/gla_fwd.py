@@ -1,9 +1,12 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import functools
 from typing import Any, Callable, Optional
 
 import tilelang
 import torch
-from tilelang import language as T
+import tilelang.language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.kernel_base import Kernel
@@ -406,7 +409,7 @@ class GLAFwdKernel(Kernel):
         https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gla/chunk.py
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -494,10 +497,10 @@ class GLAFwdKernel(Kernel):
         dtype_torch = getattr(torch, self.dtype_name)
 
         # Generate representative inputs
-        q = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        k = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        v = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1
-        g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype_torch).abs()
+        q = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype_torch) * 0.1
+        k = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype_torch) * 0.1
+        v = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype_torch) * 0.1
+        g = -torch.rand(B, T, H, K, device=DEVICE, dtype=dtype_torch).abs()
 
         best_lat = float('inf')
         best_cfg = None

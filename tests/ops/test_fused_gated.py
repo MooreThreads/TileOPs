@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Tests for fused gated elementwise ops (silu_and_mul, gelu_and_mul, gelu_tanh_and_mul).
 
 Covers L1 smoke correctness, multi-dtype coverage, and strategy selection.
@@ -39,7 +42,7 @@ class SiluAndMulTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -90,7 +93,7 @@ class GeluAndMulTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -132,7 +135,7 @@ class GeluTanhAndMulTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, 2 * self.n, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -161,7 +164,7 @@ def test_fused_gated_rejects_integer_dtype() -> None:
 def test_fused_gated_rejects_runtime_dtype_mismatch() -> None:
     """Runtime inputs should match the construction-time dtype contract."""
     op = SiluAndMulFwdOp(M=16, N=8, dtype=torch.float16)
-    x = torch.randn(16, 16, device="cuda", dtype=torch.float32)
+    x = torch.randn(16, 16, device=DEVICE, dtype=torch.float32)
     with pytest.raises(ValueError, match="Expected x.dtype"):
         op(x)
 

@@ -73,7 +73,7 @@ class SharedExpertMLPKernel(Kernel):
         w_down:    [H, F]
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self, num_tokens: int, hidden_size: int, ffn_size: int,
                  dtype: torch.dtype = torch.bfloat16, config=None, tune: bool = False):

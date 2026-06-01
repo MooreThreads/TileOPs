@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import pytest
@@ -86,12 +89,12 @@ class Conv1dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.l_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.l_in, self.c_in, device=DEVICE, dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size,
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
+        bias = torch.zeros(self.c_out, device=DEVICE, dtype=self.dtype).contiguous()
         return x, weight, bias
 
     def ref_program(
@@ -153,8 +156,8 @@ def test_conv1d_no_bias_matches_torch() -> None:
         stride=2,
         padding=2,
     )
-    x = torch.randn(1, 256, 32, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 256, 32, device=DEVICE, dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 5, device=DEVICE, dtype=torch.float16).contiguous()
     out = op(x, weight)
     ref = F.conv1d(x.permute(0, 2, 1).contiguous(), weight, bias=None, stride=2, padding=2)
     ref = ref.permute(0, 2, 1).contiguous()
@@ -172,9 +175,9 @@ def test_conv1d_bias_requires_bias_tensor() -> None:
         stride=2,
         padding=2,
     )
-    x = torch.randn(1, 256, 32, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 5, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(64, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 256, 32, device=DEVICE, dtype=torch.float16).contiguous()
+    weight = torch.randn(64, 32, 5, device=DEVICE, dtype=torch.float16).contiguous()
+    bias = torch.zeros(64, device=DEVICE, dtype=torch.float16).contiguous()
     out = op(x, weight, bias)
     ref = F.conv1d(x.permute(0, 2, 1).contiguous(), weight, bias=bias, stride=2, padding=2)
     ref = ref.permute(0, 2, 1).contiguous()
@@ -203,10 +206,10 @@ def test_conv1d_dilation_matches_torch(op_cls, dilation, use_bias: bool) -> None
         dilation=dilation,
         **op_kwargs,
     )
-    x = torch.randn(n, l_in, c_in, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(c_out, c_in, kernel_size, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(n, l_in, c_in, device=DEVICE, dtype=torch.float16).contiguous()
+    weight = torch.randn(c_out, c_in, kernel_size, device=DEVICE, dtype=torch.float16).contiguous()
     bias = (
-        torch.randn(c_out, device="cuda", dtype=torch.float16).contiguous()
+        torch.randn(c_out, device=DEVICE, dtype=torch.float16).contiguous()
         if use_bias else None
     )
     out = op(x, weight, bias) if use_bias else op(x, weight)
@@ -323,12 +326,12 @@ class Conv2dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        x = torch.randn(self.n, self.h, self.w, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.h, self.w, self.c_in, device=DEVICE, dtype=self.dtype).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1],
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
+        bias = torch.zeros(self.c_out, device=DEVICE, dtype=self.dtype).contiguous()
         return x, weight, bias
 
     def ref_program(
@@ -392,9 +395,9 @@ def test_conv2d_accepts_zero_bias() -> None:
         padding=1,
         bias=True,
     )
-    x = torch.randn(1, 16, 16, 32, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(32, 32, 3, 3, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(32, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 16, 16, 32, device=DEVICE, dtype=torch.float16).contiguous()
+    weight = torch.randn(32, 32, 3, 3, device=DEVICE, dtype=torch.float16).contiguous()
+    bias = torch.zeros(32, device=DEVICE, dtype=torch.float16).contiguous()
     out = op(x, weight, bias)
     ref = F.conv2d(x.permute(0, 3, 1, 2).contiguous(), weight, bias=bias, padding=1)
     ref = ref.permute(0, 2, 3, 1).contiguous()
@@ -521,13 +524,13 @@ class Conv3dTest(TestBase):
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         x = torch.randn(
             self.n, self.d_in, self.h_in, self.w_in, self.c_in,
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
         weight = torch.randn(
             self.c_out, self.c_in, self.kernel_size[0], self.kernel_size[1], self.kernel_size[2],
-            device="cuda", dtype=self.dtype,
+            device=DEVICE, dtype=self.dtype,
         ).contiguous()
-        bias = torch.zeros(self.c_out, device="cuda", dtype=self.dtype).contiguous()
+        bias = torch.zeros(self.c_out, device=DEVICE, dtype=self.dtype).contiguous()
         return x, weight, bias
 
     def ref_program(
@@ -595,9 +598,9 @@ def test_conv3d_accepts_zero_bias() -> None:
         padding=1,
         bias=True,
     )
-    x = torch.randn(1, 8, 16, 16, 8, device="cuda", dtype=torch.float16).contiguous()
-    weight = torch.randn(16, 8, 3, 3, 3, device="cuda", dtype=torch.float16).contiguous()
-    bias = torch.zeros(16, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 8, 16, 16, 8, device=DEVICE, dtype=torch.float16).contiguous()
+    weight = torch.randn(16, 8, 3, 3, 3, device=DEVICE, dtype=torch.float16).contiguous()
+    bias = torch.zeros(16, device=DEVICE, dtype=torch.float16).contiguous()
     out = op(x, weight, bias)
     ref = F.conv3d(
         x.permute(0, 4, 1, 2, 3).contiguous(),

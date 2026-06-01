@@ -4,7 +4,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GemmOp
+from tileops.utils import get_backend_name
 from workloads.gemm import GemmTest as _GemmTestWorkload
+
+DEVICE = get_backend_name()
 
 
 class GemmTest(_GemmTestWorkload, TestBase):
@@ -28,6 +31,16 @@ class GemmFixture(FixtureBase):
                 1024, 1024, 1024, torch.bfloat16, False, False, False,
                 marks=pytest.mark.smoke,
                 id="smoke-bf16-square",
+            ),
+            pytest.param(
+                2048, 2048, 2048, torch.float16, False, False, False,
+                marks=pytest.mark.full,
+                id="full-fp16-square-mainstream",
+            ),
+            pytest.param(
+                2048, 2048, 2048, torch.bfloat16, False, False, False,
+                marks=pytest.mark.full,
+                id="full-bf16-square-mainstream",
             ),
             pytest.param(
                 1, 1024, 1024, torch.float16, False, True, False,
@@ -102,8 +115,10 @@ class GemvBoundaryFixture(FixtureBase):
             pytest.param(3000, 1024, torch.bfloat16, False, marks=pytest.mark.smoke),
             # lhs_row: non-aligned k
             pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
             # rhs_col: n=1 — non-aligned m (mapped to gemv n param)
             pytest.param(3001, 1024, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(3001, 1024, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
 
@@ -137,6 +152,26 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     op = GemmOp(m, 1, k, trans_a=False, trans_b=False, dtype=dtype, tune=tune)
     tolerances = {"atol": 1e-2, "rtol": 1e-2}
     test.check(op, *test.gen_inputs(), **tolerances)
+
+
+@pytest.mark.smoke
+def test_gemm_rejects_shape_mismatch() -> None:
+    op = GemmOp(32, 64, 16, dtype=torch.float16)
+    a = torch.randn(32, 15, device=DEVICE, dtype=torch.float16)
+    b = torch.randn(16, 64, device=DEVICE, dtype=torch.float16)
+
+    with pytest.raises(ValueError, match="Expected a.shape"):
+        op(a, b)
+
+
+@pytest.mark.smoke
+def test_gemm_rejects_non_backend_tensor() -> None:
+    op = GemmOp(32, 64, 16, dtype=torch.float16)
+    a = torch.randn(32, 16, device="cpu", dtype=torch.float16)
+    b = torch.randn(16, 64, device=DEVICE, dtype=torch.float16)
+
+    with pytest.raises(ValueError, match="MUSA tensor"):
+        op(a, b)
 
 
 if __name__ == "__main__":

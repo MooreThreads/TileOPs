@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Strategy benchmark for BinaryKernel: direct vs explicit_parallel.
 
 Uses add as the representative op. Sweeps DNN-realistic 2D shapes
@@ -47,8 +50,8 @@ class BinaryStrategyBenchCase:
         self.output_dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
-        b = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
+        a = torch.randn(*self.shape, device=DEVICE, dtype=self.dtype)
+        b = torch.randn(*self.shape, device=DEVICE, dtype=self.dtype)
         return a, b
 
 

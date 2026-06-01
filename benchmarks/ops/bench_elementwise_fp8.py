@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for fp8 elementwise ops (e4m3fn, e5m2).
 
 Profiles TileOPs fp8 kernels vs PyTorch fp16-compute-then-cast baselines
@@ -47,7 +50,7 @@ class Fp8UnaryBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = (torch.randn(*self.shape, dtype=torch.float16, device="cuda") * 2.0)
+        x = (torch.randn(*self.shape, dtype=torch.float16, device=DEVICE) * 2.0)
         return (x.to(self.dtype),)
 
 
@@ -67,8 +70,8 @@ class Fp8BinaryBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = (torch.randn(*self.shape, dtype=torch.float16, device="cuda") * 0.5).to(self.dtype)
-        b = (torch.randn(*self.shape, dtype=torch.float16, device="cuda") * 0.5).to(self.dtype)
+        a = (torch.randn(*self.shape, dtype=torch.float16, device=DEVICE) * 0.5).to(self.dtype)
+        b = (torch.randn(*self.shape, dtype=torch.float16, device=DEVICE) * 0.5).to(self.dtype)
         return a, b
 
 
@@ -90,7 +93,7 @@ class Fp8FusedGatedBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = (torch.randn(self.M, 2 * self.N, dtype=torch.float16, device="cuda") * 0.5)
+        x = (torch.randn(self.M, 2 * self.N, dtype=torch.float16, device=DEVICE) * 0.5)
         return (x.to(self.dtype),)
 
 

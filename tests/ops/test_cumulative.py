@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Correctness tests for cumulative ops (cumsum, cumprod).
 
 Covers: CumsumFwdOp, CumprodFwdOp.
@@ -104,9 +107,9 @@ class CumulativeTest(TestBase):
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.use_small_range:
             # For cumprod, use small values to avoid overflow
-            x = torch.rand(self.m, self.n, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+            x = torch.rand(self.m, self.n, dtype=self.dtype, device=DEVICE) * 0.01 + 0.99
         else:
-            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+            x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -154,7 +157,7 @@ def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]
     op = CumsumFwdOp(N=n, dtype=dtype)
     ref = x.contiguous().float().cumsum(dim=-1).to(dtype)
@@ -167,7 +170,7 @@ def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
     op = CumsumFwdOp(N=hidden, dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
@@ -179,7 +182,7 @@ def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
 def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=DEVICE)
     op = CumsumFwdOp(N=n, dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
@@ -191,7 +194,7 @@ def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
 def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=DEVICE)
     op = CumsumFwdOp(N=n, dtype=dtype)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
@@ -217,7 +220,7 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
 def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
-    x_full = torch.rand(m, n * 2, dtype=dtype, device="cuda") * 0.01 + 0.99
+    x_full = torch.rand(m, n * 2, dtype=dtype, device=DEVICE) * 0.01 + 0.99
     x = x_full[:, :n]
     op = CumprodFwdOp(N=n, dtype=dtype)
     ref = x.contiguous().float().cumprod(dim=-1).to(dtype)
@@ -230,7 +233,7 @@ def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
-    x = torch.rand(batch, seq, hidden, dtype=dtype, device="cuda") * 0.01 + 0.99
+    x = torch.rand(batch, seq, hidden, dtype=dtype, device=DEVICE) * 0.01 + 0.99
     op = CumprodFwdOp(N=hidden, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
@@ -242,7 +245,7 @@ def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> No
 def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
-    x = torch.rand(b0, b1, b2, n, dtype=dtype, device="cuda") * 0.01 + 0.99
+    x = torch.rand(b0, b1, b2, n, dtype=dtype, device=DEVICE) * 0.01 + 0.99
     op = CumprodFwdOp(N=n, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
@@ -254,7 +257,7 @@ def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> No
 def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
-    x = torch.rand(n, dtype=dtype, device="cuda") * 0.01 + 0.99
+    x = torch.rand(n, dtype=dtype, device=DEVICE) * 0.01 + 0.99
     op = CumprodFwdOp(N=n, dtype=dtype)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
@@ -278,7 +281,7 @@ def test_cumsum_dim_axis1(
     """Cumsum along dim=1 (3D) — exercises movedim choreography in `_run`."""
     from tileops.ops.reduction.cumsum import CumsumFwdOp
 
-    x = torch.randn(batch, hidden, seq, dtype=dtype, device="cuda")
+    x = torch.randn(batch, hidden, seq, dtype=dtype, device=DEVICE)
     op = CumsumFwdOp(N=hidden, dtype=dtype, dim=1)
     ref = x.float().cumsum(dim=1).to(dtype)
     y = op(x)
@@ -295,7 +298,7 @@ def test_cumprod_dim_axis1(
     from tileops.ops.reduction.cumprod import CumprodFwdOp
 
     # Values close to 1 to avoid over/underflow in cumprod over hidden dim.
-    x = torch.rand(batch, hidden, seq, dtype=dtype, device="cuda") * 0.01 + 0.99
+    x = torch.rand(batch, hidden, seq, dtype=dtype, device=DEVICE) * 0.01 + 0.99
     op = CumprodFwdOp(N=hidden, dtype=dtype, dim=1)
     ref = x.float().cumprod(dim=1).to(dtype)
     y = op(x)

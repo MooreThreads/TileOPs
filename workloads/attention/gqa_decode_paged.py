@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 import torch
 
@@ -20,15 +23,15 @@ class GroupedQueryAttentionDecodePagedTest(WorkloadBase):
             self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
         real_seqlen_kv = torch.randint(
-            self.page_size, self.seqlen_kv + 1, (self.batch,), dtype=torch.int32, device="cuda")
+            self.page_size, self.seqlen_kv + 1, (self.batch,), dtype=torch.int32, device=DEVICE)
         real_seqlen_kv = (real_seqlen_kv // self.page_size) * self.page_size
         real_seqlen_kv[0] = min(real_seqlen_kv[0].item(), self.seqlen_kv)
 
-        q = torch.randn(self.batch, self.heads, self.dim, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
-        v = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device="cuda")
+        q = torch.randn(self.batch, self.heads, self.dim, dtype=self.dtype, device=DEVICE)
+        k = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device=DEVICE)
+        v = torch.randn(self.seqlen_kv, self.heads_kv, self.dim, dtype=self.dtype, device=DEVICE)
         block_table = torch.arange(
-            num_pages, dtype=torch.int32, device="cuda").unsqueeze(0).expand(self.batch, -1)
+            num_pages, dtype=torch.int32, device=DEVICE).unsqueeze(0).expand(self.batch, -1)
 
         q = q.contiguous()
         k = k.contiguous()

@@ -333,7 +333,7 @@ class _GQASlidingWindowVarlenFwdKernelBase(Kernel):
 
 class GQASlidingWindowVarlenFwdKernel(_GQASlidingWindowVarlenFwdKernelBase):
     """Variable-length GQA sliding window forward kernel (sm80/89/90)."""
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     @property
     def default_config(self) -> dict:
@@ -574,7 +574,7 @@ def _(batch, heads, heads_kv, total_q, total_k, dim, is_causal,
 
 class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKernelBase):
     """Variable-length GQA sliding window forward kernel, WGMMA pipelined (sm90)."""
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     @property
     def default_config(self) -> dict:

@@ -12,6 +12,7 @@ from typing import Any, Callable, TypeVar
 import torch
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+from tileops.utils import get_backend_name
 
 
 class WorkloadBase(ABC):
@@ -37,7 +38,7 @@ class RandnTest(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device=get_backend_name())
         return (x,)
 
 

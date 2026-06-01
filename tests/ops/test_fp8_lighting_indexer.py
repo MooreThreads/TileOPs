@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import pytest
@@ -57,8 +60,8 @@ class FP8LightingIndexerTest(_FP8LightingIndexerTestWorkload, TestBase):
         k = k.view(batch, seq_len_kv, kv_group, index_dim)
         q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
 
-        mask_lo = torch.arange(0, seq_len_kv, device="cuda")[None, :] >= cu_seqlen_ks[:, None]
-        mask_hi = torch.arange(0, seq_len_kv, device="cuda")[None, :] < cu_seqlen_ke[:, None]
+        mask_lo = torch.arange(0, seq_len_kv, device=DEVICE)[None, :] >= cu_seqlen_ks[:, None]
+        mask_hi = torch.arange(0, seq_len_kv, device=DEVICE)[None, :] < cu_seqlen_ke[:, None]
         mask = mask_lo & mask_hi
 
         score = torch.einsum("bsghd,bngd->bghsn", q, k)

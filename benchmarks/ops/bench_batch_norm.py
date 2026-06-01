@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmark for BatchNormFwdOp and BatchNormBwdOp.
 
 Compares TileOPs vs PyTorch cuDNN batch norm on common ResNet-style shapes.
@@ -65,7 +68,7 @@ class BatchNormBwdBenchmark(BenchmarkBase[BatchNormBwdTest]):
 # Benchmark helpers
 # ---------------------------------------------------------------------------
 
-def _make_inputs(N, C, spatial, dtype, device="cuda"):
+def _make_inputs(N, C, spatial, dtype, device=DEVICE):
     shape = (N, C, *spatial)
     x = torch.randn(*shape, device=device, dtype=dtype)
     weight = torch.randn(C, device=device, dtype=torch.float32)
@@ -75,7 +78,7 @@ def _make_inputs(N, C, spatial, dtype, device="cuda"):
     return x, weight, bias, running_mean, running_var
 
 
-def _make_bwd_inputs(N, C, spatial, dtype, device="cuda"):
+def _make_bwd_inputs(N, C, spatial, dtype, device=DEVICE):
     x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype, device)
     grad_out = torch.randn_like(x)
     L = N * math.prod(spatial) if spatial else N

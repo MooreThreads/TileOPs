@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -29,9 +32,9 @@ class GroupedQueryAttentionSlidingWindowFwdTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(self.batch, self.seq, self.heads,    self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
+                        dtype=self.dtype, device=DEVICE) * 0.1
         k = torch.randn(self.batch, self.seq, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
+                        dtype=self.dtype, device=DEVICE) * 0.1
         v = torch.randn(self.batch, self.seq, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
+                        dtype=self.dtype, device=DEVICE) * 0.1
         return q, k, v

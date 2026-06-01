@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 import torch
 
@@ -21,14 +24,14 @@ class MhaDecodePagedTest(WorkloadBase):
             self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
         real_seqlen_kv = torch.ones(
-            (self.batch,), dtype=torch.int32, device="cuda") * self.seqlen_kv
+            (self.batch,), dtype=torch.int32, device=DEVICE) * self.seqlen_kv
         q = torch.randn(
-            self.batch, self.seqlen_q, self.heads, self.dim, device="cuda", dtype=self.dtype)
-        k = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
-        v = torch.randn(self.seqlen_kv, self.heads, self.dim, device="cuda", dtype=self.dtype)
+            self.batch, self.seqlen_q, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
+        k = torch.randn(self.seqlen_kv, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
+        v = torch.randn(self.seqlen_kv, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
         # Identity block_table: logical page i -> physical page i (contiguous layout)
         block_table = torch.arange(
-            num_pages, dtype=torch.int32, device="cuda").unsqueeze(0).expand(self.batch, -1)
+            num_pages, dtype=torch.int32, device=DEVICE).unsqueeze(0).expand(self.batch, -1)
 
         q = q.contiguous()
         k = k.contiguous()

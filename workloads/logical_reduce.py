@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -46,24 +49,24 @@ def _make_logical_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     m = shape[0] if len(shape) >= 1 else 1
 
     if dtype == torch.bool:
-        x = torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
+        x = torch.randint(0, 2, shape, dtype=torch.bool, device=DEVICE)
         if m > 4:
             x[0] = False
             x[1] = True
     elif dtype in (torch.complex64, torch.complex128):
-        real = torch.randn(*shape, dtype=torch.float32, device="cuda")
-        imag = torch.randn(*shape, dtype=torch.float32, device="cuda")
+        real = torch.randn(*shape, dtype=torch.float32, device=DEVICE)
+        imag = torch.randn(*shape, dtype=torch.float32, device=DEVICE)
         x = torch.complex(real, imag).to(dtype)
         if m > 4:
             x[0] = 0 + 0j
             x[1] = 1 + 1j
     elif dtype in (torch.int32, torch.int64):
-        x = torch.randint(-5, 6, shape, dtype=dtype, device="cuda")
+        x = torch.randint(-5, 6, shape, dtype=dtype, device=DEVICE)
         if m > 4:
             x[0] = 0
             x[1] = 1
     else:
-        x = torch.randn(*shape, dtype=dtype, device="cuda")
+        x = torch.randn(*shape, dtype=dtype, device=DEVICE)
         if m > 4:
             x[0] = 0.0
             x[1] = 1.0

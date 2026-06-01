@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.engram_decode import EngramDecodeOp
+from tileops.utils import get_backend_name
 from workloads.engram import (
     CONV_KERNEL_SIZE,
 )
@@ -17,6 +18,9 @@ from workloads.engram import (
 from workloads.engram import (
     EngramGateConvFwdTest as _EngramGateConvFwdTestWorkload,
 )
+
+
+DEVICE = get_backend_name()
 
 
 def _rmsnorm(x, w, eps=1e-6):
@@ -69,6 +73,7 @@ class EngramGateConvFwdFixture(FixtureBase):
             pytest.param(1, 32, 256, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(1, 32, 256, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(4, 128, 512, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
@@ -147,6 +152,7 @@ class EngramGateConvBwdFixture(FixtureBase):
             pytest.param(1, 32, 256, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(1, 32, 256, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(4, 128, 512, torch.float16, False, marks=pytest.mark.full),
             pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
@@ -235,6 +241,7 @@ class EngramDecodeFixture(FixtureBase):
             pytest.param(1, 512, 256, 12, 4, 3, torch.float16, False, marks=pytest.mark.smoke),
             pytest.param(1, 512, 256, 12, 4, 3, torch.bfloat16, False, marks=pytest.mark.smoke),
             pytest.param(4, 1024, 512, 20, 4, 5, torch.float16, False, marks=pytest.mark.full),
+            pytest.param(8, 2048, 512, 32, 4, 5, torch.float16, False, marks=pytest.mark.full),
             pytest.param(8, 512, 256, 18, 4, 3, torch.bfloat16, False, marks=pytest.mark.full),
         ]),
     ]
@@ -263,22 +270,22 @@ def test_engram_decode_multi_step():
     eps = 1e-6
 
     torch.manual_seed(123)
-    W_K = torch.randn(d_mem, d, dtype=dtype, device="cuda") * 0.02
-    W_V = torch.randn(d_mem, d, dtype=dtype, device="cuda") * 0.02
-    rms_w_h = torch.ones(d, dtype=dtype, device="cuda")
-    rms_w_v = torch.ones(d, dtype=dtype, device="cuda")
-    conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device="cuda") * 0.02
+    W_K = torch.randn(d_mem, d, dtype=dtype, device=DEVICE) * 0.02
+    W_V = torch.randn(d_mem, d, dtype=dtype, device=DEVICE) * 0.02
+    rms_w_h = torch.ones(d, dtype=dtype, device=DEVICE)
+    rms_w_v = torch.ones(d, dtype=dtype, device=DEVICE)
+    conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device=DEVICE) * 0.02
 
     op = EngramDecodeOp(B, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
 
     # Start with empty conv_state (like empty KV cache)
-    conv_state = torch.zeros(B, 0, d, dtype=dtype, device="cuda")
+    conv_state = torch.zeros(B, 0, d, dtype=dtype, device=DEVICE)
     conv_state_ref = conv_state.clone()
 
     num_steps = max_conv_len + 8  # go past growing phase into steady state
     for step in range(num_steps):
-        e_t = torch.randn(B, d_mem, dtype=dtype, device="cuda") * 0.1
-        h_t = torch.randn(B, d, dtype=dtype, device="cuda")
+        e_t = torch.randn(B, d_mem, dtype=dtype, device=DEVICE) * 0.1
+        h_t = torch.randn(B, d, dtype=dtype, device=DEVICE)
 
         y_op, conv_state = op(e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
         y_ref, conv_state_ref = engram_decode_step_torch(

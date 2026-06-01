@@ -17,6 +17,10 @@ manifest-only PR per the trust model.
 
 from __future__ import annotations
 
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
+
 import pytest
 import torch
 
@@ -83,7 +87,7 @@ def test_var_conformance(
 ) -> None:
     """Each (dim-shape, correction, keepdim, dtype) cell must match torch.var."""
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=dtype, device="cuda")
+    x = torch.randn(*_SHAPE, dtype=dtype, device=DEVICE)
     op = VarFwdOp(dtype=dtype, dim=dim, correction=correction, keepdim=keepdim)
     y = op(x)
     ref = _ref_var(x, dim, keepdim, correction)
@@ -115,7 +119,7 @@ def test_std_conformance(
 ) -> None:
     """Each (dim-shape, correction, keepdim, dtype) cell must match torch.std."""
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=dtype, device="cuda")
+    x = torch.randn(*_SHAPE, dtype=dtype, device=DEVICE)
     op = StdFwdOp(dtype=dtype, dim=dim, correction=correction, keepdim=keepdim)
     y = op(x)
     ref = _ref_std(x, dim, keepdim, correction)
@@ -151,7 +155,7 @@ def test_var_mean_conformance(
     dtype, and numerics.
     """
     torch.manual_seed(0)
-    x = torch.randn(*_SHAPE, dtype=dtype, device="cuda")
+    x = torch.randn(*_SHAPE, dtype=dtype, device=DEVICE)
     op = VarMeanFwdOp(dtype=dtype, dim=dim, correction=correction, keepdim=keepdim)
     out = op(x)
     assert isinstance(out, tuple) and len(out) == 2, (
@@ -196,7 +200,7 @@ def test_var_unaligned_innermost(dim) -> None:
     """
     torch.manual_seed(0)
     dtype = torch.float16
-    x = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device="cuda")
+    x = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device=DEVICE)
     op = VarFwdOp(dtype=dtype, dim=dim, correction=1, keepdim=False)
     y = op(x)
     ref = _ref_var(x, dim, False, 1)
@@ -217,7 +221,7 @@ def test_var_mean_unaligned_innermost(dim) -> None:
     """Unaligned innermost dim must still match torch.var_mean on both outputs."""
     torch.manual_seed(0)
     dtype = torch.float16
-    x = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device="cuda")
+    x = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device=DEVICE)
     op = VarMeanFwdOp(dtype=dtype, dim=dim, correction=1, keepdim=False)
     var_y, mean_y = op(x)
     ref_var, ref_mean = _ref_var_mean(x, dim, False, 1)
@@ -240,7 +244,7 @@ def test_std_unaligned_innermost(dim) -> None:
     """Unaligned innermost dim must still match torch.std."""
     torch.manual_seed(0)
     dtype = torch.float16
-    x = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device="cuda")
+    x = torch.randn(*_UNALIGNED_SHAPE, dtype=dtype, device=DEVICE)
     op = StdFwdOp(dtype=dtype, dim=dim, correction=1, keepdim=False)
     y = op(x)
     ref = _ref_std(x, dim, False, 1)

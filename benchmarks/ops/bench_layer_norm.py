@@ -39,7 +39,7 @@ def _manifest_params():
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True,
+            params.append(pytest.param(m, n, dtype, False,
                                        id=f"{label}-{dtype_str}"))
     return params
 
@@ -55,6 +55,35 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     # Baseline uses torch.nn.functional.layer_norm
+    def baseline_fn(x, weight, bias):
+        return F.layer_norm(x, (n,), weight=weight, bias=bias, eps=1e-5)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize(
+    "m, n, dtype, tune",
+    [
+        pytest.param(256, 1024, torch.float16, False, id="musa-smoke-fp16"),
+        pytest.param(256, 1024, torch.bfloat16, False, id="musa-smoke-bf16"),
+    ],
+)
+def test_layer_norm_bench_musa_smoke(
+    m: int,
+    n: int,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    """Small benchmark proof cases for MUSA bring-up."""
+    test = LayerNormTest(m, n, dtype)
+    inputs = test.gen_inputs()
+
+    op = LayerNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
+    bm = LayerNormBenchmark(test, op)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
     def baseline_fn(x, weight, bias):
         return F.layer_norm(x, (n,), weight=weight, bias=bias, eps=1e-5)
 

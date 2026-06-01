@@ -1,5 +1,6 @@
 import torch
 
+from tileops.utils import get_backend_name
 from workloads.workload_base import WorkloadBase
 
 
@@ -12,7 +13,8 @@ class LayerNormTest(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
-        bias = torch.randn(self.n, dtype=self.dtype, device="cuda")
+        device = get_backend_name()
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device=device)
+        weight = torch.randn(self.n, dtype=self.dtype, device=device)
+        bias = torch.randn(self.n, dtype=self.dtype, device=device)
         return x, weight, bias

@@ -28,6 +28,21 @@ from tileops.kernels.kernel_base import Kernel
 from ._base import _MANIFEST_INT_DTYPES, UnaryOp, _IntIdentityUnaryOp
 
 
+# Work around missing MUSA low-bit integer abs/neg by promoting on-device.
+def _abs_int_fallback(input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    if input.dtype == torch.uint8:
+        return input.clone()
+    if input.dtype in (torch.int8, torch.int16):
+        return torch.abs(input.to(torch.int32)).to(input.dtype)
+    return torch.abs(input)
+
+
+def _neg_int_fallback(input: torch.Tensor) -> torch.Tensor:  # noqa: A002
+    if input.dtype in (torch.uint8, torch.int8, torch.int16):
+        return torch.neg(input.to(torch.int32)).to(input.dtype)
+    return torch.neg(input)
+
+
 class ExpFwdOp(UnaryOp):
     """Element-wise exp(x)."""
 
@@ -61,7 +76,7 @@ class AbsFwdOp(_IntIdentityUnaryOp):
 
     _op_name = "abs"
     kernel_cls = AbsFwdKernel
-    _int_handler = staticmethod(torch.abs)
+    _int_handler = staticmethod(_abs_int_fallback)
 
 
 class NegFwdOp(_IntIdentityUnaryOp):
@@ -69,7 +84,7 @@ class NegFwdOp(_IntIdentityUnaryOp):
 
     _op_name = "neg"
     kernel_cls = NegFwdKernel
-    _int_handler = staticmethod(torch.neg)
+    _int_handler = staticmethod(_neg_int_fallback)
 
 
 class ReciprocalFwdOp(UnaryOp):

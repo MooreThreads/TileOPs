@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 from typing import Optional
 
@@ -244,9 +247,9 @@ def test_gqa_fwd(batch: int, seq_len: int, heads: int, heads_kv: int, dim: int, 
 ])
 def test_gqa_prefill_fwd(batch: int, seq_len_q: int, seq_len_kv: int, heads: int,
                          heads_kv: int, dim: int, causal: bool, dtype: torch.dtype) -> None:
-    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype).contiguous()
-    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
-    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    q = torch.randn(batch, seq_len_q, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
     ref = _gqa_prefill_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=causal)
 
     op = GroupedQueryAttentionPrefillFwdOp(
@@ -260,9 +263,9 @@ def test_gqa_prefill_fwd(batch: int, seq_len_q: int, seq_len_kv: int, heads: int
 @pytest.mark.smoke
 def test_gqa_prefill_fwd_uses_bottom_right_causal_mask() -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 4, 2, 64
-    q = torch.zeros(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.zeros(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
-    v = torch.zeros(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+    q = torch.zeros(batch, seq_len_q, heads, dim, device=DEVICE, dtype=torch.float16)
+    k = torch.zeros(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=torch.float16)
+    v = torch.zeros(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=torch.float16)
     q[..., 0] = 1
     k[..., 0] = 1
     v[:, :128, :, 0] = 1
@@ -280,11 +283,11 @@ def test_gqa_prefill_fwd_uses_bottom_right_causal_mask() -> None:
 def test_gqa_prefill_fwd_respects_sm_scale() -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 8, 2, 64
     sm_scale = 0.125
-    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda",
+    q = torch.randn(batch, seq_len_q, heads, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda",
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda",
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
     ref = _gqa_prefill_ref(
         q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, sm_scale=sm_scale)
@@ -301,11 +304,11 @@ def test_gqa_prefill_fwd_respects_sm_scale() -> None:
 def test_gqa_prefill_fwd_respects_softcap() -> None:
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 128, 256, 8, 2, 64
     softcap = 2.0
-    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda",
+    q = torch.randn(batch, seq_len_q, heads, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda",
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda",
+    v = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
     ref = _gqa_prefill_ref(
         q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, softcap=softcap)
@@ -340,13 +343,13 @@ def test_gqa_prefill_varlen_fwd(q_lens: list[int], kv_lens: list[int], heads: in
     batch = len(q_lens)
     total_q = sum(q_lens)
     total_kv = sum(kv_lens)
-    q = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
-    k = torch.randn(total_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
-    v = torch.randn(total_kv, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    q = torch.randn(total_q, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+    k = torch.randn(total_kv, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
+    v = torch.randn(total_kv, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
     cu_q = torch.tensor(
-        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
     cu_kv = torch.tensor(
-        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
     ref = _gqa_prefill_varlen_ref(
         q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
         is_causal=causal)
@@ -372,14 +375,14 @@ def test_gqa_prefill_varlen_respects_sm_scale() -> None:
     q_lens, kv_lens = [64, 96], [128, 160]
     batch, heads, heads_kv, dim = len(q_lens), 8, 2, 64
     sm_scale = 0.125
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda",
+    q = torch.randn(sum(q_lens), heads, dim, device=DEVICE, dtype=torch.float16).contiguous()
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
     v = torch.randn_like(k)
     cu_q = torch.tensor(
-        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
     cu_kv = torch.tensor(
-        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
     ref = _gqa_prefill_varlen_ref(
         q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
         is_causal=True, sm_scale=sm_scale)
@@ -397,14 +400,14 @@ def test_gqa_prefill_varlen_respects_softcap() -> None:
     q_lens, kv_lens = [64, 96], [128, 160]
     batch, heads, heads_kv, dim = len(q_lens), 8, 2, 64
     softcap = 2.0
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda",
+    q = torch.randn(sum(q_lens), heads, dim, device=DEVICE, dtype=torch.float16).contiguous()
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
     v = torch.randn_like(k)
     cu_q = torch.tensor(
-        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
     cu_kv = torch.tensor(
-        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
     ref = _gqa_prefill_varlen_ref(
         q, k, v, cu_q, cu_kv, batch=batch, heads=heads, heads_kv=heads_kv,
         is_causal=True, softcap=softcap)
@@ -421,14 +424,14 @@ def test_gqa_prefill_varlen_respects_softcap() -> None:
 def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
     q_lens, kv_lens = [64, 32], [128, 96]
     batch, heads, heads_kv, dim = len(q_lens), 8, 2, 64
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda",
+    q = torch.randn(sum(q_lens), heads, dim, device=DEVICE, dtype=torch.float16).contiguous()
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
     v = torch.randn_like(k)
     cu_q = torch.tensor(
-        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
     cu_kv = torch.tensor(
-        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32)
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32)
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
         batch, heads, heads_kv, dim, max(q_lens), max(kv_lens), True, torch.float16,
@@ -442,7 +445,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
             batch, heads, heads_kv, dim, max(q_lens) - 1, max(kv_lens), True,
             torch.float16, validate_inputs=True)
         bad_op(q, k, v, cu_q, cu_kv)
-    bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
+    bad_cu = torch.tensor([0, 128, 96], device=DEVICE, dtype=torch.int32)
     with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
         op(q, k, v, bad_cu, cu_kv)
 
@@ -478,17 +481,17 @@ def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
 def test_gqa_prefill_with_kv_cache_fwd(batch: int, seq_len_new: int, seqlen_kv: int,
                                        heads: int, heads_kv: int, dim: int, causal: bool,
                                        dtype: torch.dtype) -> None:
-    q = torch.randn(batch, seq_len_new, heads, dim, device="cuda", dtype=dtype).contiguous()
-    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    q = torch.randn(batch, seq_len_new, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=dtype).contiguous()
-    v_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    v_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=dtype).contiguous()
-    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=dtype).contiguous()
-    v_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    v_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=dtype).contiguous()
     old_lens = [65 + 37 * i for i in range(batch)]
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
     k_cache_before = k_cache.clone()
     v_cache_before = v_cache.clone()
 
@@ -520,15 +523,15 @@ def test_gqa_prefill_with_kv_cache_fwd(batch: int, seq_len_new: int, seqlen_kv: 
 def test_gqa_prefill_with_kv_cache_respects_sm_scale() -> None:
     batch, seq_len_new, seqlen_kv, heads, heads_kv, dim = 1, 64, 256, 8, 2, 64
     sm_scale = 0.125
-    q = torch.randn(batch, seq_len_new, heads, dim, device="cuda",
+    q = torch.randn(batch, seq_len_new, heads, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=torch.float16).contiguous()
     v_new = torch.randn_like(k_new)
-    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=torch.float16).contiguous()
     v_cache = torch.randn_like(k_cache)
-    cache_seqlens = torch.tensor([65], device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor([65], device=DEVICE, dtype=torch.int32)
     k_cache_before = k_cache.clone()
     v_cache_before = v_cache.clone()
     ref = _gqa_prefill_with_kv_cache_ref(
@@ -556,15 +559,15 @@ def test_gqa_prefill_with_kv_cache_respects_sm_scale() -> None:
 def test_gqa_prefill_with_kv_cache_respects_softcap() -> None:
     batch, seq_len_new, seqlen_kv, heads, heads_kv, dim = 1, 64, 256, 8, 2, 64
     softcap = 2.0
-    q = torch.randn(batch, seq_len_new, heads, dim, device="cuda",
+    q = torch.randn(batch, seq_len_new, heads, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=torch.float16).contiguous()
     v_new = torch.randn_like(k_new)
-    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=torch.float16).contiguous()
     v_cache = torch.randn_like(k_cache)
-    cache_seqlens = torch.tensor([65], device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor([65], device=DEVICE, dtype=torch.int32)
     k_cache_before = k_cache.clone()
     v_cache_before = v_cache.clone()
     ref = _gqa_prefill_with_kv_cache_ref(
@@ -594,24 +597,24 @@ def test_gqa_prefill_with_kv_cache_external_rope_uses_absolute_cache_positions()
     dtype = torch.float16
     old_lens = [67, 113]
     max_position = max(old_lens) + seq_len_new + 1
-    q_raw = torch.randn(batch, seq_len_new, heads, dim, device="cuda",
+    q_raw = torch.randn(batch, seq_len_new, heads, dim, device=DEVICE,
                         dtype=dtype).contiguous()
-    k_new_raw = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    k_new_raw = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                             dtype=dtype).contiguous()
-    v_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    v_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=dtype).contiguous()
-    k_cache = torch.zeros(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    k_cache = torch.zeros(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=dtype).contiguous()
-    v_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    v_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=dtype).contiguous()
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
 
     new_positions = torch.cat([
-        torch.arange(old_len, old_len + seq_len_new, device="cuda", dtype=torch.int32)
+        torch.arange(old_len, old_len + seq_len_new, device=DEVICE, dtype=torch.int32)
         for old_len in old_lens
     ])
     old_positions = torch.cat([
-        torch.arange(old_len, device="cuda", dtype=torch.int32)
+        torch.arange(old_len, device=DEVICE, dtype=torch.int32)
         for old_len in old_lens
     ])
 
@@ -626,7 +629,7 @@ def test_gqa_prefill_with_kv_cache_external_rope_uses_absolute_cache_positions()
         max_position,
     ).reshape_as(k_new_raw)
     k_old_raw = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     k_old = list(torch.split(
@@ -677,24 +680,24 @@ def test_gqa_prefill_with_kv_cache_fused_rope_rotates_only_current_chunk(
     old_lens = [67, 113]
     softcap = 2.0
     max_position = max(old_lens) + seq_len_new + 1
-    q_raw = torch.randn(batch, seq_len_new, heads, dim, device="cuda",
+    q_raw = torch.randn(batch, seq_len_new, heads, dim, device=DEVICE,
                         dtype=dtype).contiguous()
-    k_new_raw = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    k_new_raw = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                             dtype=dtype).contiguous()
-    v_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    v_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=dtype).contiguous()
-    k_cache = torch.zeros(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    k_cache = torch.zeros(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=dtype).contiguous()
-    v_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    v_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=dtype).contiguous()
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
 
     new_positions = torch.cat([
-        torch.arange(old_len, old_len + seq_len_new, device="cuda", dtype=torch.int32)
+        torch.arange(old_len, old_len + seq_len_new, device=DEVICE, dtype=torch.int32)
         for old_len in old_lens
     ])
     old_positions = torch.cat([
-        torch.arange(old_len, device="cuda", dtype=torch.int32)
+        torch.arange(old_len, device=DEVICE, dtype=torch.int32)
         for old_len in old_lens
     ])
     q_rot = _apply_neox_rope_position_ids(
@@ -710,7 +713,7 @@ def test_gqa_prefill_with_kv_cache_fused_rope_rotates_only_current_chunk(
         rotary_dim=rotary_dim,
     ).reshape_as(k_new_raw)
     k_old_raw = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     k_old_rot = list(torch.split(
@@ -765,15 +768,15 @@ def test_gqa_prefill_with_kv_cache_fused_rope_rotates_only_current_chunk(
 @pytest.mark.smoke
 def test_gqa_prefill_with_kv_cache_rejects_capacity_overflow() -> None:
     batch, seq_len_new, seqlen_kv, heads, heads_kv, dim = 1, 64, 96, 8, 2, 64
-    q = torch.randn(batch, seq_len_new, heads, dim, device="cuda",
+    q = torch.randn(batch, seq_len_new, heads, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=torch.float16).contiguous()
     v_new = torch.randn_like(k_new)
-    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=torch.float16).contiguous()
     v_cache = torch.randn_like(k_cache)
-    cache_seqlens = torch.tensor([65], device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor([65], device=DEVICE, dtype=torch.int32)
 
     op = GroupedQueryAttentionPrefillWithKVCacheFwdOp(
         batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, True, torch.float16)
@@ -795,15 +798,15 @@ def test_gqa_prefill_with_kv_cache_rejects_invalid_rotary_dim() -> None:
 @pytest.mark.smoke
 def test_gqa_prefill_with_kv_cache_rejects_bad_contract_inputs() -> None:
     batch, seq_len_new, seqlen_kv, heads, heads_kv, dim = 1, 64, 256, 8, 2, 64
-    q = torch.randn(batch, seq_len_new, heads, dim, device="cuda",
+    q = torch.randn(batch, seq_len_new, heads, dim, device=DEVICE,
                     dtype=torch.float16).contiguous()
-    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device="cuda",
+    k_new = torch.randn(batch, seq_len_new, heads_kv, dim, device=DEVICE,
                         dtype=torch.float16).contiguous()
     v_new = torch.randn_like(k_new)
-    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device="cuda",
+    k_cache = torch.randn(batch, seqlen_kv, heads_kv, dim, device=DEVICE,
                           dtype=torch.float16).contiguous()
     v_cache = torch.randn_like(k_cache)
-    cache_seqlens = torch.tensor([65], device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor([65], device=DEVICE, dtype=torch.int32)
 
     op = GroupedQueryAttentionPrefillWithKVCacheFwdOp(
         batch, heads, heads_kv, seq_len_new, seqlen_kv, dim, True, torch.float16)

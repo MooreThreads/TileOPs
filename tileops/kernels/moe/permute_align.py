@@ -348,7 +348,7 @@ class MoePermuteAlignKernel(Kernel):
         >>> sorted_ids, expert_ids, num_post_pad = kernel(topk_ids)
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """GLA (Gated Linear Attention) backward kernel — TileLang implementation.
 
 Two-pass architecture:
@@ -16,7 +19,7 @@ from typing import Callable, Optional, Tuple
 
 import tilelang
 import torch
-from tilelang import language as T
+import tilelang.language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.kernel_base import Kernel
@@ -546,7 +549,7 @@ class GLABwdKernel(Kernel):
     h is read from forward's h_out (no recomputation needed).
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -634,14 +637,14 @@ class GLABwdKernel(Kernel):
         dtype_torch = self.dtype
 
         # Generate representative inputs
-        q = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        k = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        v = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1
-        g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype_torch).abs()
-        h = torch.randn(B, NT + 1, H, K, V, device="cuda",
+        q = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype_torch) * 0.1
+        k = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype_torch) * 0.1
+        v = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype_torch) * 0.1
+        g = -torch.rand(B, T, H, K, device=DEVICE, dtype=dtype_torch).abs()
+        h = torch.randn(B, NT + 1, H, K, V, device=DEVICE,
                          dtype=torch.float32) * 0.01
-        do = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1
-        dht = torch.zeros(B, H, K, V, dtype=torch.float32, device="cuda")
+        do = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype_torch) * 0.1
+        dht = torch.zeros(B, H, K, V, dtype=torch.float32, device=DEVICE)
 
         best_lat = float('inf')
         best_cfg = None

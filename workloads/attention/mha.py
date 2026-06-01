@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from tileops.ops import MultiHeadAttentionFwdOp
@@ -24,7 +27,7 @@ class MhaBwdTest(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
+            device=DEVICE,
             requires_grad=True)
         k = torch.randn(
             self.batch,
@@ -32,7 +35,7 @@ class MhaBwdTest(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
+            device=DEVICE,
             requires_grad=True)
         v = torch.randn(
             self.batch,
@@ -40,10 +43,10 @@ class MhaBwdTest(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
+            device=DEVICE,
             requires_grad=True)
         grad_output = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
+            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device=DEVICE)
 
         fwd_op = MultiHeadAttentionFwdOp(self.batch, self.heads, self.seq_len, self.dim,
                                          self.is_causal, self.dtype)
@@ -65,9 +68,9 @@ class MhaFwdTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
         k = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
         v = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
         return q, k, v

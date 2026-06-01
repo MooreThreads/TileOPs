@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import functools
 import itertools
 from typing import Optional
@@ -442,7 +445,7 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int, page_size
 
 
 class MHADecodePagedKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch,
@@ -495,18 +498,18 @@ class MHADecodePagedKernel(Kernel):
                     if len(shape) == 1 and shape[0] == batch:
                         # real_seqlen_kv: [batch]
                         inputs.append(
-                            torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda"))
+                            torch.full((batch,), seqlen_kv, dtype=torch.int32, device=DEVICE))
                     elif len(shape) == 2 and shape[1] == num_pages:
                         # block_table: [batch, num_pages] — sequential page indices
                         t = torch.arange(
                             num_pages, dtype=torch.int32,
-                            device="cuda").unsqueeze(0).expand(batch, -1).contiguous()
+                            device=DEVICE).unsqueeze(0).expand(batch, -1).contiguous()
                         inputs.append(t)
                     elif len(shape) == 2:
                         # acc_split_length (cumulative): [batch, num_split]
                         num_split = shape[1]
                         base = seqlen_kv // num_split
-                        t = torch.full(shape, base, dtype=torch.int32, device="cuda")
+                        t = torch.full(shape, base, dtype=torch.int32, device=DEVICE)
                         t[:, -1] += seqlen_kv % num_split
                         t = torch.cumsum(t, dim=1).to(torch.int32)
                         inputs.append(t)

@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import math
 
 import torch
@@ -57,7 +60,7 @@ class GroupedGemmTest(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         batch_sizes_list = self.batch_sizes_list
         N, K = self.N, self.K
-        device = 'cuda'
+        device=DEVICE
         dtype = self.dtype
         batch_sum = sum(batch_sizes_list)
         batch_count = len(batch_sizes_list)

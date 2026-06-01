@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -18,13 +21,13 @@ class GQAPrefillFwdTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
-            self.batch, self.seq_len_q, self.heads, self.dim, device='cuda',
+            self.batch, self.seq_len_q, self.heads, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         k = torch.randn(
-            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         v = torch.randn(
-            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         return q, k, v
 
@@ -63,22 +66,22 @@ class GQAPrefillVarlenFwdTest(WorkloadBase):
         self
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
-            self.total_q, self.heads, self.dim, device='cuda',
+            self.total_q, self.heads, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         k = torch.randn(
-            self.total_kv, self.heads_kv, self.dim, device='cuda',
+            self.total_kv, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         v = torch.randn(
-            self.total_kv, self.heads_kv, self.dim, device='cuda',
+            self.total_kv, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         cu_seqlens_q = torch.tensor(
             [0] + torch.tensor(self.q_lens).cumsum(0).tolist(),
             dtype=torch.int32,
-            device='cuda')
+            device=DEVICE)
         cu_seqlens_kv = torch.tensor(
             [0] + torch.tensor(self.kv_lens).cumsum(0).tolist(),
             dtype=torch.int32,
-            device='cuda')
+            device=DEVICE)
         return q, k, v, cu_seqlens_q, cu_seqlens_kv
 
 
@@ -104,23 +107,23 @@ class GQAPrefillWithKVCacheFwdTest(WorkloadBase):
         self
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
-            self.batch, self.seq_len_new, self.heads, self.dim, device='cuda',
+            self.batch, self.seq_len_new, self.heads, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         k_new = torch.randn(
-            self.batch, self.seq_len_new, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len_new, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         v_new = torch.randn(
-            self.batch, self.seq_len_new, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len_new, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         k_cache = torch.randn(
-            self.batch, self.seq_len_cap, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len_cap, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         v_cache = torch.randn(
-            self.batch, self.seq_len_cap, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len_cap, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         old_len = self.seq_len_cap - self.seq_len_new
         cache_seqlens = torch.full(
-            (self.batch,), old_len, dtype=torch.int32, device='cuda')
+            (self.batch,), old_len, dtype=torch.int32, device=DEVICE)
         return q, k_new, v_new, k_cache, v_cache, cache_seqlens
 
 
@@ -164,27 +167,27 @@ class GQAPrefillPagedWithKVCacheFwdTest(WorkloadBase):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
                torch.Tensor, torch.Tensor, torch.Tensor, int]:
         q = torch.randn(
-            self.total_q, self.heads, self.dim, device='cuda',
+            self.total_q, self.heads, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         k_new = torch.randn(
-            self.total_q, self.heads_kv, self.dim, device='cuda',
+            self.total_q, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         v_new = torch.randn(
-            self.total_q, self.heads_kv, self.dim, device='cuda',
+            self.total_q, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         physical_tokens = self.batch * self.max_pages_per_req * self.page_size
         k_pages = torch.randn(
-            physical_tokens, self.heads_kv, self.dim, device='cuda',
+            physical_tokens, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         v_pages = torch.randn_like(k_pages)
         cu_seqlens_q = torch.tensor(
             [0] + torch.tensor(self.q_lens).cumsum(0).tolist(),
             dtype=torch.int32,
-            device='cuda')
-        cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device='cuda')
+            device=DEVICE)
+        cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device=DEVICE)
         block_table = torch.arange(
             self.batch * self.max_pages_per_req, dtype=torch.int32,
-            device='cuda').reshape(self.batch, self.max_pages_per_req).contiguous()
+            device=DEVICE).reshape(self.batch, self.max_pages_per_req).contiguous()
         return (
             q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens,
             block_table, self.max_seqlen_q)

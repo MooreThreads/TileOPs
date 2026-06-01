@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -10,6 +13,6 @@ class AddSameShapeTest(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        a = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE)
+        b = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE)
         return a, b

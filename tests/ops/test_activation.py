@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Tests for unary activation elementwise ops.
 
 Covers L1 smoke correctness, multi-dtype coverage, and L4 edge cases.
@@ -104,14 +107,25 @@ class UnaryActivationTest(TestBase):
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self._gen_fn is not None:
             return (self._gen_fn(self.n_total, self.dtype),)
-        return (torch.randn(self.n_total, device="cuda", dtype=self.dtype),)
+        return (torch.randn(self.n_total, device=DEVICE, dtype=self.dtype),)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         return self._ref_fn(x)
 
 
 def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(n, device="cuda", dtype=dtype)
+    return torch.randn(n, device=DEVICE, dtype=dtype)
+
+
+def _selu_ref(x: torch.Tensor) -> torch.Tensor:
+    return (
+        1.0507009873554805
+        * torch.where(
+            x.float() > 0,
+            x.float(),
+            1.6732632423543772 * torch.expm1(x.float()),
+        )
+    ).to(x.dtype)
 
 
 def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
@@ -179,7 +193,7 @@ def test_mish(n_total: int, dtype: torch.dtype) -> None:
 @ActivationFixture
 def test_selu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SeluFwdOp
-    _make_activation_test(n_total, dtype, _randn, F.selu, SeluFwdOp)
+    _make_activation_test(n_total, dtype, _randn, _selu_ref, SeluFwdOp)
 
 
 @pytest.mark.smoke
@@ -201,7 +215,7 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SigmoidFwdOp
 
     def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+        x = torch.zeros(n, device=DEVICE, dtype=dtype)
         x[:n // 2] = -50.0
         x[n // 2:] = 50.0
         return x
@@ -215,7 +229,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import TanhFwdOp
 
     def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+        x = torch.zeros(n, device=DEVICE, dtype=dtype)
         x[:n // 2] = -50.0
         x[n // 2:] = 50.0
         return x
@@ -286,8 +300,8 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     H = n_total // C
     # Shape (1, C, H): batch=1, channels=C, spatial=H
     shape = (1, C, H)
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    weight = torch.randn(C, device="cuda", dtype=dtype).abs() * 0.1 + 0.01
+    x = torch.randn(shape, device=DEVICE, dtype=dtype)
+    weight = torch.randn(C, device=DEVICE, dtype=dtype).abs() * 0.1 + 0.01
     ref = F.prelu(x.float(), weight.float()).to(dtype)
 
     op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
@@ -310,8 +324,8 @@ def test_prelu_batch_dim() -> None:
     dtype = torch.float32
     shape = (2, 4, 8)
     C = 4
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
+    x = torch.randn(shape, device=DEVICE, dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device=DEVICE, dtype=dtype)
     ref = F.prelu(x, weight)
     op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
     out = op(x, weight)
@@ -331,8 +345,8 @@ def test_prelu_rejects_mismatched_shape_same_numel() -> None:
     shape = (2, 4, 8)
     C = 4
     op = PreluFwdOp(shape=shape, dtype=dtype, num_channels=C)
-    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
-    bad = torch.randn((2, 8, 4), device="cuda", dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device=DEVICE, dtype=dtype)
+    bad = torch.randn((2, 8, 4), device=DEVICE, dtype=dtype)
     with pytest.raises(ValueError, match=r"Expected input.shape"):
         op(bad, weight)
 

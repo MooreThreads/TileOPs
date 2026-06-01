@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 
 import pytest
@@ -113,14 +116,14 @@ def test_deltanet_decode_multi_step(
     op = DeltaNetDecodeOp(B, H, DK, DV, dtype, tune=tune)
     tols = _get_tolerances(dtype)
 
-    state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
-    state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
+    state_op = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
+    state_ref = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
 
     for _ in range(num_steps):
-        q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-        beta = torch.rand(B, H, device="cuda", dtype=dtype) * 0.5
+        q = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        k = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        v = torch.randn(B, H, DV, device=DEVICE, dtype=dtype) * 0.1
+        beta = torch.rand(B, H, device=DEVICE, dtype=dtype) * 0.5
 
         o_ref, state_ref = deltanet_decode_torch(q, k, v, beta, state_ref)
         o_ref = o_ref.to(dtype)

@@ -191,7 +191,7 @@ def _(
 
 
 class Conv1dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -633,7 +633,7 @@ def _(
     return torch.empty((n, out_h, out_w, c_out), dtype=inputs[0].dtype, device=inputs[0].device)
 
 class Conv2dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -783,7 +783,7 @@ class Conv2dKernel(Kernel):
 
 
 class Conv2d1x1Kernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -1130,7 +1130,7 @@ def _(
 
 
 class Conv3dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

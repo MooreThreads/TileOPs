@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import pytest
@@ -64,12 +67,12 @@ _MEAN_POOLING_BENCH_PARAMS = [
     pytest.param(2, 2048, 64, 128, 64, torch.float16, torch.float32, True, None, id="dense-batched"),
     pytest.param(
         1, 8192, 64, 128, 64, torch.float16, torch.float32, True,
-        torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device="cuda"),
+        torch.tensor([0, 2048, 4096, 6144, 8192], dtype=torch.int32, device=DEVICE),
         id="varlen-long",
     ),
     pytest.param(
         1, 1000, 64, 128, 32, torch.float16, torch.float32, True,
-        torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device="cuda"),
+        torch.tensor([0, 100, 300, 600, 1000], dtype=torch.int32, device=DEVICE),
         id="varlen-tail",
     ),
 ]
@@ -94,10 +97,10 @@ def test_mean_pooling_bench(batch_size: int, seq_len: int, heads: int, dim: int,
             0, (batch_size + 1) * seq_len,
             seq_len,
             dtype=torch.int32,
-            device='cuda',
+            device=DEVICE,
             requires_grad=False)
         chunks_per_bacth = (seq_len + chunk_size - 1) // chunk_size
-        indices = torch.empty((chunks_per_bacth, 2), dtype=torch.int32, device='cuda')
+        indices = torch.empty((chunks_per_bacth, 2), dtype=torch.int32, device=DEVICE)
         seq_num = batch_size
         use_offsets = 0
 

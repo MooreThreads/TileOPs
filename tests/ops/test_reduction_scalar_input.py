@@ -12,13 +12,17 @@ scalar input with default ``correction=1`` produces ``nan`` and emits a
 
 from __future__ import annotations
 
+from tileops.utils import get_backend_name, is_available
+
+DEVICE = get_backend_name()
+
 import warnings
 
 import pytest
 import torch
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required"
+    not is_available(), reason=f"{DEVICE.upper()} required"
 )
 
 
@@ -39,7 +43,7 @@ def _ids(prefix: str):
 def test_sum_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.tensor(3.5, dtype=torch.float32, device="cuda")
+    x = torch.tensor(3.5, dtype=torch.float32, device=DEVICE)
     op = SumFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.sum(x, dim=dim) if dim is not None else torch.sum(x)
@@ -52,7 +56,7 @@ def test_sum_scalar_input(dim) -> None:
 def test_mean_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import MeanFwdOp
 
-    x = torch.tensor(2.0, dtype=torch.float32, device="cuda")
+    x = torch.tensor(2.0, dtype=torch.float32, device=DEVICE)
     op = MeanFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.mean(x, dim=dim) if dim is not None else torch.mean(x)
@@ -65,7 +69,7 @@ def test_mean_scalar_input(dim) -> None:
 def test_amax_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
-    x = torch.tensor(-1.5, dtype=torch.float32, device="cuda")
+    x = torch.tensor(-1.5, dtype=torch.float32, device=DEVICE)
     op = AmaxFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.amax(x, dim=dim) if dim is not None else torch.amax(x)
@@ -78,7 +82,7 @@ def test_amax_scalar_input(dim) -> None:
 def test_amin_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import AminFwdOp
 
-    x = torch.tensor(4.25, dtype=torch.float32, device="cuda")
+    x = torch.tensor(4.25, dtype=torch.float32, device=DEVICE)
     op = AminFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.amin(x, dim=dim) if dim is not None else torch.amin(x)
@@ -91,7 +95,7 @@ def test_amin_scalar_input(dim) -> None:
 def test_prod_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import ProdFwdOp
 
-    x = torch.tensor(3.0, dtype=torch.float32, device="cuda")
+    x = torch.tensor(3.0, dtype=torch.float32, device=DEVICE)
     op = ProdFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.prod(x, dim=dim)
@@ -104,7 +108,7 @@ def test_prod_scalar_input(dim) -> None:
 def test_all_scalar_input(dim) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
-    x = torch.tensor(1.0, dtype=torch.float32, device="cuda")
+    x = torch.tensor(1.0, dtype=torch.float32, device=DEVICE)
     op = AllFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.all(x, dim=dim) if dim is not None else torch.all(x)
@@ -118,7 +122,7 @@ def test_all_scalar_input(dim) -> None:
 def test_any_scalar_input(dim) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
-    x = torch.tensor(0.0, dtype=torch.float32, device="cuda")
+    x = torch.tensor(0.0, dtype=torch.float32, device=DEVICE)
     op = AnyFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.any(x, dim=dim) if dim is not None else torch.any(x)
@@ -132,7 +136,7 @@ def test_any_scalar_input(dim) -> None:
 def test_count_nonzero_scalar_input(dim) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
-    x = torch.tensor(2.5, dtype=torch.float32, device="cuda")
+    x = torch.tensor(2.5, dtype=torch.float32, device=DEVICE)
     op = CountNonzeroFwdOp(dtype=torch.float32, dim=dim)
     y = op(x)
     ref = torch.count_nonzero(x, dim=dim) if dim is not None else torch.count_nonzero(x)
@@ -165,7 +169,7 @@ def _expect_var_warning() -> bool:
 def test_var_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
-    x = torch.tensor(1.5, dtype=torch.float32, device="cuda")
+    x = torch.tensor(1.5, dtype=torch.float32, device=DEVICE)
     op = VarFwdOp(dtype=torch.float32, dim=dim)
     expect_warn = _expect_var_warning()
     with warnings.catch_warnings(record=True) as op_caught:
@@ -184,7 +188,7 @@ def test_var_scalar_input(dim) -> None:
 def test_std_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
-    x = torch.tensor(-0.75, dtype=torch.float32, device="cuda")
+    x = torch.tensor(-0.75, dtype=torch.float32, device=DEVICE)
     op = StdFwdOp(dtype=torch.float32, dim=dim)
     expect_warn = _expect_var_warning()
     with warnings.catch_warnings(record=True) as op_caught:
@@ -203,7 +207,7 @@ def test_std_scalar_input(dim) -> None:
 def test_var_mean_scalar_input(dim) -> None:
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
-    x = torch.tensor(2.25, dtype=torch.float32, device="cuda")
+    x = torch.tensor(2.25, dtype=torch.float32, device=DEVICE)
     op = VarMeanFwdOp(dtype=torch.float32, dim=dim)
     expect_warn = _expect_var_warning()
     with warnings.catch_warnings(record=True) as op_caught:
@@ -237,7 +241,7 @@ def test_var_mean_scalar_input(dim) -> None:
 def test_sum_scalar_duplicate_dim_matches_torch(dim) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.tensor(1.5, dtype=torch.float32, device="cuda")
+    x = torch.tensor(1.5, dtype=torch.float32, device=DEVICE)
     with pytest.raises(RuntimeError, match="appears multiple times"):
         torch.sum(x, dim=list(dim))
     op = SumFwdOp(dtype=torch.float32, dim=list(dim))
@@ -255,7 +259,7 @@ def test_sum_scalar_duplicate_dim_matches_torch(dim) -> None:
 def test_var_scalar_requires_grad_preserves_grad_fn() -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
-    x = torch.tensor(0.5, dtype=torch.float32, device="cuda", requires_grad=True)
+    x = torch.tensor(0.5, dtype=torch.float32, device=DEVICE, requires_grad=True)
     op = VarFwdOp(dtype=torch.float32, dim=None)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -271,7 +275,7 @@ def test_var_scalar_requires_grad_preserves_grad_fn() -> None:
 def test_var_mean_scalar_requires_grad_preserves_grad_fn() -> None:
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
-    x = torch.tensor(1.25, dtype=torch.float32, device="cuda", requires_grad=True)
+    x = torch.tensor(1.25, dtype=torch.float32, device=DEVICE, requires_grad=True)
     op = VarMeanFwdOp(dtype=torch.float32, dim=None)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)

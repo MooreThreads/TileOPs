@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import pytest
@@ -34,7 +37,7 @@ class AvgPool1dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n, self.l_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.l_in, self.c_in, device=DEVICE, dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -138,7 +141,7 @@ class AvgPool2dBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(self.n, self.h_in, self.w_in, self.c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(self.n, self.h_in, self.w_in, self.c_in, device=DEVICE, dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -264,7 +267,7 @@ class AvgPool3dBenchCase:
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(
-            self.n, self.d_in, self.h_in, self.w_in, self.c_in, device="cuda", dtype=self.dtype
+            self.n, self.d_in, self.h_in, self.w_in, self.c_in, device=DEVICE, dtype=self.dtype
         ).contiguous()
         return (x,)
 

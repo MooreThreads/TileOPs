@@ -6,6 +6,7 @@ import torch
 
 from tileops.kernels.elementwise import NanToNumFwdKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from ._base import _OP_REGISTRY, _apply_fp8_post_cast, _validate_scalar_param_repr
@@ -95,8 +96,8 @@ class NanToNumFwdOp(Op):
         return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("Input"))
         if input.dtype != self.dtype:
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if input.numel() != self.N_total:

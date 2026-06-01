@@ -189,7 +189,7 @@ def _(batch, heads, heads_kv, seq_len, dim, is_causal, window_size_left,
 
 
 class GQASlidingWindowFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -449,7 +449,7 @@ def _(batch, heads, heads_kv, seq_len, dim, is_causal, window_size_left,
 
 
 class GQASlidingWindowFwdWgmmaPipelinedKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

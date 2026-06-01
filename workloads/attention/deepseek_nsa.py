@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional, Union
 
 import torch
@@ -39,37 +42,37 @@ class NsaFwdTest(WorkloadBase):
                 0,
             ).cuda().sort()[0])
 
-        perm_q = torch.randperm(self.c_seq_len, device="cuda")
-        perm_k = torch.randperm(self.c_seq_len, device="cuda")
-        perm_v = torch.randperm(self.c_seq_len, device="cuda")
+        perm_q = torch.randperm(self.c_seq_len, device=DEVICE)
+        perm_k = torch.randperm(self.c_seq_len, device=DEVICE)
+        perm_v = torch.randperm(self.c_seq_len, device=DEVICE)
         q = (
             torch.linspace(0, 1, steps=self.c_seq_len, dtype=self.dtype,
-                           device="cuda")[perm_q].view(1, self.c_seq_len, 1, 1).expand(
+                           device=DEVICE)[perm_q].view(1, self.c_seq_len, 1, 1).expand(
                                1, self.c_seq_len, self.heads,
                                self.dim).clone().requires_grad_(True))
         k = (
             torch.linspace(0, 1, steps=self.c_seq_len, dtype=self.dtype,
-                           device="cuda")[perm_k].view(1, self.c_seq_len, 1, 1).expand(
+                           device=DEVICE)[perm_k].view(1, self.c_seq_len, 1, 1).expand(
                                1, self.c_seq_len, self.head_kv,
                                self.dim).clone().requires_grad_(True))
         v = (
             torch.linspace(0, 1, steps=self.c_seq_len, dtype=self.dtype,
-                           device="cuda")[perm_v].view(1, self.c_seq_len, 1, 1).expand(
+                           device=DEVICE)[perm_v].view(1, self.c_seq_len, 1, 1).expand(
                                1, self.c_seq_len, self.head_kv,
                                self.dim).clone().requires_grad_(True))
         self.o_slc = torch.empty((self.batch, self.c_seq_len, self.heads, self.dim),
                                  dtype=self.dtype,
-                                 device="cuda")
+                                 device=DEVICE)
         self.lse_slc = torch.empty((self.batch, self.c_seq_len, self.heads, self.dim),
                                    dtype=torch.float,
-                                   device="cuda")
+                                   device=DEVICE)
 
         self.g_slc = torch.ones((self.batch, self.c_seq_len, self.heads),
                                 dtype=self.dtype,
-                                device="cuda").requires_grad_(True)
+                                device=DEVICE).requires_grad_(True)
         self.g_swa = torch.ones((self.batch, self.c_seq_len, self.heads),
                                 dtype=self.dtype,
-                                device="cuda").requires_grad_(True)
+                                device=DEVICE).requires_grad_(True)
 
         token_indices = prepare_token_indices(offsets)
         token_indices_list = token_indices.tolist()
@@ -77,7 +80,7 @@ class NsaFwdTest(WorkloadBase):
             (1, self.c_seq_len, self.head_kv, self.selected_blocks),
             self.c_seq_len,
             dtype=torch.int32,
-            device="cuda",
+            device=DEVICE,
         )
 
         for i in range(self.c_seq_len):
@@ -92,7 +95,7 @@ class NsaFwdTest(WorkloadBase):
             self.selected_blocks + 1,
             (1, self.c_seq_len, self.head_kv),
             dtype=torch.int32,
-            device="cuda",
+            device=DEVICE,
         )
         return (
             q.squeeze(0),

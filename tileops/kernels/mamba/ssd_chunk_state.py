@@ -345,7 +345,7 @@ class SSDChunkStateFwdKernel(Kernel):
     Output:  out  (batch, num_chunks, n_heads, d_head, d_state), float32
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

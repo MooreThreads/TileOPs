@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -14,7 +17,7 @@ class FusedTopKTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         torch.manual_seed(42)
-        return (torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda"),)
+        return (torch.randn(self.num_tokens, self.num_experts, dtype=self.dtype, device=DEVICE),)
 
 
 class MoePermuteTest(WorkloadBase):
@@ -28,12 +31,12 @@ class MoePermuteTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         hidden_states = torch.randn(
-            self.total_tokens, self.hidden_size, dtype=self.dtype, device="cuda"
+            self.total_tokens, self.hidden_size, dtype=self.dtype, device=DEVICE
         )
         topk_ids = torch.randint(
             0, self.num_experts,
             (self.total_tokens, self.top_k),
-            dtype=torch.int32, device="cuda",
+            dtype=torch.int32, device=DEVICE,
         )
         return hidden_states, topk_ids
 
@@ -50,7 +53,7 @@ class MoePermuteAlignTest(WorkloadBase):
         topk_ids = torch.randint(
             0, self.num_experts,
             (self.total_tokens, self.top_k),
-            dtype=torch.int32, device="cuda",
+            dtype=torch.int32, device=DEVICE,
         )
         return (topk_ids,)
 
@@ -67,11 +70,11 @@ class MoeUnpermuteTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         numel = self.total_tokens * self.top_k
-        mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device="cuda")
+        mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device=DEVICE)
         # fwd_idx: each flat_idx maps to a padded_slot in [0, padded_batch_sum)
         # simulate a valid mapping: random shuffle of [0, numel)
-        fwd_idx = torch.randperm(numel, dtype=torch.int32, device="cuda")
+        fwd_idx = torch.randperm(numel, dtype=torch.int32, device=DEVICE)
         topk_weights = torch.rand(
-            self.total_tokens, self.top_k, dtype=torch.float32, device="cuda"
+            self.total_tokens, self.top_k, dtype=torch.float32, device=DEVICE
         )
         return mm2_pad, fwd_idx, topk_weights

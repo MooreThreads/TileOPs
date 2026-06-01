@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Tests for MoEExpertsNopadFwdOp/PaddedFwdOp and supporting ABCs."""
 import pytest
 import torch
@@ -82,11 +85,11 @@ class TestMoEPrepareAndFinalizeNoDPEP:
 def moe_tensors(request):
     T, H, F, E, K = 16, 64, 32, 4, 2
     dtype = request.param
-    hidden = torch.randn(T, H, dtype=dtype, device="cuda")
-    w1 = torch.randn(E, 2 * F, H, dtype=dtype, device="cuda")
-    w2 = torch.randn(E, H, F, dtype=dtype, device="cuda")
-    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
-    ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+    hidden = torch.randn(T, H, dtype=dtype, device=DEVICE)
+    w1 = torch.randn(E, 2 * F, H, dtype=dtype, device=DEVICE)
+    w2 = torch.randn(E, H, F, dtype=dtype, device=DEVICE)
+    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device=DEVICE), dim=-1)
+    ids = torch.randint(0, E, (T, K), dtype=torch.int32, device=DEVICE)
     return dict(T=T, H=H, F=F, E=E, K=K, dtype=dtype,
                 hidden=hidden, w1=w1, w2=w2, weights=weights, ids=ids)
 
@@ -132,9 +135,9 @@ class TestMoEExpertsNopadFwdOp:
 
         ref_out = ref.forward(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
-        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, device="cuda")
-        ws2 = torch.empty(0, device="cuda")
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device=DEVICE)
+        ws1 = torch.empty(0, device=DEVICE)
+        ws2 = torch.empty(0, device=DEVICE)
         new.apply(output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
                   d["E"], None, ws1, ws2)
 
@@ -158,9 +161,9 @@ class TestMoEExpertsPaddedFwdOp:
 
         ref_out = ref.forward(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
-        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, device="cuda")
-        ws2 = torch.empty(0, device="cuda")
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device=DEVICE)
+        ws1 = torch.empty(0, device=DEVICE)
+        ws2 = torch.empty(0, device=DEVICE)
         new.apply(output, d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"],
                   d["E"], None, ws1, ws2)
 

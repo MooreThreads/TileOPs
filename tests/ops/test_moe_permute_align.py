@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Op-level tests for MoePermuteAlignFwdOp.
 
 Verifies that the op correctly routes tokens to experts and pads each
@@ -210,7 +213,7 @@ def test_permute_align_sentinel_padding() -> None:
     total_tokens, top_k, num_experts, block_size = 3, 2, 4, 4
     numel = total_tokens * top_k
     topk_ids = torch.randint(0, num_experts, (total_tokens, top_k),
-                              dtype=torch.int32, device="cuda")
+                              dtype=torch.int32, device=DEVICE)
 
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
     sorted_ids, _, num_post_pad = op(topk_ids)
@@ -227,7 +230,7 @@ def test_permute_align_expert_ids_range() -> None:
     """All expert_ids must be in [0, num_experts)."""
     total_tokens, top_k, num_experts, block_size = 16, 4, 8, 16
     topk_ids = torch.randint(0, num_experts, (total_tokens, top_k),
-                              dtype=torch.int32, device="cuda")
+                              dtype=torch.int32, device=DEVICE)
 
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
     _, expert_ids, num_post_pad = op(topk_ids)
@@ -251,7 +254,7 @@ def test_permute_align_skewed_distribution() -> None:
     total_tokens, top_k, num_experts, block_size = 32, 4, 8, 16
     numel = total_tokens * top_k
     # All tokens go to expert 0
-    topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device="cuda")
+    topk_ids = torch.zeros((total_tokens, top_k), dtype=torch.int32, device=DEVICE)
 
     op = MoePermuteAlignFwdOp(total_tokens, top_k, num_experts, block_size)
     outputs = tuple(op(topk_ids))

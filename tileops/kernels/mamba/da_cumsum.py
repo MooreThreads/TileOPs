@@ -183,7 +183,7 @@ class DaCumsumFwdKernel(Kernel):
         dA_cumsum (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

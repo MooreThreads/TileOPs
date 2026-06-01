@@ -25,7 +25,10 @@ from tileops.ops.elementwise import (
     coalesce_broadcast_dims,
 )
 from tileops.ops.elementwise.arithmetic import _DIV_KERNEL_BY_ROUNDING_MODE
+from tileops.utils import get_backend_name, is_available
 from workloads.binary_arith import AddSameShapeTest as _AddSameShapeTestWorkload
+
+DEVICE = get_backend_name()
 
 
 class AddSameShapeTest(_AddSameShapeTestWorkload, TestBase):
@@ -149,8 +152,8 @@ class AddBroadcastTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.a_shape, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.b_shape, dtype=self.dtype, device="cuda")
+        a = torch.randn(self.a_shape, dtype=self.dtype, device=DEVICE)
+        b = torch.randn(self.b_shape, dtype=self.dtype, device=DEVICE)
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -182,34 +185,34 @@ _BROADCAST_PATTERNS = [
 # (op_name, op_cls, ref_fn, gen_a, gen_b)
 _ARITH_BROADCAST_OPS = [
     ("sub", SubFwdOp, lambda a, b: (a.float() - b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE)),
     ("mul", MulFwdOp, lambda a, b: (a.float() * b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE)),
     ("div", DivFwdOp, lambda a, b: (a.float() / b.float()).to(a.dtype),
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) + 0.1,
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) + 0.1),
     ("remainder", RemainderFwdOp,
      lambda a, b: a - torch.floor(a.float() / b.float()).to(a.dtype) * b,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) + 0.1,
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) + 0.1),
     ("pow", PowFwdOp, lambda a, b: torch.pow(a.float(), b.float()).to(a.dtype),
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.5,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") * 2.0),
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) + 0.5,
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) * 2.0),
     ("floor_divide", FloorDivideFwdOp,
      lambda a, b: torch.floor(a.float() / b.float()).to(a.dtype),
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1,
-     lambda s, d: torch.rand(*s, dtype=d, device="cuda") + 0.1),
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) + 0.1,
+     lambda s, d: torch.rand(*s, dtype=d, device=DEVICE) + 0.1),
     ("lerp", LerpFwdOp, lambda a, b: torch.lerp(a.float(), b.float(), 0.5).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE)),
     ("maximum", MaximumFwdOp, lambda a, b: torch.maximum(a.float(), b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE)),
     ("minimum", MinimumFwdOp, lambda a, b: torch.minimum(a.float(), b.float()).to(a.dtype),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda"),
-     lambda s, d: torch.randn(*s, dtype=d, device="cuda")),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE),
+     lambda s, d: torch.randn(*s, dtype=d, device=DEVICE)),
 ]
 
 
@@ -275,8 +278,8 @@ class BinarySameShapeTest(TestBase):
         self.ref_fn = ref_fn
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        a = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE)
+        b = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE)
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -292,8 +295,8 @@ class BinaryPositiveTest(TestBase):
         self.ref_fn = ref_fn
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        a = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) + 0.1
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -395,8 +398,8 @@ class RemainderTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        a = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) + 0.1
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -437,8 +440,8 @@ class PowPositiveTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.5
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") * 2.0
+        a = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) + 0.5
+        b = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) * 2.0
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -477,8 +480,8 @@ class FloorDivideTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
-        b = torch.rand(self.n_total, dtype=self.dtype, device="cuda") + 0.1
+        a = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) + 0.1
+        b = torch.rand(self.n_total, dtype=self.dtype, device=DEVICE) + 0.1
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -519,8 +522,8 @@ class LerpTest(TestBase):
         self.weight = weight
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda")
+        a = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE)
+        b = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE)
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -612,8 +615,8 @@ class MaxMinNanFixture(FixtureBase):
 def test_maximum_nan_propagation(dtype: torch.dtype) -> None:
     """Verify maximum propagates NaN when either operand is NaN."""
     nan = float("nan")
-    a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
-    b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
+    a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device=DEVICE)
+    b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device=DEVICE)
     shape = (4,)
     op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
@@ -634,8 +637,8 @@ def test_maximum_nan_propagation(dtype: torch.dtype) -> None:
 def test_minimum_nan_propagation(dtype: torch.dtype) -> None:
     """Verify minimum propagates NaN when either operand is NaN."""
     nan = float("nan")
-    a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device="cuda")
-    b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device="cuda")
+    a = torch.tensor([nan, 1.0, nan, 2.0], dtype=dtype, device=DEVICE)
+    b = torch.tensor([3.0, nan, nan, 1.0], dtype=dtype, device=DEVICE)
     shape = (4,)
     op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
@@ -670,8 +673,8 @@ class SignedZeroFixture(FixtureBase):
 @SignedZeroFixture
 def test_maximum_signed_zero(dtype: torch.dtype) -> None:
     """maximum(+0.0, -0.0) must return +0.0 (IEEE / PyTorch semantics)."""
-    pos_zero = torch.tensor(0.0, dtype=dtype, device="cuda")
-    neg_zero = torch.tensor(-0.0, dtype=dtype, device="cuda")
+    pos_zero = torch.tensor(0.0, dtype=dtype, device=DEVICE)
+    neg_zero = torch.tensor(-0.0, dtype=dtype, device=DEVICE)
 
     # Both orderings: (+0, -0) and (-0, +0)
     a = torch.stack([pos_zero, neg_zero, pos_zero, neg_zero])
@@ -695,8 +698,8 @@ def test_maximum_signed_zero(dtype: torch.dtype) -> None:
 @SignedZeroFixture
 def test_minimum_signed_zero(dtype: torch.dtype) -> None:
     """minimum(-0.0, +0.0) must return -0.0 (IEEE / PyTorch semantics)."""
-    pos_zero = torch.tensor(0.0, dtype=dtype, device="cuda")
-    neg_zero = torch.tensor(-0.0, dtype=dtype, device="cuda")
+    pos_zero = torch.tensor(0.0, dtype=dtype, device=DEVICE)
+    neg_zero = torch.tensor(-0.0, dtype=dtype, device=DEVICE)
 
     # Both orderings: (-0, +0) and (+0, -0)
     a = torch.stack([neg_zero, pos_zero, neg_zero, pos_zero])
@@ -722,8 +725,8 @@ def test_maximum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     """Signed-zero fix must not regress NaN propagation."""
     nan = float("nan")
     # Mix of NaN pairs and non-NaN signed-zero pairs so both code paths execute
-    a = torch.tensor([nan, 1.0, -0.0, 0.0, nan, 3.0], dtype=dtype, device="cuda")
-    b = torch.tensor([1.0, nan, 0.0, -0.0, -0.0, 2.0], dtype=dtype, device="cuda")
+    a = torch.tensor([nan, 1.0, -0.0, 0.0, nan, 3.0], dtype=dtype, device=DEVICE)
+    b = torch.tensor([1.0, nan, 0.0, -0.0, -0.0, 2.0], dtype=dtype, device=DEVICE)
     shape = (6,)
     op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
@@ -748,8 +751,8 @@ def test_minimum_signed_zero_with_nan(dtype: torch.dtype) -> None:
     """Signed-zero fix must not regress NaN propagation."""
     nan = float("nan")
     # Mix of NaN pairs and non-NaN signed-zero pairs so both code paths execute
-    a = torch.tensor([nan, -0.0, 0.0, 1.0, nan, 2.0], dtype=dtype, device="cuda")
-    b = torch.tensor([1.0, nan, -0.0, 0.0, 0.0, 3.0], dtype=dtype, device="cuda")
+    a = torch.tensor([nan, -0.0, 0.0, 1.0, nan, 2.0], dtype=dtype, device=DEVICE)
+    b = torch.tensor([1.0, nan, -0.0, 0.0, 0.0, 3.0], dtype=dtype, device=DEVICE)
     shape = (6,)
     op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
@@ -782,8 +785,8 @@ class EdgeCaseFixture(FixtureBase):
                 DivFwdOp,
                 lambda a, b: a / b,
                 lambda n, d: (
-                    torch.randn(n, dtype=d, device="cuda"),
-                    torch.rand(n, dtype=d, device="cuda") + 0.1,
+                    torch.randn(n, dtype=d, device=DEVICE),
+                    torch.rand(n, dtype=d, device=DEVICE) + 0.1,
                 ),
                 marks=pytest.mark.smoke,
             ),
@@ -792,8 +795,8 @@ class EdgeCaseFixture(FixtureBase):
                 RemainderFwdOp,
                 lambda a, b: a % b,
                 lambda n, d: (
-                    torch.rand(n, dtype=d, device="cuda") + 0.1,
-                    torch.rand(n, dtype=d, device="cuda") + 0.1,
+                    torch.rand(n, dtype=d, device=DEVICE) + 0.1,
+                    torch.rand(n, dtype=d, device=DEVICE) + 0.1,
                 ),
                 marks=pytest.mark.full,
             ),
@@ -802,8 +805,8 @@ class EdgeCaseFixture(FixtureBase):
                 FloorDivideFwdOp,
                 lambda a, b: torch.floor(a / b),
                 lambda n, d: (
-                    torch.rand(n, dtype=d, device="cuda") + 0.1,
-                    torch.rand(n, dtype=d, device="cuda") + 0.1,
+                    torch.rand(n, dtype=d, device=DEVICE) + 0.1,
+                    torch.rand(n, dtype=d, device=DEVICE) + 0.1,
                 ),
                 marks=pytest.mark.full,
             ),
@@ -812,8 +815,8 @@ class EdgeCaseFixture(FixtureBase):
                 PowFwdOp,
                 lambda a, b: torch.pow(a, b),
                 lambda n, d: (
-                    torch.rand(n, dtype=d, device="cuda") + 0.5,
-                    torch.rand(n, dtype=d, device="cuda") * 2.0,
+                    torch.rand(n, dtype=d, device=DEVICE) + 0.5,
+                    torch.rand(n, dtype=d, device=DEVICE) * 2.0,
                 ),
                 marks=pytest.mark.full,
             ),
@@ -822,8 +825,8 @@ class EdgeCaseFixture(FixtureBase):
                 MaximumFwdOp,
                 lambda a, b: torch.maximum(a, b),
                 lambda n, d: (
-                    torch.randn(n, dtype=d, device="cuda"),
-                    torch.randn(n, dtype=d, device="cuda"),
+                    torch.randn(n, dtype=d, device=DEVICE),
+                    torch.randn(n, dtype=d, device=DEVICE),
                 ),
                 marks=pytest.mark.full,
             ),
@@ -874,8 +877,8 @@ def test_float_only_binary_ops_reject_integer_dtype(op_cls, dtype: torch.dtype) 
 def test_binary_op_rejects_runtime_dtype_mismatch() -> None:
     """Runtime inputs should fail fast instead of reaching backend lowering."""
     op = SubFwdOp(a_shape=(16,), b_shape=(16,), dtype=torch.float16)
-    a = torch.randn(16, device="cuda", dtype=torch.float32)
-    b = torch.randn(16, device="cuda", dtype=torch.float16)
+    a = torch.randn(16, device=DEVICE, dtype=torch.float32)
+    b = torch.randn(16, device=DEVICE, dtype=torch.float16)
     with pytest.raises(ValueError, match="Expected input.dtype"):
         op(a, b)
 
@@ -938,8 +941,8 @@ class OptimizedMaxMinFixture(FixtureBase):
 def test_maximum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
     """Optimized maximum matches torch.maximum on large DNN-realistic shapes."""
     shape = (n_total,)
-    a = torch.randn(*shape, device="cuda", dtype=dtype)
-    b = torch.randn(*shape, device="cuda", dtype=dtype)
+    a = torch.randn(*shape, device=DEVICE, dtype=dtype)
+    b = torch.randn(*shape, device=DEVICE, dtype=dtype)
     op = MaximumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.maximum(a, b)
     with torch.no_grad():
@@ -951,8 +954,8 @@ def test_maximum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
 def test_minimum_optimized_large(n_total: int, dtype: torch.dtype) -> None:
     """Optimized minimum matches torch.minimum on large DNN-realistic shapes."""
     shape = (n_total,)
-    a = torch.randn(*shape, device="cuda", dtype=dtype)
-    b = torch.randn(*shape, device="cuda", dtype=dtype)
+    a = torch.randn(*shape, device=DEVICE, dtype=dtype)
+    b = torch.randn(*shape, device=DEVICE, dtype=dtype)
     op = MinimumFwdOp(a_shape=shape, b_shape=shape, dtype=dtype)
     ref = torch.minimum(a, b)
     with torch.no_grad():
@@ -989,8 +992,8 @@ def test_register_copy_downgrades_on_broadcast() -> None:
         assert op.kernel.strategy == "explicit_parallel", (
             f"{op_cls.__name__} did not downgrade register_copy for broadcast inputs"
         )
-        a = torch.randn(*a_shape, device="cuda", dtype=dtype)
-        b = torch.randn(*b_shape, device="cuda", dtype=dtype)
+        a = torch.randn(*a_shape, device=DEVICE, dtype=dtype)
+        b = torch.randn(*b_shape, device=DEVICE, dtype=dtype)
         ref = ref_fn(a, b)
         with torch.no_grad():
             out = op(a, b)
@@ -1028,8 +1031,8 @@ def test_binary_tune_true_does_not_crash() -> None:
             f"caught: {[str(w.message) for w in caught]}"
         )
         # Must still produce correct results
-        a = torch.randn(*shape, device="cuda", dtype=dtype)
-        b = torch.randn(*shape, device="cuda", dtype=dtype)
+        a = torch.randn(*shape, device=DEVICE, dtype=dtype)
+        b = torch.randn(*shape, device=DEVICE, dtype=dtype)
         with torch.no_grad():
             out = op(a, b)
         assert out.shape == a.shape
@@ -1055,14 +1058,14 @@ def _lerp_tol(dtype: torch.dtype) -> dict:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize("dtype", _LERP_TENSOR_DTYPES)
 def test_lerp_tensor_same_shape(dtype: torch.dtype) -> None:
     """LerpTensorFwdOp matches torch.lerp on same-shape inputs."""
     shape = (4, 8)
-    a = torch.randn(shape, device="cuda", dtype=dtype)
-    b = torch.randn(shape, device="cuda", dtype=dtype)
-    w = torch.rand(shape, device="cuda", dtype=dtype)
+    a = torch.randn(shape, device=DEVICE, dtype=dtype)
+    b = torch.randn(shape, device=DEVICE, dtype=dtype)
+    w = torch.rand(shape, device=DEVICE, dtype=dtype)
     op = LerpTensorFwdOp(input=shape, end=shape, weight=shape, dtype=dtype)
     out = op(a, b, w)
     ref = torch.lerp(a, b, w)
@@ -1070,14 +1073,14 @@ def test_lerp_tensor_same_shape(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 def test_lerp_tensor_broadcast() -> None:
     """LerpTensorFwdOp supports the manifest's 3-way broadcast rule."""
     a_shape, b_shape, w_shape = (3, 1), (1, 4), (3, 4)
     dtype = torch.float32
-    a = torch.randn(a_shape, device="cuda", dtype=dtype)
-    b = torch.randn(b_shape, device="cuda", dtype=dtype)
-    w = torch.rand(w_shape, device="cuda", dtype=dtype)
+    a = torch.randn(a_shape, device=DEVICE, dtype=dtype)
+    b = torch.randn(b_shape, device=DEVICE, dtype=dtype)
+    w = torch.rand(w_shape, device=DEVICE, dtype=dtype)
     op = LerpTensorFwdOp(
         input=a_shape, end=b_shape, weight=w_shape, dtype=dtype,
     )
@@ -1101,16 +1104,16 @@ def test_lerp_tensor_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 def test_lerp_tensor_dtype_mismatch_rejected() -> None:
     """forward() must reject inputs whose dtype disagrees with __init__."""
     shape = (4, 8)
     op = LerpTensorFwdOp(
         input=shape, end=shape, weight=shape, dtype=torch.float32,
     )
-    a = torch.randn(shape, device="cuda", dtype=torch.float32)
-    b = torch.randn(shape, device="cuda", dtype=torch.float32)
-    w_bad = torch.rand(shape, device="cuda", dtype=torch.float16)
+    a = torch.randn(shape, device=DEVICE, dtype=torch.float32)
+    b = torch.randn(shape, device=DEVICE, dtype=torch.float32)
+    w_bad = torch.rand(shape, device=DEVICE, dtype=torch.float16)
     with pytest.raises(ValueError, match="weight.dtype"):
         op(a, b, w_bad)
 
@@ -1125,7 +1128,7 @@ _DIV_ROUNDING_MODES = ["trunc", "floor"]
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize("rounding_mode", _DIV_ROUNDING_MODES)
 @pytest.mark.parametrize("dtype", _DIV_ROUNDING_DTYPES)
 def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None:
@@ -1133,8 +1136,8 @@ def test_div_rounding_mode_eager(rounding_mode: str, dtype: torch.dtype) -> None
     shape = (64, 256)
     # Both positive and negative quotients naturally arise from randn inputs;
     # clamp ``b`` away from zero so division is well-defined.
-    a = torch.randn(*shape, dtype=dtype, device="cuda") * 5.0
-    b = torch.randn(*shape, dtype=dtype, device="cuda") * 2.0 + 1.0
+    a = torch.randn(*shape, dtype=dtype, device=DEVICE) * 5.0
+    b = torch.randn(*shape, dtype=dtype, device=DEVICE) * 2.0 + 1.0
     b = torch.where(b.abs() < 0.5, torch.full_like(b, 1.0), b)
     op = DivFwdOp(
         a_shape=shape, b_shape=shape, dtype=dtype, rounding_mode=rounding_mode,
@@ -1188,8 +1191,8 @@ def _gen_int_pair(n: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tenso
         lo, hi = -16, 16
     else:
         lo, hi = -64, 64
-    a = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
-    b = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    a = torch.randint(lo, hi, (n,), dtype=dtype, device=DEVICE)
+    b = torch.randint(lo, hi, (n,), dtype=dtype, device=DEVICE)
     return a, b
 
 
@@ -1289,8 +1292,8 @@ def test_binary_arith_bool_dtype(op_cls, ref_fn) -> None:
     """
     n = 4_096
     shape = (n,)
-    a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-    b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+    a = torch.randint(0, 2, (n,), device=DEVICE).to(torch.bool)
+    b = torch.randint(0, 2, (n,), device=DEVICE).to(torch.bool)
     op = op_cls(a_shape=shape, b_shape=shape, dtype=torch.bool)
     ref = ref_fn(a, b)
     with torch.no_grad():
@@ -1308,10 +1311,10 @@ def test_add_bool_is_or_not_xor() -> None:
     this test pins the contract on a deterministic input.
     """
     shape = (4,)
-    a = torch.tensor([True, True, False, False], device="cuda")
-    b = torch.tensor([True, False, True, False], device="cuda")
+    a = torch.tensor([True, True, False, False], device=DEVICE)
+    b = torch.tensor([True, False, True, False], device=DEVICE)
     op = AddFwdOp(a_shape=shape, b_shape=shape, dtype=torch.bool)
-    expected = torch.tensor([True, True, True, False], device="cuda")
+    expected = torch.tensor([True, True, True, False], device=DEVICE)
     with torch.no_grad():
         out = op(a, b)
     _exact_compare(out, expected)
@@ -1358,8 +1361,8 @@ def test_add_bool_broadcast() -> None:
     strategy and still matches torch.logical_or semantics."""
     a_shape = (8, 16)
     b_shape = (1, 16)
-    a = torch.randint(0, 2, a_shape, device="cuda").to(torch.bool)
-    b = torch.randint(0, 2, b_shape, device="cuda").to(torch.bool)
+    a = torch.randint(0, 2, a_shape, device=DEVICE).to(torch.bool)
+    b = torch.randint(0, 2, b_shape, device=DEVICE).to(torch.bool)
     op = AddFwdOp(a_shape=a_shape, b_shape=b_shape, dtype=torch.bool)
     ref = torch.logical_or(a, b)
     with torch.no_grad():

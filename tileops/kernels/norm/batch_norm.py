@@ -209,7 +209,7 @@ class BatchNormFwdTrainKernel(Kernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -352,7 +352,7 @@ class BatchNormFwdInferKernel(Kernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -546,7 +546,7 @@ class BatchNormBwdKernel(Kernel):
         config: Optional tile config dict.
         tune: If True, autotune tile config.
     """
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

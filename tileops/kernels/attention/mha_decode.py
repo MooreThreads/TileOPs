@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import functools
 import itertools
 from typing import Optional
@@ -376,7 +379,7 @@ def _(batch: int, heads: int, seqlen_q: int, seqlen_kv: int, real_seqlen_kv: int
 
 
 class MHADecodeKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch,
@@ -425,7 +428,7 @@ class MHADecodeKernel(Kernel):
                     # split_length: fill with evenly divided lengths
                     num_split = param.shape[0]
                     base = seqlen_kv // num_split
-                    t = torch.full((num_split,), base, dtype=torch.int32, device="cuda")
+                    t = torch.full((num_split,), base, dtype=torch.int32, device=DEVICE)
                     t[-1] += seqlen_kv % num_split
                     inputs.append(t)
                 else:

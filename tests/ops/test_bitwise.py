@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Tests for bitwise elementwise ops (bitwise_and, bitwise_or, bitwise_xor, bitwise_not).
 
 Bitwise ops operate on integer inputs. We use int32 tensors for testing
@@ -37,8 +40,8 @@ class BitwiseTest(TestBase):
         self.ref_fn = ref_fn
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
-        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device="cuda")
+        a = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=DEVICE)
+        b = torch.randint(-1000, 1000, (self.n_total,), dtype=torch.int32, device=DEVICE)
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -144,8 +147,8 @@ class BitwiseBroadcastFixture(FixtureBase):
 def test_bitwise_broadcast(
     op_name, op_cls, ref_fn, a_shape, b_shape,
 ) -> None:
-    a = torch.randint(-1000, 1000, a_shape, dtype=torch.int32, device="cuda")
-    b = torch.randint(-1000, 1000, b_shape, dtype=torch.int32, device="cuda")
+    a = torch.randint(-1000, 1000, a_shape, dtype=torch.int32, device=DEVICE)
+    b = torch.randint(-1000, 1000, b_shape, dtype=torch.int32, device=DEVICE)
     op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=torch.int32)
     ref = ref_fn(a, b)
     with torch.no_grad():
@@ -182,11 +185,11 @@ class BitwiseNotTest(TestBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device="cuda") > 0.5
+            x = torch.rand(self.n_total, device=DEVICE) > 0.5
         elif self.dtype == torch.uint8:
-            x = torch.randint(0, 256, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(0, 256, (self.n_total,), device=DEVICE, dtype=self.dtype)
         else:
-            x = torch.randint(-128, 128, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(-128, 128, (self.n_total,), device=DEVICE, dtype=self.dtype)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:

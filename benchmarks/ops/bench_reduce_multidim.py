@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for multi-dim reduction paths across all six reduction families.
 
 Covers 3D tensors with multi-dim and non-last-axis dim specifications,
@@ -92,7 +95,7 @@ class ReduceMultidimTest(WorkloadBase):
         self.op_kind = op_kind
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> object:
@@ -202,7 +205,7 @@ class ArgreduceMultidimTest(WorkloadBase):
         self.op_kind = op_kind
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -300,11 +303,11 @@ class LogicalReduceMultidimTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.dtype in (torch.int32, torch.int64):
-            x = torch.randint(-5, 6, self.shape, dtype=self.dtype, device="cuda")
+            x = torch.randint(-5, 6, self.shape, dtype=self.dtype, device=DEVICE)
         elif self.dtype == torch.bool:
-            x = torch.randint(0, 2, self.shape, dtype=torch.bool, device="cuda")
+            x = torch.randint(0, 2, self.shape, dtype=torch.bool, device=DEVICE)
         else:
-            x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+            x = torch.randn(*self.shape, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -414,7 +417,7 @@ class VectorNormMultidimTest(WorkloadBase):
         self.op_kind = op_kind
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -511,9 +514,9 @@ class CumulativeMultidimTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.op_kind == "cumprod":
-            x = torch.rand(*self.shape, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+            x = torch.rand(*self.shape, dtype=self.dtype, device=DEVICE) * 0.01 + 0.99
         else:
-            x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+            x = torch.randn(*self.shape, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -622,7 +625,7 @@ class LogSumExpMultidimTest(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:

@@ -1,3 +1,19 @@
+from .backend import (
+    backend_tensor_error,
+    current_device,
+    empty_cache,
+    get_backend_name,
+    get_compute_capability,
+    get_compute_version,
+    get_device_name,
+    get_profiler_activity,
+    get_profiler_device_type,
+    get_tilelang_target,
+    is_available,
+    is_backend_tensor,
+    manual_seed_all,
+    synchronize,
+)
 from .utils import (
     dtype2str,
     ensure_contiguous,
@@ -10,12 +26,26 @@ from .utils import (
 )
 
 __all__ = [
+    "backend_tensor_error",
+    "current_device",
     "dtype2str",
+    "empty_cache",
     "ensure_contiguous",
+    "get_backend_name",
+    "get_compute_capability",
+    "get_compute_version",
+    "get_device_name",
+    "get_profiler_activity",
+    "get_profiler_device_type",
     "get_sm_version",
     "is_h200",
+    "get_tilelang_target",
     "is_hopper",
+    "is_available",
+    "is_backend_tensor",
+    "manual_seed_all",
     "reduce_on_dim0",
     "str2dtype",
+    "synchronize",
     "zero_pad",
 ]

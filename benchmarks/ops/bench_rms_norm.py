@@ -49,7 +49,7 @@ def _manifest_params():
         label = w.get("label", f"{m}x{n}")
         for dtype_str in w["dtypes"]:
             dtype = getattr(torch, dtype_str)
-            params.append(pytest.param(m, n, dtype, True,
+            params.append(pytest.param(m, n, dtype, False,
                                        id=f"{label}-{dtype_str}"))
     return params
 
@@ -60,6 +60,32 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     inputs = test.gen_inputs()
 
     op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype, tune=tune)
+    bm = RMSNormBenchmark(test, op)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+    result_bl = bm.profile(test.ref_program, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch-ref")
+
+
+@pytest.mark.parametrize(
+    "m, n, dtype, tune",
+    [
+        pytest.param(256, 1024, torch.float16, False, id="musa-smoke-fp16"),
+        pytest.param(256, 1024, torch.bfloat16, False, id="musa-smoke-bf16"),
+    ],
+)
+def test_rms_norm_bench_musa_smoke(
+    m: int,
+    n: int,
+    dtype: torch.dtype,
+    tune: bool,
+) -> None:
+    """Small benchmark proof cases for MUSA bring-up."""
+    test = _RMSNormTestBaseline(m, n, dtype)
+    inputs = test.gen_inputs()
+
+    op = RMSNormFwdOp(M=m, N=n, dtype=dtype, tune=tune)
     bm = RMSNormBenchmark(test, op)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")

@@ -10,11 +10,13 @@ import pytest
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import get_backend_name, is_available, get_sm_version
+
+DEVICE = get_backend_name()
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="install_kernel_map tests query CUDA arch via get_sm_version()",
+    not is_available(),
+    reason=f"install_kernel_map tests query {DEVICE.upper()} arch via get_sm_version()",
 )
 
 
@@ -40,7 +42,7 @@ def test_install_kernel_map_user_supplied_incompatible_raises_valueerror() -> No
     class IncompatibleKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = incompatible_archs
 
-    with pytest.raises(ValueError, match="not supported on architecture"):
+    with pytest.raises(ValueError, match="not supported on .*architecture"):
         cls(N_total=8, dtype=torch.float16, kernel_map={key: IncompatibleKernel})
 
 
@@ -67,11 +69,11 @@ def test_install_kernel_map_auto_discovery_incompatible_raises_same_class() -> N
         def default_kernel_map(self) -> dict[str, Kernel]:
             return {key: IncompatibleKernel}
 
-    with pytest.raises(ValueError, match="not supported on architecture"):
+    with pytest.raises(ValueError, match="not supported on .*architecture"):
         AutoDiscoveredIncompatibleOp(N_total=8, dtype=torch.float16)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.smoke
 def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     """A compatible user-supplied override yields bit-identical forward output.
@@ -98,7 +100,7 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     assert isinstance(overridden.kernel, MarkerKernel)
 
     torch.manual_seed(0)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     y_baseline = baseline(x.clone())
     y_overridden = overridden(x.clone())
     assert torch.equal(y_baseline, y_overridden), (

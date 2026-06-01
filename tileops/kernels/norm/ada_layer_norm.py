@@ -253,7 +253,7 @@ class AdaLayerNormKernel(Kernel):
         tune: If True, autotune the kernel.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

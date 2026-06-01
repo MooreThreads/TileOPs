@@ -1,10 +1,13 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import functools
 import itertools
 from typing import Optional
 
 import tilelang
 import torch
-from tilelang import language as T
+import tilelang.language as T
 from tilelang.autotuner import autotune
 
 from tileops.kernels.kernel_base import Kernel
@@ -202,7 +205,7 @@ def _(
 
 
 class FP8LightingIndexerKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch,
@@ -282,15 +285,15 @@ class FP8LightingIndexerKernel(Kernel):
         batch, seq_len, heads, index_dim = q.shape
         seq_len_kv = kv.shape[1]
         IndexQ = torch.randn(
-            batch, seq_len * heads, index_dim, device='cuda', dtype=torch.float8_e4m3fn)
+            batch, seq_len * heads, index_dim, device=DEVICE, dtype=torch.float8_e4m3fn)
         IndexK = torch.randn(
-            batch, seq_len_kv, self.kv_group, index_dim, device='cuda', dtype=self.dtype)
-        IndexKScale = torch.randn(batch, seq_len_kv, self.kv_group, device='cuda', dtype=accum_dtype)
-        Weights = torch.randn(seq_len, heads, device='cuda', dtype=accum_dtype)
-        CuSeqLenKS = torch.zeros(seq_len, device='cuda', dtype=index_dtype)
+            batch, seq_len_kv, self.kv_group, index_dim, device=DEVICE, dtype=self.dtype)
+        IndexKScale = torch.randn(batch, seq_len_kv, self.kv_group, device=DEVICE, dtype=accum_dtype)
+        Weights = torch.randn(seq_len, heads, device=DEVICE, dtype=accum_dtype)
+        CuSeqLenKS = torch.zeros(seq_len, device=DEVICE, dtype=index_dtype)
         CuSeqLenKE = torch.full((seq_len,),
                                 fill_value=seq_len_kv - 1,
-                                device='cuda',
+                                device=DEVICE,
                                 dtype=index_dtype)
 
         return IndexQ, IndexK, IndexKScale, Weights, CuSeqLenKS, CuSeqLenKE

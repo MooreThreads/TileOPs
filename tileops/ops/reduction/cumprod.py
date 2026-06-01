@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Cumulative product operator (L2 Op layer).
 
 Provides:
@@ -31,7 +34,7 @@ class CumprodFwdOp(CumulativeOp):
 
     Example:
         >>> op = CumprodFwdOp(N=4096, dtype=torch.float16)
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda") * 0.01 + 0.99
+        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device=DEVICE) * 0.01 + 0.99
         >>> y = op(x)  # shape: (1024, 4096)
     """
 

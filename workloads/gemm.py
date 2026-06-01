@@ -1,5 +1,6 @@
 import torch
 
+from tileops.utils import get_backend_name
 from workloads.workload_base import WorkloadBase
 
 
@@ -16,7 +17,7 @@ class GemmTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         shape_a = (self.k, self.m) if self.trans_a else (self.m, self.k)
-        a = torch.randn(*shape_a, device='cuda', dtype=self.dtype)
+        a = torch.randn(*shape_a, device=get_backend_name(), dtype=self.dtype)
         shape_b = (self.n, self.k) if self.trans_b else (self.k, self.n)
-        b = torch.randn(*shape_b, device='cuda', dtype=self.dtype)
+        b = torch.randn(*shape_b, device=get_backend_name(), dtype=self.dtype)
         return a, b

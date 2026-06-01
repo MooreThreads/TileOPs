@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for DropoutOp.
 
 Profiles TileOPs dropout vs torch.nn.functional.dropout on DNN-realistic shapes.
@@ -29,7 +32,7 @@ class DropoutBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
+        return (torch.randn(self.shape, device=DEVICE, dtype=self.dtype),)
 
 
 class DropoutBenchmark(BenchmarkBase[DropoutBenchCase]):

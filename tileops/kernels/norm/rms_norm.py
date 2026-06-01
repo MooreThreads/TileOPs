@@ -16,6 +16,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_tilelang_target
 
 __all__ = ["RMSNormKernel"]
 
@@ -30,7 +31,7 @@ def _align_up(n: int, alignment: int) -> int:
 def _rms_norm_kernel(M, N, eps, dtype):
     N_padded = _align_up(N, ALIGNMENT)
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(target=get_tilelang_target(), out_idx=[2])
     def _func(block_m, threads):
 
         @T.prim_func
@@ -106,7 +107,7 @@ class RMSNormKernel(Kernel):
     input load and output store.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

@@ -148,7 +148,7 @@ def _(batch: int, heads: int, seq_len:
 
 
 class MHAFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -340,7 +340,7 @@ def _(batch: int, heads: int, seq_len: int,
 
 
 class MHAFwdWgmmaPipelinedKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -517,7 +517,7 @@ def _(batch: int, heads: int,
 
 
 class GQAFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -729,7 +729,7 @@ def _(batch: int, heads: int, heads_kv: int,
 
 
 class GQAFwdWgmmaPipelinedKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -978,7 +978,7 @@ def _(batch: int, heads: int,
 
 
 class GQAPrefillFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -1304,7 +1304,7 @@ def _(batch: int, heads: int,
 
 
 class GQAPrefillWithKVCacheFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -1434,7 +1434,7 @@ def _gqa_prefill_with_kv_cache_rope_append_kernel(batch: int,
 
 
 class GQAPrefillWithKVCacheRopeAppendKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -1682,7 +1682,7 @@ def _(batch: int, heads: int,
 
 
 class GQAPrefillWithKVCacheRopeFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -2042,7 +2042,7 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
 
 
 class GQAPrefillPagedWithKVCacheFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -2226,7 +2226,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(batch: int,
 
 
 class GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -2550,7 +2550,7 @@ def _(batch: int, heads: int, heads_kv: int, total_q: int, physical_tokens: int,
 
 
 class GQAPrefillPagedWithKVCacheRopeFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,

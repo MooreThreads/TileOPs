@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.engram import EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from .op_base import Op
 
@@ -89,8 +90,8 @@ class EngramGateConvFwdOp(Op):
               rrms_k: (M, seq_len) — RMSNorm reciprocal rms of k.
               rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
         """
-        if not H.is_cuda:
-            raise ValueError("H must be a CUDA tensor")
+        if not is_backend_tensor(H):
+            raise ValueError(backend_tensor_error("H"))
         if H.dtype != self.dtype:
             raise ValueError(f"Expected dtype {self.dtype}, got {H.dtype}")
         if H.shape[-1] != self.d:
@@ -209,8 +210,8 @@ class EngramGateConvBwdOp(Op):
               drms_w_v: (d,) — fp32
               dconv_w:  (4, d) — fp32
         """
-        if not dY.is_cuda:
-            raise ValueError("dY must be a CUDA tensor")
+        if not is_backend_tensor(dY):
+            raise ValueError(backend_tensor_error("dY"))
         if dY.dtype != self.dtype:
             raise ValueError(f"Expected dtype {self.dtype}, got {dY.dtype}")
 

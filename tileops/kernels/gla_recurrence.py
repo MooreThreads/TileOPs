@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """
 GLA (Gated Linear Attention) decode (single-step recurrence).
 
@@ -206,7 +209,7 @@ class GLADecodeKernel(Kernel):
     cores; the Op dispatches float32 to GLADecodeFP32Kernel instead.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -250,11 +253,11 @@ class GLADecodeKernel(Kernel):
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
         torch_dtype = {"float32": torch.float32, "float16": torch.float16,
                        "bfloat16": torch.bfloat16}[self.dtype_str]
-        q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
-        k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
-        v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=torch_dtype)
-        state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
+        q = torch.randn(B, H, DK, device=DEVICE, dtype=torch_dtype)
+        k = torch.randn(B, H, DK, device=DEVICE, dtype=torch_dtype)
+        v = torch.randn(B, H, DV, device=DEVICE, dtype=torch_dtype)
+        gk = -torch.rand(B, H, DK, device=DEVICE, dtype=torch_dtype)
+        state = torch.randn(B, H, DK, DV, device=DEVICE, dtype=torch_dtype)
 
         print(f"Start autotuning {self.__class__.__name__}...")
         for k_tile in [16, 32, 64]:
@@ -442,7 +445,7 @@ class GLADecodeFP32Kernel(Kernel):
     decode.  Intended for fp32 dtype only.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -482,11 +485,11 @@ class GLADecodeFP32Kernel(Kernel):
         best_config = self.default_config
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
 
-        q = torch.randn(B, H, DK, device="cuda", dtype=torch.float32)
-        k = torch.randn(B, H, DK, device="cuda", dtype=torch.float32)
-        v = torch.randn(B, H, DV, device="cuda", dtype=torch.float32)
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=torch.float32)
-        state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch.float32)
+        q = torch.randn(B, H, DK, device=DEVICE, dtype=torch.float32)
+        k = torch.randn(B, H, DK, device=DEVICE, dtype=torch.float32)
+        v = torch.randn(B, H, DV, device=DEVICE, dtype=torch.float32)
+        gk = -torch.rand(B, H, DK, device=DEVICE, dtype=torch.float32)
+        state = torch.randn(B, H, DK, DV, device=DEVICE, dtype=torch.float32)
 
         print(f"Start autotuning {self.__class__.__name__}...")
         for k_tile in [16, 32, 64]:

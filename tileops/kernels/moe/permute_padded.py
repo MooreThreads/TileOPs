@@ -183,7 +183,7 @@ class MoePermutePaddedKernel(Kernel):
         >>> perm_h_pad, p_offsets, p_sizes, offsets, fwd_idx = kernel(hidden_states, topk_ids)
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

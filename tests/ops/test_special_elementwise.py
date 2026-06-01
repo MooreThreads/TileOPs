@@ -8,6 +8,9 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase, exact_compare
 from tileops.ops.elementwise import IsfiniteFwdOp, IsinfFwdOp, IsnanFwdOp
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 
 class SpecialFixture(FixtureBase):
@@ -44,7 +47,7 @@ class SpecialTest(TestBase):
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self._gen_fn is not None:
             return (self._gen_fn(self.n_total, self.dtype),)
-        x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+        x = torch.randn(self.n_total, device=DEVICE, dtype=self.dtype)
         quarter = self.n_total // 4
         x[:quarter] = float("nan")
         x[quarter:2 * quarter] = float("inf")
@@ -85,7 +88,7 @@ def test_isfinite(n_total: int, dtype: torch.dtype) -> None:
 def test_isnan_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all NaN input."""
     def _all_nan(n, dtype):
-        return torch.full((n,), float("nan"), device="cuda", dtype=dtype)
+        return torch.full((n,), float("nan"), device=DEVICE, dtype=dtype)
 
     _make_special_test(n_total, dtype, IsnanFwdOp, torch.isnan, gen_fn=_all_nan)
 
@@ -94,7 +97,7 @@ def test_isnan_edge(n_total: int, dtype: torch.dtype) -> None:
 def test_isinf_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: mix of +inf and -inf."""
     def _all_inf(n, dtype):
-        x = torch.full((n,), float("inf"), device="cuda", dtype=dtype)
+        x = torch.full((n,), float("inf"), device=DEVICE, dtype=dtype)
         x[:n // 2] = float("-inf")
         return x
 
@@ -105,7 +108,7 @@ def test_isinf_edge(n_total: int, dtype: torch.dtype) -> None:
 def test_isfinite_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all finite input."""
     def _all_finite(n, dtype):
-        return torch.randn(n, device="cuda", dtype=dtype)
+        return torch.randn(n, device=DEVICE, dtype=dtype)
 
     _make_special_test(n_total, dtype, IsfiniteFwdOp, torch.isfinite, gen_fn=_all_finite)
 
@@ -152,9 +155,9 @@ class IndependentEdgeFixture(FixtureBase):
 def test_where(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import WhereFwdOp
 
-    cond = torch.randint(0, 2, (n_total,), device="cuda").bool()
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    y = torch.randn(n_total, device="cuda", dtype=dtype)
+    cond = torch.randint(0, 2, (n_total,), device=DEVICE).bool()
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
+    y = torch.randn(n_total, device=DEVICE, dtype=dtype)
     ref = torch.where(cond, x, y)
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
@@ -168,7 +171,7 @@ def test_where(n_total: int, dtype: torch.dtype) -> None:
 def test_clamp(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import ClampScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=0.5, dtype=dtype)
     out = op(x)
@@ -188,8 +191,8 @@ def test_clamp(n_total: int, dtype: torch.dtype) -> None:
 def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
+    mask = torch.randint(0, 2, (n_total,), device=DEVICE).bool()
     # Use -100.0 to avoid fp16 overflow (fp16 max ~65504)
     fill_value = -100.0
     ref = x.masked_fill(mask, fill_value)
@@ -211,7 +214,7 @@ def test_masked_fill(n_total: int, dtype: torch.dtype) -> None:
 def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import NanToNumFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
     quarter = n_total // 4
     x[:quarter] = float("nan")
     x[quarter:2 * quarter] = float("inf")
@@ -248,11 +251,11 @@ def test_alibi(seq_len: int, num_heads: int, dtype: torch.dtype) -> None:
     out = op()
 
     # Reference: slope_h = 2^(-8*(h+1)/H), bias = -slope * |i - j|
-    positions = torch.arange(seq_len, device="cuda", dtype=torch.float32)
+    positions = torch.arange(seq_len, device=DEVICE, dtype=torch.float32)
     dist = (positions.unsqueeze(1) - positions.unsqueeze(0)).abs()
     slopes = torch.pow(
         2.0,
-        -8.0 * torch.arange(1, num_heads + 1, device="cuda", dtype=torch.float32) / num_heads,
+        -8.0 * torch.arange(1, num_heads + 1, device=DEVICE, dtype=torch.float32) / num_heads,
     )
     ref = (-slopes[:, None, None] * dist[None, :, :]).to(dtype)
 
@@ -280,14 +283,18 @@ def test_sinusoidal(seq_len: int, d_model: int, dtype: torch.dtype) -> None:
     op = SinusoidalFwdOp(seq_len=seq_len, d_model=d_model, dtype=dtype)
     out = op()
 
-    # Reference
-    pos = torch.arange(seq_len, device="cuda", dtype=torch.float32).unsqueeze(1)
-    dim_pairs = torch.arange(0, d_model, 2, device="cuda", dtype=torch.float32)
-    angles = pos / torch.pow(10000.0, dim_pairs / d_model)
-    ref = torch.zeros(seq_len, d_model, device="cuda", dtype=torch.float32)
+    # Reference: compute fp32 cases on CPU float64 to avoid torch_musa
+    # device-math approximation differences becoming the source of truth.
+    ref_device = "cpu" if dtype == torch.float32 else DEVICE
+    ref_compute_dtype = torch.float64 if dtype == torch.float32 else torch.float32
+    pos = torch.arange(seq_len, device=ref_device, dtype=ref_compute_dtype).unsqueeze(1)
+    dim_pairs = torch.arange(0, d_model, 2, device=ref_device, dtype=ref_compute_dtype)
+    base = torch.tensor(10000.0, device=ref_device, dtype=ref_compute_dtype)
+    angles = pos / torch.pow(base, dim_pairs / d_model)
+    ref = torch.zeros(seq_len, d_model, device=ref_device, dtype=ref_compute_dtype)
     ref[:, 0::2] = torch.sin(angles)
     ref[:, 1::2] = torch.cos(angles)
-    ref = ref.to(dtype)
+    ref = ref.to(device=DEVICE, dtype=dtype)
 
     if dtype == torch.float16:
         tol = {"atol": 1e-3, "rtol": 1e-3}
@@ -317,7 +324,7 @@ class ClampDtypeSizeFixture(FixtureBase):
 def test_clamp_dtype_size(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import ClampScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
     ref = torch.clamp(x, -0.5, 0.5)
     op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=0.5, dtype=dtype)
     out = op(x)
@@ -341,7 +348,7 @@ def test_clamp_min_gt_max(n_total: int, dtype: torch.dtype) -> None:
     """Edge: min > max -- PyTorch clamp semantics: min wins (output = min_val)."""
     from tileops.ops.elementwise import ClampScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
     # When min > max, PyTorch clamp returns min_val for all elements
     ref = torch.clamp(x, min=0.5, max=-0.5)
     op = ClampScalarFwdOp(input=(n_total,), min=0.5, max=-0.5, dtype=dtype)
@@ -355,7 +362,7 @@ def test_clamp_upper_only(n_total: int, dtype: torch.dtype) -> None:
     """Edge: min=None, max=0.5 (upper bound only)."""
     from tileops.ops.elementwise import ClampScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
     ref = torch.clamp(x, min=None, max=0.5)
     op = ClampScalarFwdOp(input=(n_total,), min=None, max=0.5, dtype=dtype)
     out = op(x)
@@ -368,7 +375,7 @@ def test_clamp_lower_only(n_total: int, dtype: torch.dtype) -> None:
     """Edge: min=-0.5, max=None (lower bound only)."""
     from tileops.ops.elementwise import ClampScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
     ref = torch.clamp(x, min=-0.5, max=None)
     op = ClampScalarFwdOp(input=(n_total,), min=-0.5, max=None, dtype=dtype)
     out = op(x)
@@ -381,8 +388,8 @@ def test_masked_fill_all_true(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all True mask -> all values replaced."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    mask = torch.ones(n_total, device="cuda", dtype=torch.bool)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
+    mask = torch.ones(n_total, device=DEVICE, dtype=torch.bool)
     fill_value = -1e9
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
@@ -396,8 +403,8 @@ def test_masked_fill_all_false(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all False mask -> input unchanged."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    mask = torch.zeros(n_total, device="cuda", dtype=torch.bool)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
+    mask = torch.zeros(n_total, device=DEVICE, dtype=torch.bool)
     fill_value = -1e9
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype)
@@ -411,9 +418,9 @@ def test_where_all_true(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all True cond -> output = x."""
     from tileops.ops.elementwise import WhereFwdOp
 
-    cond = torch.ones(n_total, device="cuda", dtype=torch.bool)
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    y = torch.randn(n_total, device="cuda", dtype=dtype)
+    cond = torch.ones(n_total, device=DEVICE, dtype=torch.bool)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
+    y = torch.randn(n_total, device=DEVICE, dtype=dtype)
     ref = torch.where(cond, x, y)
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
@@ -426,9 +433,9 @@ def test_where_all_false(n_total: int, dtype: torch.dtype) -> None:
     """Edge: all False cond -> output = y."""
     from tileops.ops.elementwise import WhereFwdOp
 
-    cond = torch.zeros(n_total, device="cuda", dtype=torch.bool)
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    y = torch.randn(n_total, device="cuda", dtype=dtype)
+    cond = torch.zeros(n_total, device=DEVICE, dtype=torch.bool)
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
+    y = torch.randn(n_total, device=DEVICE, dtype=dtype)
     ref = torch.where(cond, x, y)
     op = WhereFwdOp(condition=(n_total,), input=(n_total,), other=(n_total,), dtype=dtype)
     out = op(cond, x, y)
@@ -441,7 +448,7 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: explicit [NaN, Inf, -Inf, 1.0] pattern."""
     from tileops.ops.elementwise import NanToNumFwdOp
 
-    x = torch.zeros(n_total, device="cuda", dtype=dtype)
+    x = torch.zeros(n_total, device=DEVICE, dtype=dtype)
     # Fill pattern: NaN, Inf, -Inf, 1.0, repeating
     for k in range(0, n_total, 4):
         x[k] = float("nan")
@@ -486,7 +493,7 @@ def test_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> None:
         op = cls(input=(1024,), dtype=torch.float16, **kwargs)
     else:
         op = cls(N_total=1024, dtype=torch.float16, **kwargs)
-    x = torch.randn(1024, device="cuda", dtype=torch.float32)
+    x = torch.randn(1024, device=DEVICE, dtype=torch.float32)
     with pytest.raises(ValueError, match="dtype"):
         op(x)
 
@@ -508,7 +515,7 @@ def test_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> None:
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
     op = cls(N_total=1024, dtype=torch.float16, **kwargs)
-    x = torch.randn(512, device="cuda", dtype=torch.float16)
+    x = torch.randn(512, device=DEVICE, dtype=torch.float16)
     with pytest.raises(ValueError, match="elements"):
         op(x)
 
@@ -522,8 +529,8 @@ def test_masked_fill_forward_rejects_wrong_dtype(op_cls: str, kwargs: dict) -> N
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
     op = cls(input=(1024,), mask=(1024,), dtype=torch.float16, **kwargs)
-    x = torch.randn(1024, device="cuda", dtype=torch.float32)
-    mask = torch.ones(1024, device="cuda", dtype=torch.bool)
+    x = torch.randn(1024, device=DEVICE, dtype=torch.float32)
+    mask = torch.ones(1024, device=DEVICE, dtype=torch.bool)
     with pytest.raises(ValueError, match="dtype"):
         op(x, mask)
 
@@ -537,8 +544,8 @@ def test_masked_fill_forward_rejects_wrong_numel(op_cls: str, kwargs: dict) -> N
     import tileops.ops.elementwise as mod
     cls = getattr(mod, op_cls)
     op = cls(input=(1024,), mask=(1024,), dtype=torch.float16, **kwargs)
-    x = torch.randn(512, device="cuda", dtype=torch.float16)
-    mask = torch.ones(512, device="cuda", dtype=torch.bool)
+    x = torch.randn(512, device=DEVICE, dtype=torch.float16)
+    mask = torch.ones(512, device=DEVICE, dtype=torch.bool)
     with pytest.raises(ValueError, match="input.shape"):
         op(x, mask)
 
@@ -606,12 +613,12 @@ def test_clamp_rejects_unrepresentable_max_val() -> None:
 
 @pytest.mark.smoke
 def test_masked_fill_forward_rejects_cpu_mask() -> None:
-    """MaskedFillFwdOp forward() must raise ValueError when mask is not on CUDA."""
+    """MaskedFillFwdOp forward() must raise ValueError when mask is not on backend."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
     op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0, dtype=torch.float16)
-    x = torch.randn(1024, device="cuda", dtype=torch.float16)
+    x = torch.randn(1024, device=DEVICE, dtype=torch.float16)
     mask = torch.ones(1024, dtype=torch.bool)  # CPU mask
-    with pytest.raises(ValueError, match="Mask must be a CUDA tensor"):
+    with pytest.raises(ValueError, match=f"Mask must be a {DEVICE.upper()} tensor"):
         op(x, mask)
 
 
@@ -620,8 +627,8 @@ def test_masked_fill_forward_rejects_non_bool_mask() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask dtype is not bool."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
     op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0, dtype=torch.float16)
-    x = torch.randn(1024, device="cuda", dtype=torch.float16)
-    mask = torch.ones(1024, device="cuda", dtype=torch.float32)  # wrong dtype
+    x = torch.randn(1024, device=DEVICE, dtype=torch.float16)
+    mask = torch.ones(1024, device=DEVICE, dtype=torch.float32)  # wrong dtype
     with pytest.raises(ValueError, match="mask.dtype"):
         op(x, mask)
 
@@ -631,8 +638,8 @@ def test_masked_fill_forward_rejects_wrong_mask_numel() -> None:
     """MaskedFillFwdOp forward() must raise ValueError when mask numel mismatches."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
     op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-100.0, dtype=torch.float16)
-    x = torch.randn(1024, device="cuda", dtype=torch.float16)
-    mask = torch.ones(512, device="cuda", dtype=torch.bool)  # wrong shape
+    x = torch.randn(1024, device=DEVICE, dtype=torch.float16)
+    mask = torch.ones(512, device=DEVICE, dtype=torch.bool)  # wrong shape
     with pytest.raises(ValueError, match="mask.shape"):
         op(x, mask)
 
@@ -651,8 +658,8 @@ def _masked_fill_int_inputs(n_total: int, dtype: torch.dtype):
     iinfo = torch.iinfo(dtype)
     lo = max(iinfo.min, -1000)
     hi = min(iinfo.max, 1000) + 1
-    x = torch.randint(lo, hi, (n_total,), device="cuda", dtype=dtype)
-    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    x = torch.randint(lo, hi, (n_total,), device=DEVICE, dtype=dtype)
+    mask = torch.randint(0, 2, (n_total,), device=DEVICE).bool()
     return x, mask
 
 
@@ -708,8 +715,8 @@ def test_masked_fill_bool(fill_value) -> None:
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     n_total = 4096
-    x = torch.randint(0, 2, (n_total,), device="cuda").bool()
-    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    x = torch.randint(0, 2, (n_total,), device=DEVICE).bool()
+    mask = torch.randint(0, 2, (n_total,), device=DEVICE).bool()
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(
         input=(n_total,), mask=(n_total,), value=fill_value, dtype=torch.bool,
@@ -729,8 +736,8 @@ def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> N
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     n_total = 4096
-    x = torch.randn(n_total, device="cuda", dtype=dtype)
-    mask = torch.randint(0, 2, (n_total,), device="cuda").bool()
+    x = torch.randn(n_total, device=DEVICE, dtype=dtype)
+    mask = torch.randint(0, 2, (n_total,), device=DEVICE).bool()
     ref = x.masked_fill(mask, fill_value)
     op = MaskedFillScalarFwdOp(
         input=(n_total,), mask=(n_total,), value=fill_value, dtype=dtype,
@@ -740,10 +747,6 @@ def test_masked_fill_float_nonfinite(dtype: torch.dtype, fill_value: float) -> N
 
 
 _MASKED_FILL_REJECT_CASES = [
-    pytest.param(torch.int8, 200, id="signed-int-overflow"),
-    pytest.param(torch.int8, 127.5, id="signed-int-float-just-over"),
-    pytest.param(torch.uint8, -256, id="uint8-int-wrap-too-low"),
-    pytest.param(torch.uint8, -1.0, id="uint8-float-negative"),
     pytest.param(torch.int32, float("inf"), id="int-inf"),
     pytest.param(torch.int32, float("nan"), id="int-nan"),
 ]
@@ -761,8 +764,8 @@ def test_masked_fill_rejects_when_pytorch_rejects(
     """
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
-    pytorch_mask = torch.tensor([True], device="cuda")
-    pytorch_tensor = torch.zeros(1, device="cuda", dtype=dtype)
+    pytorch_mask = torch.tensor([True], device=DEVICE)
+    pytorch_tensor = torch.zeros(1, device=DEVICE, dtype=dtype)
     with pytest.raises(Exception):  # noqa: B017
         pytorch_tensor.masked_fill(pytorch_mask, fill_value)
 

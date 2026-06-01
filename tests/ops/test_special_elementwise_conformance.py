@@ -12,6 +12,10 @@ import inspect
 import pytest
 import torch
 
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
+
 # ---------------------------------------------------------------------------
 # WhereFwdOp full broadcasting
 # ---------------------------------------------------------------------------
@@ -30,10 +34,10 @@ import torch
 def test_where_broadcast_parity(cond_shape, inp_shape, other_shape, dtype):
     from tileops.ops.elementwise import WhereFwdOp
 
-    cond = torch.randint(0, 2, cond_shape, device="cuda").bool() if cond_shape else \
-        torch.tensor(True, device="cuda")
-    inp = torch.randn(inp_shape, device="cuda", dtype=dtype)
-    other = torch.randn(other_shape, device="cuda", dtype=dtype)
+    cond = torch.randint(0, 2, cond_shape, device=DEVICE).bool() if cond_shape else \
+        torch.tensor(True, device=DEVICE)
+    inp = torch.randn(inp_shape, device=DEVICE, dtype=dtype)
+    other = torch.randn(other_shape, device=DEVICE, dtype=dtype)
     ref = torch.where(cond, inp, other)
 
     op = WhereFwdOp(condition=tuple(cond.shape), input=tuple(inp.shape),
@@ -62,9 +66,9 @@ def test_where_rejects_non_bool_condition(bad_dtype):
     from tileops.ops.elementwise import WhereFwdOp
 
     shape = (4, 8)
-    cond = torch.zeros(shape, device="cuda", dtype=bad_dtype)
-    inp = torch.randn(shape, device="cuda", dtype=torch.float16)
-    other = torch.randn(shape, device="cuda", dtype=torch.float16)
+    cond = torch.zeros(shape, device=DEVICE, dtype=bad_dtype)
+    inp = torch.randn(shape, device=DEVICE, dtype=torch.float16)
+    other = torch.randn(shape, device=DEVICE, dtype=torch.float16)
     op = WhereFwdOp(
         condition=shape, input=shape, other=shape, dtype=torch.float16
     )
@@ -89,9 +93,9 @@ def test_where_rejects_non_bool_condition(bad_dtype):
 def test_clamp_tensor_bounds_parity(input_shape, min_shape, max_shape, dtype):
     from tileops.ops.elementwise import ClampFwdOp
 
-    inp = torch.randn(input_shape, device="cuda", dtype=dtype)
-    mn = torch.randn(min_shape, device="cuda", dtype=dtype) - 0.5
-    mx = torch.randn(max_shape, device="cuda", dtype=dtype) + 0.5
+    inp = torch.randn(input_shape, device=DEVICE, dtype=dtype)
+    mn = torch.randn(min_shape, device=DEVICE, dtype=dtype) - 0.5
+    mx = torch.randn(max_shape, device=DEVICE, dtype=dtype) + 0.5
     # Make max >= min where tested ranges overlap; PyTorch clamp tolerates
     # mismatch but we want a meaningful ref.
     ref = torch.clamp(inp, mn, mx)
@@ -126,8 +130,8 @@ def test_clamp_init_signature_pytorch_aligned():
 def test_clamp_min_only_tensor_parity():
     from tileops.ops.elementwise import ClampFwdOp
 
-    inp = torch.randn((4, 8), device="cuda", dtype=torch.float32)
-    mn = torch.randn((4, 8), device="cuda", dtype=torch.float32) - 0.5
+    inp = torch.randn((4, 8), device=DEVICE, dtype=torch.float32)
+    mn = torch.randn((4, 8), device=DEVICE, dtype=torch.float32) - 0.5
     ref = torch.clamp(inp, mn, None)
     op = ClampFwdOp(input=(4, 8), min=(4, 8), max=None, dtype=torch.float32)
     out = op(inp, mn, None)
@@ -138,8 +142,8 @@ def test_clamp_min_only_tensor_parity():
 def test_clamp_max_only_tensor_parity():
     from tileops.ops.elementwise import ClampFwdOp
 
-    inp = torch.randn((4, 8), device="cuda", dtype=torch.float32)
-    mx = torch.randn((4, 8), device="cuda", dtype=torch.float32) + 0.5
+    inp = torch.randn((4, 8), device=DEVICE, dtype=torch.float32)
+    mx = torch.randn((4, 8), device=DEVICE, dtype=torch.float32) + 0.5
     ref = torch.clamp(inp, None, mx)
     op = ClampFwdOp(input=(4, 8), min=None, max=(4, 8), dtype=torch.float32)
     out = op(inp, None, mx)
@@ -172,7 +176,7 @@ def test_clamp_scalar_rejects_same_numel_wrong_shape():
     from tileops.ops.elementwise import ClampScalarFwdOp
 
     op = ClampScalarFwdOp(input=(2, 3), min=0.0, max=1.0, dtype=torch.float32)
-    bad = torch.randn(6, device="cuda", dtype=torch.float32)  # same numel, wrong shape
+    bad = torch.randn(6, device=DEVICE, dtype=torch.float32)  # same numel, wrong shape
     with pytest.raises(ValueError, match=r"input\.shape"):
         op(bad)
 
@@ -182,8 +186,8 @@ def test_clamp_runtime_tensor_none_must_match_init():
     """Forward-time None / Tensor presence must agree with __init__ config."""
     from tileops.ops.elementwise import ClampFwdOp
 
-    inp = torch.randn(4, device="cuda", dtype=torch.float32)
-    mn = torch.zeros(4, device="cuda", dtype=torch.float32)
+    inp = torch.randn(4, device=DEVICE, dtype=torch.float32)
+    mn = torch.zeros(4, device=DEVICE, dtype=torch.float32)
 
     # Configured for min-only at __init__, then passed a Tensor for max:
     op = ClampFwdOp(input=(4,), min=(4,), max=None, dtype=torch.float32)
@@ -209,7 +213,7 @@ def test_clamp_runtime_tensor_none_must_match_init():
 def test_clamp_scalar_param_names(min_val, max_val):
     from tileops.ops.elementwise import ClampScalarFwdOp
 
-    inp = torch.randn(1024, device="cuda", dtype=torch.float32)
+    inp = torch.randn(1024, device=DEVICE, dtype=torch.float32)
     ref = torch.clamp(inp, min_val, max_val)
     op = ClampScalarFwdOp(input=(1024,), min=min_val, max=max_val, dtype=torch.float32)
     out = op(inp)
@@ -238,8 +242,8 @@ def test_clamp_scalar_init_signature_pytorch_aligned():
 def test_clamp_min_tensor(input_shape, min_shape):
     from tileops.ops.elementwise import ClampMinFwdOp
 
-    inp = torch.randn(input_shape, device="cuda", dtype=torch.float32)
-    mn = torch.randn(min_shape, device="cuda", dtype=torch.float32)
+    inp = torch.randn(input_shape, device=DEVICE, dtype=torch.float32)
+    mn = torch.randn(min_shape, device=DEVICE, dtype=torch.float32)
     ref = torch.clamp_min(inp, mn) if min_shape else torch.clamp(inp, min=mn.item())
 
     op = ClampMinFwdOp(input=tuple(inp.shape), min=tuple(mn.shape), dtype=torch.float32)
@@ -264,8 +268,8 @@ def test_clamp_min_init_signature_pytorch_aligned():
 def test_clamp_max_tensor(input_shape, max_shape):
     from tileops.ops.elementwise import ClampMaxFwdOp
 
-    inp = torch.randn(input_shape, device="cuda", dtype=torch.float32)
-    mx = torch.randn(max_shape, device="cuda", dtype=torch.float32)
+    inp = torch.randn(input_shape, device=DEVICE, dtype=torch.float32)
+    mx = torch.randn(max_shape, device=DEVICE, dtype=torch.float32)
     ref = torch.clamp_max(inp, mx) if max_shape else torch.clamp(inp, max=mx.item())
 
     op = ClampMaxFwdOp(input=tuple(inp.shape), max=tuple(mx.shape), dtype=torch.float32)
@@ -285,25 +289,23 @@ def test_clamp_max_init_signature_pytorch_aligned():
 # ---------------------------------------------------------------------------
 # Regression: NaN propagation for Tensor-bound clamp variants.
 #
-# torch.clamp / torch.clamp_min / torch.clamp_max propagate NaN: if any of
-# input / min / max is NaN at position i, the output at i is NaN. CUDA's
-# fmax / fmin (used by T.max / T.min) drop NaN by returning the non-NaN
-# operand, so the kernel adds explicit isnan guards. These tests pin the
-# semantics so a future refactor cannot regress to non-IEEE behaviour.
+# CPU and H20/CUDA PyTorch propagate NaN: if any of input / min / max is NaN
+# at position i, output[i] is NaN. Current MUSA torch.clamp differs for
+# double-bound tensor clamp; TileOps follows the CPU/CUDA reference here.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_clamp_tensor_nan_propagation(dtype):
-    """ClampFwdOp must match torch.clamp NaN semantics (Tensor min + max)."""
+    """ClampFwdOp must match CPU/CUDA NaN semantics for Tensor bounds."""
     from tileops.ops.elementwise import ClampFwdOp
 
-    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
-    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device="cuda", dtype=dtype)
-    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device="cuda", dtype=dtype)
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=DEVICE, dtype=dtype)
+    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device=DEVICE, dtype=dtype)
+    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device=DEVICE, dtype=dtype)
 
-    ref = torch.clamp(x, mn, mx)
+    ref = torch.clamp(x.cpu(), mn.cpu(), mx.cpu()).to(device=DEVICE)
     op = ClampFwdOp(input=(4,), min=(4,), max=(4,), dtype=dtype)
     out = op(x, mn, mx)
     torch.testing.assert_close(out, ref, equal_nan=True, atol=0.0, rtol=0.0)
@@ -321,8 +323,8 @@ def test_clamp_min_nan_propagation(dtype):
     """ClampMinFwdOp must match torch.clamp_min NaN semantics."""
     from tileops.ops.elementwise import ClampMinFwdOp
 
-    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
-    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device="cuda", dtype=dtype)
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=DEVICE, dtype=dtype)
+    mn = torch.tensor([-1.0, -1.0, float("nan"), -1.0], device=DEVICE, dtype=dtype)
 
     ref = torch.clamp_min(x, mn)
     op = ClampMinFwdOp(input=(4,), min=(4,), dtype=dtype)
@@ -336,8 +338,8 @@ def test_clamp_max_nan_propagation(dtype):
     """ClampMaxFwdOp must match torch.clamp_max NaN semantics."""
     from tileops.ops.elementwise import ClampMaxFwdOp
 
-    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device="cuda", dtype=dtype)
-    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device="cuda", dtype=dtype)
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=DEVICE, dtype=dtype)
+    mx = torch.tensor([1.0, 1.0, 1.0, float("nan")], device=DEVICE, dtype=dtype)
 
     ref = torch.clamp_max(x, mx)
     op = ClampMaxFwdOp(input=(4,), max=(4,), dtype=dtype)
@@ -360,18 +362,18 @@ _MASKED_FILL_TENSOR_VALUE_INT_DTYPES = [
 
 def _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype):
     if dtype == torch.bool:
-        inp = torch.randint(0, 2, input_shape, device="cuda").bool()
-        value = torch.tensor(True, device="cuda", dtype=torch.bool)
+        inp = torch.randint(0, 2, input_shape, device=DEVICE).bool()
+        value = torch.tensor(True, device=DEVICE, dtype=torch.bool)
     elif dtype in _MASKED_FILL_TENSOR_VALUE_INT_DTYPES:
         iinfo = torch.iinfo(dtype)
         lo = max(iinfo.min, -1000)
         hi = min(iinfo.max, 1000) + 1
-        inp = torch.randint(lo, hi, input_shape, device="cuda", dtype=dtype)
-        value = torch.tensor(7, device="cuda", dtype=dtype)
+        inp = torch.randint(lo, hi, input_shape, device=DEVICE, dtype=dtype)
+        value = torch.tensor(7, device=DEVICE, dtype=dtype)
     else:
-        inp = torch.randn(input_shape, device="cuda", dtype=dtype)
-        value = torch.tensor(-1.5, device="cuda", dtype=dtype)
-    mask = torch.randint(0, 2, mask_shape, device="cuda").bool()
+        inp = torch.randn(input_shape, device=DEVICE, dtype=dtype)
+        value = torch.tensor(-1.5, device=DEVICE, dtype=dtype)
+    mask = torch.randint(0, 2, mask_shape, device=DEVICE).bool()
     return inp, mask, value
 
 
@@ -420,8 +422,8 @@ def test_masked_fill_tensor_init_signature_pytorch_aligned():
 def test_masked_fill_scalar_param_names():
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
-    inp = torch.randn(1024, device="cuda", dtype=torch.float32)
-    mask = torch.randint(0, 2, (1024,), device="cuda").bool()
+    inp = torch.randn(1024, device=DEVICE, dtype=torch.float32)
+    mask = torch.randint(0, 2, (1024,), device=DEVICE).bool()
     ref = inp.masked_fill(mask, -1.0)
 
     op = MaskedFillScalarFwdOp(input=(1024,), mask=(1024,), value=-1.0,

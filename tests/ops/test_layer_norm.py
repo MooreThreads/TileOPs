@@ -4,7 +4,10 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
+from tileops.utils import get_backend_name
 from workloads.layer_norm import LayerNormTest as _LayerNormTestWorkload
+
+DEVICE = get_backend_name()
 
 
 class LayerNormTest(_LayerNormTestWorkload, TestBase):
@@ -78,10 +81,10 @@ class LayerNormNonContigFixture(FixtureBase):
 @LayerNormNonContigFixture
 def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]  # non-contiguous slice
-    weight = torch.randn(n, dtype=dtype, device="cuda")
-    bias = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=DEVICE)
+    bias = torch.randn(n, dtype=dtype, device=DEVICE)
 
     op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
 
@@ -111,9 +114,9 @@ class LayerNorm3DFixture(FixtureBase):
 @LayerNorm3DFixture
 def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    weight = torch.randn(hidden, dtype=dtype, device="cuda")
-    bias = torch.randn(hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
+    weight = torch.randn(hidden, dtype=dtype, device=DEVICE)
+    bias = torch.randn(hidden, dtype=dtype, device=DEVICE)
 
     op = LayerNormFwdOp(normalized_shape=(hidden,), dtype=dtype)
 
@@ -154,9 +157,9 @@ def test_layer_norm_large_offset(m: int, n: int, dtype: torch.dtype) -> None:
     catastrophic cancellation bug (which produced >100x error) while allowing
     the inherent fp32 parallel reduction precision limits.
     """
-    x = (10000.0 + 0.01 * torch.randn(m, n, device="cuda")).to(dtype)
-    weight = torch.ones(n, dtype=dtype, device="cuda")
-    bias = torch.zeros(n, dtype=dtype, device="cuda")
+    x = (10000.0 + 0.01 * torch.randn(m, n, device=DEVICE)).to(dtype)
+    weight = torch.ones(n, dtype=dtype, device=DEVICE)
+    bias = torch.zeros(n, dtype=dtype, device=DEVICE)
 
     op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
 
@@ -192,15 +195,15 @@ def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
     dtype = torch.float16
 
     op = LayerNormFwdOp(normalized_shape=(n,), dtype=dtype)
-    weight = torch.randn(n, dtype=dtype, device="cuda")
-    bias = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=DEVICE)
+    bias = torch.randn(n, dtype=dtype, device=DEVICE)
 
-    x1 = torch.randn(512, n, dtype=dtype, device="cuda")
+    x1 = torch.randn(512, n, dtype=dtype, device=DEVICE)
     y1 = op(x1, weight, bias)
     first_kernel = op.kernel
     assert y1.shape == x1.shape
 
-    x2 = torch.randn(1024, n, dtype=dtype, device="cuda")
+    x2 = torch.randn(1024, n, dtype=dtype, device=DEVICE)
     y2 = op(x2, weight, bias)
     assert y2.shape == x2.shape
     # Kernel should have been rebuilt for the new M.
@@ -212,6 +215,60 @@ def test_layer_norm_rebuilds_kernel_on_m_change() -> None:
     ).to(dtype)
     atol, rtol = _get_tolerances(dtype)
     assert torch.allclose(y2, y_ref, atol=atol, rtol=rtol)
+
+@pytest.mark.smoke
+def test_layer_norm_rejects_shape_mismatch() -> None:
+    op = LayerNormFwdOp(M=32, N=64, dtype=torch.float16)
+    x = torch.randn(32, 63, dtype=torch.float16, device=DEVICE)
+    weight = torch.randn(64, dtype=torch.float16, device=DEVICE)
+    bias = torch.randn(64, dtype=torch.float16, device=DEVICE)
+
+    with pytest.raises(ValueError, match="Expected hidden dim"):
+        op(x, weight, bias)
+
+
+@pytest.mark.smoke
+def test_layer_norm_rejects_non_backend_tensor() -> None:
+    op = LayerNormFwdOp(M=32, N=64, dtype=torch.float16)
+    x = torch.randn(32, 64, dtype=torch.float16, device="cpu")
+    weight = torch.randn(64, dtype=torch.float16, device=DEVICE)
+    bias = torch.randn(64, dtype=torch.float16, device=DEVICE)
+
+    with pytest.raises(ValueError, match="MUSA tensor"):
+        op(x, weight, bias)
+
+
+class LayerNormMUSASmokeFixture(FixtureBase):
+    PARAMS = [
+        ("shape, dtype", [
+            pytest.param((256, 1024), torch.float16, marks=pytest.mark.smoke, id="2d-fp16"),
+            pytest.param((256, 1024), torch.bfloat16, marks=pytest.mark.smoke, id="2d-bf16"),
+            pytest.param((2, 128, 1024), torch.float16, marks=pytest.mark.smoke, id="3d-fp16"),
+        ]),
+    ]
+
+
+@LayerNormMUSASmokeFixture
+def test_layer_norm_musa_smoke_proof(shape: tuple[int, ...], dtype: torch.dtype) -> None:
+    """Small, explicit MUSA proof cases that finish faster than the full suite."""
+    *leading, hidden = shape
+    rows = 1
+    for dim in leading:
+        rows *= dim
+
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
+    weight = torch.randn(hidden, dtype=dtype, device=DEVICE)
+    bias = torch.randn(hidden, dtype=dtype, device=DEVICE)
+
+    op = LayerNormFwdOp(M=rows, N=hidden, dtype=dtype)
+    y = op(x, weight, bias)
+    y_ref = F.layer_norm(
+        x.float(), (hidden,),
+        weight=weight.float(), bias=bias.float(), eps=1e-5,
+    ).to(dtype)
+
+    atol, rtol = _get_tolerances(dtype)
+    torch.testing.assert_close(y, y_ref, atol=atol, rtol=rtol, equal_nan=True)
 
 
 if __name__ == "__main__":

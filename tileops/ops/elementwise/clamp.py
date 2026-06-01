@@ -7,6 +7,7 @@ import torch
 
 from tileops.kernels.elementwise import ClampFwdKernel, ClampTensorFwdKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from ._base import (
@@ -122,9 +123,9 @@ class ClampFwdOp(_ClampTensorBase):
             tensors.append(("min", min, self.min_shape))
         if max is not None:
             tensors.append(("max", max, self.max_shape))
-        for _, t, _ in tensors:
-            if not t.is_cuda:
-                raise ValueError("Inputs must be CUDA tensors")
+        for name, t, _ in tensors:
+            if not is_backend_tensor(t):
+                raise ValueError(backend_tensor_error(name))
         for name, t, expected in tensors:
             if t.dtype != self.dtype:
                 raise ValueError(f"Expected {name}.dtype {self.dtype}, got {t.dtype}")
@@ -189,8 +190,10 @@ class ClampMinFwdOp(_ClampTensorBase):
     def forward(
         self, input: torch.Tensor, min: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        if not (input.is_cuda and min.is_cuda):
-            raise ValueError("Inputs must be CUDA tensors")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("input"))
+        if not is_backend_tensor(min):
+            raise ValueError(backend_tensor_error("min"))
         for name, t, expected in [
             ("input", input, self.input_shape),
             ("min", min, self.min_shape),
@@ -258,8 +261,10 @@ class ClampMaxFwdOp(_ClampTensorBase):
     def forward(
         self, input: torch.Tensor, max: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        if not (input.is_cuda and max.is_cuda):
-            raise ValueError("Inputs must be CUDA tensors")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("input"))
+        if not is_backend_tensor(max):
+            raise ValueError(backend_tensor_error("max"))
         for name, t, expected in [
             ("input", input, self.input_shape),
             ("max", max, self.max_shape),
@@ -333,8 +338,8 @@ class ClampScalarFwdOp(Op):
         return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("Input"))
         if input.dtype != self.dtype:
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if tuple(input.shape) != self.input_shape:

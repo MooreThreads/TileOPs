@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 import pytest
 import torch
@@ -100,17 +103,17 @@ def test_gated_deltanet_bwd(
 ) -> None:
     torch.manual_seed(42)
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, H, S, device="cuda", dtype=dtype)
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
+    q = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
+    g = -torch.rand(B, H, S, device=DEVICE, dtype=dtype)
+    beta = torch.rand(B, H, S, device=DEVICE, dtype=dtype) * 0.5
 
     # Forward to get S for backward kernel
     from tileops.ops import GatedDeltaNetFwdOp
     fwd_op = GatedDeltaNetFwdOp(B, H, S, DK, DV, BC, dtype)
     _o, S_fwd, _Aw, _Au = fwd_op.forward(q, k, v, g, beta)
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    do = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
 
     # Reference via autograd
     ref_dq, ref_dk, ref_dv, ref_dg, ref_dbeta = gated_deltanet_autograd_bwd_torch(do, q, k, v, g, beta, BC)

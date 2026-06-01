@@ -20,6 +20,7 @@ from tileops.kernels.elementwise import (
     SubFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from ._base import (
@@ -307,8 +308,13 @@ class LerpTensorFwdOp(Op):
         end: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        if not (input.is_cuda and end.is_cuda and weight.is_cuda):
-            raise ValueError("Inputs must be CUDA tensors")
+        for name, t in [
+            ("input", input),
+            ("end", end),
+            ("weight", weight),
+        ]:
+            if not is_backend_tensor(t):
+                raise ValueError(backend_tensor_error(name))
         for name, t, expected in [
             ("input", input, self.input_shape),
             ("end", end, self.end_shape),

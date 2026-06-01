@@ -363,7 +363,7 @@ class DeltaNetBwdKernel(Kernel):
       5. merge: dk = dk_partial + dk_correction + dk_wu
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

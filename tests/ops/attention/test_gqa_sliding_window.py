@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Tests for GroupedQueryAttentionSlidingWindowFwdOp against a pure-PyTorch reference."""
 
 import pytest
@@ -165,9 +168,9 @@ class TestGroupedQueryAttentionSlidingWindowFwdOpValidation:
 
     @pytest.mark.smoke
     def test_dtype_mismatch_raises(self, float16_op):
-        q = torch.randn(1, 64, 4, 64, dtype=torch.bfloat16, device="cuda")
-        k = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
-        v = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device="cuda")
+        q = torch.randn(1, 64, 4, 64, dtype=torch.bfloat16, device=DEVICE)
+        k = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device=DEVICE)
+        v = torch.randn(1, 64, 2, 64, dtype=torch.bfloat16, device=DEVICE)
         with pytest.raises(ValueError, match="dtype"):
             float16_op.forward(q, k, v)
 

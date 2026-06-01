@@ -277,7 +277,7 @@ class LogSumExpKernel(Kernel):
             When ``None``, ``torch.cuda.current_device()`` is used.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
     _MAX_TILE_N_CANDIDATES = 3
 
     def __init__(

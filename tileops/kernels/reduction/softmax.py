@@ -31,6 +31,7 @@ from tileops.kernels.reduction._primitives import (
     compute_tile_n,
     device_smem_budget,
 )
+from tileops.utils import get_tilelang_target
 
 __all__ = ["SoftmaxKernel"]
 
@@ -58,7 +59,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
 
     if op_kind == "softmax":
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(target=get_tilelang_target(), out_idx=[1])
         def _func(block_m, threads):
             @T.prim_func
             def main(
@@ -108,7 +109,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str):
 
     else:  # log_softmax
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(target=get_tilelang_target(), out_idx=[1])
         def _func(block_m, threads):
             @T.prim_func
             def main(
@@ -202,7 +203,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
     if op_kind == "softmax":
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(target=get_tilelang_target(), out_idx=[1])
         def _func(block_m, threads):
             @T.prim_func
             def main(
@@ -327,7 +328,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
     else:  # log_softmax
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(target=get_tilelang_target(), out_idx=[1])
         def _func(block_m, threads):
             @T.prim_func
             def main(
@@ -527,7 +528,7 @@ class SoftmaxKernel(Kernel):
             When ``None``, ``torch.cuda.current_device()`` is used.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

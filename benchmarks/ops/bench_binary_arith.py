@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for binary arithmetic ops covering risk points R1, R2, R4.
 
 Risk points covered:
@@ -95,8 +98,8 @@ class BinaryBenchCase:
         self.n_total = prod(torch.broadcast_shapes(a_shape, b_shape))
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.a_shape, device="cuda", dtype=self.dtype)
-        b = torch.randn(self.b_shape, device="cuda", dtype=self.dtype)
+        a = torch.randn(self.a_shape, device=DEVICE, dtype=self.dtype)
+        b = torch.randn(self.b_shape, device=DEVICE, dtype=self.dtype)
         return a, b
 
 
@@ -124,9 +127,9 @@ class WhereBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        cond = torch.randint(0, 2, self.shape, device="cuda", dtype=torch.bool)
-        x = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
-        y = torch.randn(*self.shape, device="cuda", dtype=self.dtype)
+        cond = torch.randint(0, 2, self.shape, device=DEVICE, dtype=torch.bool)
+        x = torch.randn(*self.shape, device=DEVICE, dtype=self.dtype)
+        y = torch.randn(*self.shape, device=DEVICE, dtype=self.dtype)
         return cond, x, y
 
 
@@ -438,10 +441,10 @@ class LerpTensorBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        b = torch.randn(self.shape, device="cuda", dtype=self.dtype)
+        a = torch.randn(self.shape, device=DEVICE, dtype=self.dtype)
+        b = torch.randn(self.shape, device=DEVICE, dtype=self.dtype)
         # Keep weight in [0, 1] to stay close to typical lerp usage.
-        w = torch.rand(self.shape, device="cuda", dtype=self.dtype)
+        w = torch.rand(self.shape, device=DEVICE, dtype=self.dtype)
         return a, b, w
 
 

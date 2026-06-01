@@ -196,7 +196,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
 
 
 class GroupedGemmKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch_sum,

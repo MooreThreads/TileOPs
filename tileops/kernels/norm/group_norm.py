@@ -153,7 +153,7 @@ class GroupNormKernel(Kernel):
         tune: If True, autotune tile config.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -313,7 +313,7 @@ class GroupNormNoAffineKernel(Kernel):
         tune: If True, autotune tile config.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

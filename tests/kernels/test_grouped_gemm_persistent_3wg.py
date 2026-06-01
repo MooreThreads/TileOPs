@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Correctness tests for GroupedGemmPersistent3WGKernel.
 
 Verifies 3WG produces same output as the 2WG reference.
@@ -104,12 +107,12 @@ def test_partial_m_tile():
     # Make every expert end on a partial tile (size = 1 full block_m tile + 17 rows).
     per_expert = block_m + 17
     numel = E * per_expert
-    sizes = torch.full((E,), per_expert, dtype=torch.int32, device="cuda")
-    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    sizes = torch.full((E,), per_expert, dtype=torch.int32, device=DEVICE)
+    offsets = torch.zeros(E, dtype=torch.int32, device=DEVICE)
     offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
     torch.manual_seed(0)
-    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device=DEVICE) * 0.02
+    B = torch.randn(E, N, K, dtype=torch.bfloat16, device=DEVICE) * 0.02
     ref = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(
@@ -195,14 +198,14 @@ def test_cooperative_partial_m_tile():
     sm = torch.cuda.get_device_properties(0).multi_processor_count
     cfg = {"block_m": 128, "block_n": 128, "block_k": 64,
            "num_stages": 2, "threads": 384, "group_size_m": 1}
-    sizes = torch.tensor([40, 90, 128, 200], dtype=torch.int32, device="cuda")
+    sizes = torch.tensor([40, 90, 128, 200], dtype=torch.int32, device=DEVICE)
     numel = int(sizes.sum().item())
-    offsets = torch.zeros(4, dtype=torch.int32, device="cuda")
+    offsets = torch.zeros(4, dtype=torch.int32, device=DEVICE)
     offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
     E, N, K = 4, 256, 128
     torch.manual_seed(0)
-    A = torch.randn(numel, K, dtype=torch.bfloat16, device="cuda") * 0.02
-    B = torch.randn(E, N, K, dtype=torch.bfloat16, device="cuda") * 0.02
+    A = torch.randn(numel, K, dtype=torch.bfloat16, device=DEVICE) * 0.02
+    B = torch.randn(E, N, K, dtype=torch.bfloat16, device=DEVICE) * 0.02
     ref = GroupedGemmPersistentKernel(
         numel=numel, num_experts=E, N=N, K=K, dtype=torch.bfloat16, sm_count=sm)
     v2 = GroupedGemmPersistent3WGKernel(

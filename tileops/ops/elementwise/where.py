@@ -7,6 +7,7 @@ import torch
 
 from tileops.kernels.elementwise import WhereFwdKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from ._base import _OP_REGISTRY
@@ -128,8 +129,13 @@ class WhereFwdOp(Op):
     def forward(
         self, condition: torch.Tensor, input: torch.Tensor, other: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        if not (condition.is_cuda and input.is_cuda and other.is_cuda):
-            raise ValueError("Inputs must be CUDA tensors")
+        for name, t in [
+            ("condition", condition),
+            ("input", input),
+            ("other", other),
+        ]:
+            if not is_backend_tensor(t):
+                raise ValueError(backend_tensor_error(name))
         if condition.dtype != torch.bool:
             raise ValueError(
                 f"Expected condition.dtype torch.bool, got {condition.dtype}"

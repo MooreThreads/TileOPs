@@ -17,6 +17,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_tilelang_target
 
 __all__ = ["LayerNormKernel"]
 
@@ -32,7 +33,7 @@ def _layer_norm_kernel(M, N, eps, dtype):
     N_padded = _align_up(N, ALIGNMENT)
     pad_count = N_padded - N  # number of zero-padded elements per row
 
-    @tilelang.jit(out_idx=[3])
+    @tilelang.jit(target=get_tilelang_target(), out_idx=[3])
     def _func(block_m, threads):
 
         @T.prim_func
@@ -125,7 +126,7 @@ class LayerNormKernel(Kernel):
     input load and output store.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

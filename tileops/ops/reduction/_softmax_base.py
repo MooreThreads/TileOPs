@@ -17,6 +17,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from ._multidim import EmptyDimPolicy, flatten_for_multidim, normalize_dim, restore_multidim_shape
@@ -90,8 +91,8 @@ class _SoftmaxBaseOp(Op):
 
     def _validate(self, x: torch.Tensor) -> None:
         """Validate input tensor."""
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
+        if not is_backend_tensor(x):
+            raise ValueError(backend_tensor_error("x"))
         if x.dtype != self.dtype:
             raise ValueError(f"Expected x.dtype {self.dtype}, got {x.dtype}")
         if x.ndim == 0:

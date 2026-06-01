@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.norm import LayerNormKernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from .norm_base import ALIGNMENT, align_up, normalized_shape_to_n
@@ -103,12 +104,12 @@ class LayerNormFwdOp(Op):
                 shapes are incompatible with the configured
                 ``normalized_shape``.
         """
-        if not x.is_cuda:
-            raise ValueError("x must be a CUDA tensor")
-        if not weight.is_cuda:
-            raise ValueError("weight must be a CUDA tensor")
-        if not bias.is_cuda:
-            raise ValueError("bias must be a CUDA tensor")
+        if not is_backend_tensor(x):
+            raise ValueError(backend_tensor_error("x"))
+        if not is_backend_tensor(weight):
+            raise ValueError(backend_tensor_error("weight"))
+        if not is_backend_tensor(bias):
+            raise ValueError(backend_tensor_error("bias"))
         if x.dtype != self.dtype:
             raise ValueError(
                 f"Expected x.dtype {self.dtype}, got {x.dtype}"

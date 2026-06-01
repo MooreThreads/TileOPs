@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -20,5 +23,5 @@ class FP8QuantTest(WorkloadBase):
             self.kv_group,
             self.index_dim,
             dtype=self.in_dtype,
-            device="cuda")
+            device=DEVICE)
         return (input_tensor,)

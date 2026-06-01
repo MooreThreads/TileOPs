@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from benchmarks.benchmark_base import BenchmarkReport, _bench_results
+from tileops.utils import is_available, manual_seed_all
 
 # Skip NSA benchmarks until the underlying op failures are resolved.
 collect_ignore_glob = [
@@ -76,8 +77,8 @@ def _is_fp8_e4m3_benchmark(item: pytest.Item) -> bool:
 @pytest.fixture(autouse=True)
 def setup() -> None:
     torch.manual_seed(1235)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1235)
+    if is_available():
+        manual_seed_all(1235)
 
 
 def pytest_sessionstart(session):

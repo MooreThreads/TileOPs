@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmark for MoEExpertsNopadFwdOp and MoEExpertsPaddedFwdOp (expert GEMM layer only).
 
 Measures the permute + grouped-GEMM + unpermute pipeline without routing.
@@ -128,9 +131,9 @@ def test_moe_experts_nopad_bench(
         num_tokens=num_tokens, num_experts=num_experts, top_k=top_k,
         hidden_size=hidden_size, ffn_size=ffn_size, dtype=dtype,
     )
-    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
-    ws1 = torch.empty(0, device="cuda")
-    ws2 = torch.empty(0, device="cuda")
+    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device=DEVICE)
+    ws1 = torch.empty(0, device=DEVICE)
+    ws2 = torch.empty(0, device=DEVICE)
 
     # -- TileOPs nopad --------------------------------------------------------
     nopad = MoEExpertsNopadFwdOp(**kwargs)

@@ -91,7 +91,7 @@ def test_logsumexp_bench(shape: tuple, dtype: torch.dtype) -> None:
     test = LogSumExpTest(shape, dtype)
     inputs = test.gen_inputs()
 
-    op = LogSumExpFwdOp(dtype=dtype, dim=-1, tune=True)
+    op = LogSumExpFwdOp(dtype=dtype, dim=-1, tune=False)
     bm = ManifestBenchmark(_LOGSUMEXP_OP, op, test)
     try:
         result = bm.profile(op, *inputs)
@@ -103,6 +103,69 @@ def test_logsumexp_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     def baseline_fn(x):
         return torch.logsumexp(x, dim=-1)
+
+    result_bl = bm.profile(baseline_fn, *inputs)
+    BenchmarkReport.record(op, locals(), result_bl, tag="torch")
+
+
+@pytest.mark.parametrize(
+    "op_name, op_cls, test_cls, baseline_fn, shape, dtype",
+    [
+        pytest.param(
+            _SOFTMAX_OP,
+            SoftmaxFwdOp,
+            SoftmaxTest,
+            lambda x: F.softmax(x, dim=-1),
+            (256, 1024),
+            torch.float16,
+            id="softmax-musa-smoke-fp16",
+        ),
+        pytest.param(
+            _SOFTMAX_OP,
+            SoftmaxFwdOp,
+            SoftmaxTest,
+            lambda x: F.softmax(x, dim=-1),
+            (256, 1024),
+            torch.bfloat16,
+            id="softmax-musa-smoke-bf16",
+        ),
+        pytest.param(
+            _LOG_SOFTMAX_OP,
+            LogSoftmaxFwdOp,
+            LogSoftmaxTest,
+            lambda x: F.log_softmax(x, dim=-1),
+            (256, 1024),
+            torch.float16,
+            id="log-softmax-musa-smoke-fp16",
+        ),
+        pytest.param(
+            _LOG_SOFTMAX_OP,
+            LogSoftmaxFwdOp,
+            LogSoftmaxTest,
+            lambda x: F.log_softmax(x, dim=-1),
+            (256, 1024),
+            torch.bfloat16,
+            id="log-softmax-musa-smoke-bf16",
+        ),
+    ],
+)
+@pytest.mark.smoke
+def test_softmax_family_bench_musa_smoke(
+    op_name: str,
+    op_cls,
+    test_cls,
+    baseline_fn,
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+) -> None:
+    """Small benchmark proof cases for the softmax/log_softmax MUSA path."""
+    test = test_cls(shape, dtype)
+    inputs = test.gen_inputs()
+
+    op = op_cls(dtype=dtype, dim=-1, tune=False)
+    bm = ManifestBenchmark(op_name, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
 
     result_bl = bm.profile(baseline_fn, *inputs)
     BenchmarkReport.record(op, locals(), result_bl, tag="torch")

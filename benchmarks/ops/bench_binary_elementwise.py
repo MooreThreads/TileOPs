@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for binary/comparison/logical/bitwise/fused-gated elementwise ops.
 
 Profiles TileOPs vs PyTorch baselines for each new op category using
@@ -88,7 +91,7 @@ class FusedGatedBenchCase:
         self.output_dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(self.M, 2 * self.N, device="cuda", dtype=self.dtype),)
+        return (torch.randn(self.M, 2 * self.N, device=DEVICE, dtype=self.dtype),)
 
 
 class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
@@ -111,26 +114,26 @@ class FusedGatedBenchmark(BenchmarkBase[FusedGatedBenchCase]):
 
 
 def _randn_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.randn(*shape, device="cuda", dtype=dtype)
-    b = torch.randn(*shape, device="cuda", dtype=dtype)
+    a = torch.randn(*shape, device=DEVICE, dtype=dtype)
+    b = torch.randn(*shape, device=DEVICE, dtype=dtype)
     return a, b
 
 
 def _positive_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
-    b = torch.rand(*shape, device="cuda", dtype=dtype) + 0.1
+    a = torch.rand(*shape, device=DEVICE, dtype=dtype) + 0.1
+    b = torch.rand(*shape, device=DEVICE, dtype=dtype) + 0.1
     return a, b
 
 
 def _int_pair(shape: tuple, dtype: torch.dtype):
-    a = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
-    b = torch.randint(-1000, 1000, shape, device="cuda", dtype=torch.int32)
+    a = torch.randint(-1000, 1000, shape, device=DEVICE, dtype=torch.int32)
+    b = torch.randint(-1000, 1000, shape, device=DEVICE, dtype=torch.int32)
     return a, b
 
 
 def _bool_pair(shape: tuple, dtype: torch.dtype):
-    a = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
-    b = (torch.randn(*shape, device="cuda", dtype=dtype) > 0).to(dtype)
+    a = (torch.randn(*shape, device=DEVICE, dtype=dtype) > 0).to(dtype)
+    b = (torch.randn(*shape, device=DEVICE, dtype=dtype) > 0).to(dtype)
     return a, b
 
 
@@ -482,14 +485,14 @@ class BroadcastBenchmark(BenchmarkBase[BroadcastBenchCase]):
 
 
 def _randn_broadcast_pair(a_shape, b_shape, dtype):
-    a = torch.randn(*a_shape, device="cuda", dtype=dtype)
-    b = torch.randn(*b_shape, device="cuda", dtype=dtype)
+    a = torch.randn(*a_shape, device=DEVICE, dtype=dtype)
+    b = torch.randn(*b_shape, device=DEVICE, dtype=dtype)
     return a, b
 
 
 def _positive_broadcast_pair(a_shape, b_shape, dtype):
-    a = torch.rand(*a_shape, device="cuda", dtype=dtype) + 0.1
-    b = torch.rand(*b_shape, device="cuda", dtype=dtype) + 0.1
+    a = torch.rand(*a_shape, device=DEVICE, dtype=dtype) + 0.1
+    b = torch.rand(*b_shape, device=DEVICE, dtype=dtype) + 0.1
     return a, b
 
 

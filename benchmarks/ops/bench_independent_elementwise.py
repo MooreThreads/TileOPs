@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for 11 independent elementwise ops.
 
 Profiles TileOPs vs PyTorch baselines using DNN-realistic 2-D shapes
@@ -49,7 +52,7 @@ class UnaryBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return (torch.randn(self.shape, device="cuda", dtype=self.dtype),)
+        return (torch.randn(self.shape, device=DEVICE, dtype=self.dtype),)
 
 
 class UnaryBenchmark(BenchmarkBase[UnaryBenchCase]):
@@ -148,15 +151,15 @@ class TensorClampBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.input_shape, device="cuda", dtype=self.dtype)
+        x = torch.randn(self.input_shape, device=DEVICE, dtype=self.dtype)
         tensors: list[torch.Tensor] = [x]
         if self.min_shape is not None:
             tensors.append(
-                torch.randn(self.min_shape, device="cuda", dtype=self.dtype) - 0.5
+                torch.randn(self.min_shape, device=DEVICE, dtype=self.dtype) - 0.5
             )
         if self.max_shape is not None:
             tensors.append(
-                torch.randn(self.max_shape, device="cuda", dtype=self.dtype) + 0.5
+                torch.randn(self.max_shape, device=DEVICE, dtype=self.dtype) + 0.5
             )
         return tuple(tensors)
 
@@ -284,8 +287,8 @@ class PreluBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        weight = torch.randn(self.num_channels, device="cuda", dtype=self.dtype).abs() * 0.25
+        x = torch.randn(self.shape, device=DEVICE, dtype=self.dtype)
+        weight = torch.randn(self.num_channels, device=DEVICE, dtype=self.dtype).abs() * 0.25
         return x, weight
 
 
@@ -339,9 +342,9 @@ class WhereBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        cond = torch.rand(self.shape, device="cuda") > 0.5
-        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        y = torch.randn(self.shape, device="cuda", dtype=self.dtype)
+        cond = torch.rand(self.shape, device=DEVICE) > 0.5
+        x = torch.randn(self.shape, device=DEVICE, dtype=self.dtype)
+        y = torch.randn(self.shape, device=DEVICE, dtype=self.dtype)
         return cond, x, y
 
 
@@ -393,8 +396,8 @@ class MaskedFillBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=self.dtype)
-        mask = torch.rand(self.shape, device="cuda") > 0.5
+        x = torch.randn(self.shape, device=DEVICE, dtype=self.dtype)
+        mask = torch.rand(self.shape, device=DEVICE) > 0.5
         return x, mask
 
 
@@ -470,21 +473,21 @@ class GenerativeBenchFixture(FixtureBase):
 
 def _alibi_reference(seq_len: int, num_heads: int, dtype: torch.dtype) -> torch.Tensor:
     """Full ALiBi bias: (num_heads, seq_len, seq_len), bias[h,i,j] = -slope_h * |i-j|."""
-    positions = torch.arange(seq_len, device="cuda", dtype=torch.float32)
+    positions = torch.arange(seq_len, device=DEVICE, dtype=torch.float32)
     dist = (positions.unsqueeze(1) - positions.unsqueeze(0)).abs()  # (S, S)
     slopes = torch.pow(
         2.0,
-        -8.0 * torch.arange(1, num_heads + 1, device="cuda", dtype=torch.float32) / num_heads,
+        -8.0 * torch.arange(1, num_heads + 1, device=DEVICE, dtype=torch.float32) / num_heads,
     )
     bias = (-slopes[:, None, None] * dist[None, :, :])  # (H, S, S)
     return bias.to(dtype)
 
 
 def _sinusoidal_reference(seq_len: int, d_model: int, dtype: torch.dtype) -> torch.Tensor:
-    pos = torch.arange(seq_len, device="cuda", dtype=torch.float32).unsqueeze(1)
-    dim = torch.arange(0, d_model, 2, device="cuda", dtype=torch.float32)
+    pos = torch.arange(seq_len, device=DEVICE, dtype=torch.float32).unsqueeze(1)
+    dim = torch.arange(0, d_model, 2, device=DEVICE, dtype=torch.float32)
     angles = pos / torch.pow(10000.0, dim / d_model)
-    pe = torch.zeros(seq_len, d_model, device="cuda", dtype=torch.float32)
+    pe = torch.zeros(seq_len, d_model, device=DEVICE, dtype=torch.float32)
     pe[:, 0::2] = torch.sin(angles)
     pe[:, 1::2] = torch.cos(angles[:, :d_model // 2])
     return pe.to(dtype)
@@ -533,7 +536,7 @@ class Fp8UnaryBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0
+        x = torch.randn(self.shape, device=DEVICE, dtype=torch.float16) * 2.0
         return (x.to(self.dtype),)
 
 
@@ -608,11 +611,11 @@ class Fp8WhereBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        cond = torch.rand(self.shape, device="cuda") > 0.5
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
+        cond = torch.rand(self.shape, device=DEVICE) > 0.5
+        x = (torch.randn(self.shape, device=DEVICE, dtype=torch.float16) * 2.0).to(
             self.dtype
         )
-        y = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
+        y = (torch.randn(self.shape, device=DEVICE, dtype=torch.float16) * 2.0).to(
             self.dtype
         )
         return cond, x, y
@@ -634,10 +637,10 @@ class Fp8MaskedFillBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x = (torch.randn(self.shape, device="cuda", dtype=torch.float16) * 2.0).to(
+        x = (torch.randn(self.shape, device=DEVICE, dtype=torch.float16) * 2.0).to(
             self.dtype
         )
-        mask = torch.rand(self.shape, device="cuda") > 0.5
+        mask = torch.rand(self.shape, device=DEVICE) > 0.5
         return x, mask
 
 

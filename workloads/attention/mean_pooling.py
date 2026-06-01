@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import torch
@@ -28,5 +31,5 @@ class MeanPoolingTest(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         x = torch.randn(
             self.batch_size, self.seq_len, self.heads, self.dim,
-            device='cuda', dtype=self.dtype)
+            device=DEVICE, dtype=self.dtype)
         return x, self.offsets, self.indices

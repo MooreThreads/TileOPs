@@ -274,7 +274,7 @@ def _(
 
 
 class MLADecodeKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch,
@@ -931,7 +931,7 @@ def _(
 
 
 class MLADecodeWsKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch,

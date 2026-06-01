@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Op-level tests for MoePermutePaddedFwdOp (cutlass path).
 
 Verifies:
@@ -185,8 +188,8 @@ def test_moe_permute_op(total_tokens, top_k, num_experts, hidden_size, dtype):
 def test_moe_permute_skewed():
     """All tokens routed to expert 0."""
     T, K, E, H = 32, 4, 8, 64
-    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.zeros((T, K), dtype=torch.int32, device="cuda")
+    hidden_states = torch.randn(T, H, dtype=torch.bfloat16, device=DEVICE)
+    topk_ids = torch.zeros((T, K), dtype=torch.int32, device=DEVICE)
 
     op = MoePermutePaddedFwdOp(T, K, E, H, torch.bfloat16)
     outputs = op(hidden_states, topk_ids)

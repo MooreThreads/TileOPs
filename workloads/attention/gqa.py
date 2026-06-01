@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from tileops.ops import GroupedQueryAttentionFwdOp
@@ -25,7 +28,7 @@ class GroupedQueryAttentionBwdTest(WorkloadBase):
             self.heads,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
+            device=DEVICE,
             requires_grad=True)
         k = torch.randn(
             self.batch,
@@ -33,7 +36,7 @@ class GroupedQueryAttentionBwdTest(WorkloadBase):
             self.heads_kv,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
+            device=DEVICE,
             requires_grad=True)
         v = torch.randn(
             self.batch,
@@ -41,10 +44,10 @@ class GroupedQueryAttentionBwdTest(WorkloadBase):
             self.heads_kv,
             self.dim,
             dtype=self.dtype,
-            device='cuda',
+            device=DEVICE,
             requires_grad=True)
         grad_output = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device='cuda')
+            self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device=DEVICE)
 
         fwd_op = GroupedQueryAttentionFwdOp(self.batch, self.heads, self.heads_kv, self.seq_len,
                                             self.dim, self.is_causal, self.dtype)
@@ -67,12 +70,12 @@ class GroupedQueryAttentionFwdTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = torch.randn(
-            self.batch, self.seq_len, self.heads, self.dim, device='cuda',
+            self.batch, self.seq_len, self.heads, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         k = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         v = torch.randn(
-            self.batch, self.seq_len, self.heads_kv, self.dim, device='cuda',
+            self.batch, self.seq_len, self.heads_kv, self.dim, device=DEVICE,
             dtype=self.dtype).contiguous()
         return q, k, v

@@ -3,7 +3,10 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
+from tileops.utils import get_backend_name
 from workloads.rms_norm import RMSNormTest as _RMSNormTestWorkload
+
+DEVICE = get_backend_name()
 
 
 class RMSNormTest(_RMSNormTestWorkload, TestBase):
@@ -56,9 +59,9 @@ class RMSNormNonContigFixture(FixtureBase):
 @RMSNormNonContigFixture
 def test_rms_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]  # non-contiguous slice
-    weight = torch.randn(n, dtype=dtype, device="cuda")
+    weight = torch.randn(n, dtype=dtype, device=DEVICE)
 
     op = RMSNormFwdOp(normalized_shape=(n,), dtype=dtype)
 
@@ -87,8 +90,8 @@ class RMSNorm3DFixture(FixtureBase):
 @RMSNorm3DFixture
 def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    weight = torch.randn(hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
+    weight = torch.randn(hidden, dtype=dtype, device=DEVICE)
 
     op = RMSNormFwdOp(normalized_shape=(hidden,), dtype=dtype)
 
@@ -104,6 +107,56 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
         f"3D test failed, max err: {(y - y_ref).abs().max()}"
 
 
+@pytest.mark.smoke
+def test_rms_norm_rejects_shape_mismatch() -> None:
+    op = RMSNormFwdOp(M=32, N=64, dtype=torch.float16)
+    x = torch.randn(32, 63, dtype=torch.float16, device=DEVICE)
+    weight = torch.randn(64, dtype=torch.float16, device=DEVICE)
+
+    with pytest.raises(ValueError, match="Expected hidden dim"):
+        op(x, weight)
+
+
+@pytest.mark.smoke
+def test_rms_norm_rejects_non_backend_tensor() -> None:
+    op = RMSNormFwdOp(M=32, N=64, dtype=torch.float16)
+    x = torch.randn(32, 64, dtype=torch.float16, device="cpu")
+    weight = torch.randn(64, dtype=torch.float16, device=DEVICE)
+
+    with pytest.raises(ValueError, match="MUSA tensor"):
+        op(x, weight)
+
+
+class RMSNormMUSASmokeFixture(FixtureBase):
+    PARAMS = [
+        ("shape, dtype", [
+            pytest.param((256, 1024), torch.float16, marks=pytest.mark.smoke, id="2d-fp16"),
+            pytest.param((256, 1024), torch.bfloat16, marks=pytest.mark.smoke, id="2d-bf16"),
+            pytest.param((2, 128, 1024), torch.float16, marks=pytest.mark.smoke, id="3d-fp16"),
+        ]),
+    ]
+
+
+@RMSNormMUSASmokeFixture
+def test_rms_norm_musa_smoke_proof(shape: tuple[int, ...], dtype: torch.dtype) -> None:
+    """Small, explicit MUSA proof cases that finish faster than the full suite."""
+    *leading, hidden = shape
+    rows = 1
+    for dim in leading:
+        rows *= dim
+
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
+    weight = torch.randn(hidden, dtype=dtype, device=DEVICE)
+
+    op = RMSNormFwdOp(M=rows, N=hidden, dtype=dtype)
+    y = op(x, weight)
+
+    x_f32 = x.float()
+    rms = torch.sqrt(x_f32.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+    y_ref = ((x_f32 / rms) * weight.float()).to(dtype)
+
+    atol = 1e-2 if dtype == torch.float16 else 1.6e-2
+    torch.testing.assert_close(y, y_ref, atol=atol, rtol=atol, equal_nan=True)
 
 
 if __name__ == "__main__":

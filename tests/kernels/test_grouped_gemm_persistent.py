@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Correctness tests for GroupedGemmPersistentKernel.
 
 Verifies that the persistent kernel produces the same output as
@@ -145,7 +148,7 @@ def test_zero_tokens_some_experts():
     sizes[0] += extra
     sizes[2] = 0
     sizes[5] = 0
-    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    offsets = torch.zeros(E, dtype=torch.int32, device=DEVICE)
     offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
 
     sm_count = torch.cuda.get_device_properties(0).multi_processor_count
@@ -166,11 +169,11 @@ def test_all_zero_tokens():
     numel = 16  # constructor value; actual numel is 0 but we need non-zero for allocation
     dtype = torch.bfloat16
     # All experts have 0 tokens
-    sizes = torch.zeros(E, dtype=torch.int32, device="cuda")
-    offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    sizes = torch.zeros(E, dtype=torch.int32, device=DEVICE)
+    offsets = torch.zeros(E, dtype=torch.int32, device=DEVICE)
     # A and B with valid shapes (kernel should not read A at all since total_tiles=0)
-    A = torch.randn(numel, K, dtype=dtype, device="cuda")
-    B = torch.randn(E, N, K, dtype=dtype, device="cuda")
+    A = torch.randn(numel, K, dtype=dtype, device=DEVICE)
+    B = torch.randn(E, N, K, dtype=dtype, device=DEVICE)
 
     sm_count = torch.cuda.get_device_properties(0).multi_processor_count
     persistent_kernel = GroupedGemmPersistentKernel(

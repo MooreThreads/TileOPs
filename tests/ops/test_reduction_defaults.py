@@ -15,11 +15,15 @@ Pins two manifest-conformance invariants for the reduction op family:
 
 from __future__ import annotations
 
+from tileops.utils import get_backend_name, is_available
+
+DEVICE = get_backend_name()
+
 import pytest
 import torch
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required"
+    not is_available(), reason=f"{DEVICE.upper()} required"
 )
 
 
@@ -28,12 +32,12 @@ _LOGICAL_SHAPE = (2, 4, 8)
 
 
 def _make_float(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(*shape, dtype=dtype, device="cuda")
+    return torch.randn(*shape, dtype=dtype, device=DEVICE)
 
 
 def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     # values in {-1, 0, 1} so .bool() has both T and F.
-    return (torch.randint(-1, 2, shape, device="cuda")).to(dtype)
+    return (torch.randint(-1, 2, shape, device=DEVICE)).to(dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +160,7 @@ def test_prod_default_dim_last_axis() -> None:
     from tileops.ops.reduction.reduce import ProdFwdOp
 
     # use a narrow value range so fp16 prod is numerically stable
-    x = torch.rand(*_FLOAT_SHAPE, dtype=torch.float16, device="cuda") * 0.01 + 0.99
+    x = torch.rand(*_FLOAT_SHAPE, dtype=torch.float16, device=DEVICE) * 0.01 + 0.99
     op = ProdFwdOp(dtype=torch.float16)
     y = op(x)
     assert y.shape == torch.prod(x, dim=-1).shape
@@ -258,12 +262,12 @@ def test_empty_dim_policy_class_attrs() -> None:
 
 @pytest.mark.smoke
 def test_all_empty_dim_noop_rejects_cpu_tensor() -> None:
-    """dim=[] must still validate device; non-CUDA input must raise."""
+    """dim=[] must still validate device; non-backend input must raise."""
     from tileops.ops.reduction.all_op import AllFwdOp
 
     x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
     op = AllFwdOp(dtype=torch.float16, dim=[])
-    with pytest.raises(ValueError, match="CUDA tensor"):
+    with pytest.raises(ValueError, match=f"{DEVICE.upper()} tensor"):
         op(x)
 
 
@@ -273,7 +277,7 @@ def test_any_empty_dim_noop_rejects_cpu_tensor() -> None:
 
     x = (torch.randint(-1, 2, _LOGICAL_SHAPE)).to(torch.float16)  # cpu
     op = AnyFwdOp(dtype=torch.float16, dim=[])
-    with pytest.raises(ValueError, match="CUDA tensor"):
+    with pytest.raises(ValueError, match=f"{DEVICE.upper()} tensor"):
         op(x)
 
 
@@ -282,7 +286,7 @@ def test_all_empty_dim_noop_rejects_wrong_dtype() -> None:
     """dim=[] must still validate dtype against the op's declared dtype."""
     from tileops.ops.reduction.all_op import AllFwdOp
 
-    x = _make_logical(_LOGICAL_SHAPE, torch.float32)  # cuda, fp32
+    x = _make_logical(_LOGICAL_SHAPE, torch.float32)  # backend, fp32
     op = AllFwdOp(dtype=torch.float16, dim=[])
     with pytest.raises(ValueError, match="Expected x.dtype"):
         op(x)

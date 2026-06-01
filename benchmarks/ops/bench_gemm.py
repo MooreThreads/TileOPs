@@ -30,7 +30,7 @@ class GemmBenchmark(BenchmarkBase[GemmTest]):
 
 
 _GEMM_BENCH_PARAMS = [
-    pytest.param(1024, 1024, 1024, torch.float16, False, False, True, id="square-fp16"),
+    pytest.param(1024, 1024, 1024, torch.float16, False, False, False, id="square-fp16"),
     pytest.param(1, 7168, 16384, torch.float16, False, True, True, id="wide-fp16"),
     pytest.param(1, 18432, 7168, torch.bfloat16, False, True, True, id="wide-alt-bf16"),
     pytest.param(7168, 1, 16384, torch.float16, False, False, True, id="thin-n-fp16"),

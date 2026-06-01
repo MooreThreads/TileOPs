@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import pytest
@@ -84,8 +87,8 @@ def test_instance_norm_no_affine_bench(n: int, c: int, spatial: tuple,
     bm = InstanceNormBenchmark(test, op)
     # Running stats are required positional args (R16) but ignored on the
     # use_input_stats=True path; pass placeholders.
-    rm = torch.zeros(c, dtype=torch.float32, device="cuda")
-    rv = torch.ones(c, dtype=torch.float32, device="cuda")
+    rm = torch.zeros(c, dtype=torch.float32, device=DEVICE)
+    rv = torch.ones(c, dtype=torch.float32, device=DEVICE)
     result = bm.profile(op, x, rm, rv)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

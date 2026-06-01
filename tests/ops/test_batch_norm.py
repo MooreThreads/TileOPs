@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name, is_available
+
+DEVICE = get_backend_name()
 """Tests for BatchNormFwdOp and BatchNormBwdOp.
 
 Correctness is validated against torch.nn.functional.batch_norm and the
@@ -167,16 +170,16 @@ def test_batch_norm_fwd_returns_single_tensor() -> None:
     """BatchNormFwdOp forward must produce one tensor — manifest declares
     a single output. ``training`` is bound at ctor; the runtime kwarg is
     no longer accepted."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
+    if not is_available():
+        pytest.skip(f"{DEVICE.upper()} required for forward call")
 
     N, C, H, W = 4, 8, 4, 4
     op = BatchNormFwdOp(N, C, (H, W), dtype=torch.float16, training=False)
-    x = torch.randn(N, C, H, W, device="cuda", dtype=torch.float16)
-    weight = torch.randn(C, device="cuda", dtype=torch.float32)
-    bias = torch.randn(C, device="cuda", dtype=torch.float32)
-    rm = torch.zeros(C, device="cuda", dtype=torch.float32)
-    rv = torch.ones(C, device="cuda", dtype=torch.float32)
+    x = torch.randn(N, C, H, W, device=DEVICE, dtype=torch.float16)
+    weight = torch.randn(C, device=DEVICE, dtype=torch.float32)
+    bias = torch.randn(C, device=DEVICE, dtype=torch.float32)
+    rm = torch.zeros(C, device=DEVICE, dtype=torch.float32)
+    rv = torch.ones(C, device=DEVICE, dtype=torch.float32)
 
     y = op(x, rm, rv, weight, bias)
     assert isinstance(y, torch.Tensor)

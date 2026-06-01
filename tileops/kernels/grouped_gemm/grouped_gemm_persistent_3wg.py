@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """V2 persistent grouped-GEMM kernel: warp-specialized + static wave + TMA store.
 
 Mirrors the structure of the TileLang SM100 example
@@ -54,7 +57,7 @@ _DEFAULT_CONFIG = {
 class GroupedGemmPersistent3WGKernel(Kernel):
     """V2 persistent grouped-GEMM kernel (K-aligned only)."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self, numel, num_experts, N, K,
                  dtype=torch.bfloat16, sm_count=None,
@@ -89,15 +92,15 @@ class GroupedGemmPersistent3WGKernel(Kernel):
         best_cfg = None
         # Build dummy inputs once for benchmarking all configs
         A_dummy = torch.randn(
-            self.numel, self.K, dtype=self.dtype, device="cuda") * 0.02
+            self.numel, self.K, dtype=self.dtype, device=DEVICE) * 0.02
         B_dummy = torch.randn(
-            self.num_experts, self.N, self.K, dtype=self.dtype, device="cuda") * 0.02
+            self.num_experts, self.N, self.K, dtype=self.dtype, device=DEVICE) * 0.02
         per = max(1, self.numel // self.num_experts)
         sizes = torch.full(
-            (self.num_experts,), per, dtype=torch.int32, device="cuda")
+            (self.num_experts,), per, dtype=torch.int32, device=DEVICE)
         sizes[-1] = self.numel - per * (self.num_experts - 1)
         offsets = torch.zeros(
-            self.num_experts, dtype=torch.int32, device="cuda")
+            self.num_experts, dtype=torch.int32, device=DEVICE)
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
 
         def _bench_forward():

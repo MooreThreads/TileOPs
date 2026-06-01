@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Cumulative sum operator (L2 Op layer).
 
 Provides:
@@ -31,7 +34,7 @@ class CumsumFwdOp(CumulativeOp):
 
     Example:
         >>> op = CumsumFwdOp(N=4096, dtype=torch.float16)
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device=DEVICE)
         >>> y = op(x)  # shape: (1024, 4096)
     """
 

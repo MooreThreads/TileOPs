@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for 5 RoPE variants (1D layout).
 
 Profiles TileOPs RoPE vs manual PyTorch reference on DNN-realistic shapes.
@@ -27,7 +30,7 @@ class RopeBenchCase:
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        return (torch.randn(*self.shape, device="cuda", dtype=self.dtype),)
+        return (torch.randn(*self.shape, device=DEVICE, dtype=self.dtype),)
 
 
 class RopeBenchmark(BenchmarkBase[RopeBenchCase]):
@@ -48,8 +51,8 @@ def _precompute_rope_neox_cos_sin(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Pre-compute cos/sin tables (matches RopeNeoxOp caching behavior)."""
     half = head_dim // 2
-    freqs = 1.0 / (base ** (torch.arange(0, half, device="cuda", dtype=torch.float32) / half))
-    t = torch.arange(seq_len, device="cuda", dtype=torch.float32)
+    freqs = 1.0 / (base ** (torch.arange(0, half, device=DEVICE, dtype=torch.float32) / half))
+    t = torch.arange(seq_len, device=DEVICE, dtype=torch.float32)
     angles = torch.outer(t, freqs)
     cos_full = torch.cat([torch.cos(angles), torch.cos(angles)], dim=-1).to(dtype)
     sin_full = torch.cat([torch.sin(angles), torch.sin(angles)], dim=-1).to(dtype)

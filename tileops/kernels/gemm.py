@@ -7,7 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version, str2dtype
+from tileops.utils import get_sm_version, get_tilelang_target, str2dtype
 
 __all__ = [
     'GemmKernel',
@@ -24,7 +24,11 @@ def _gemm_kernel(m: int,
                  dtype: str = 'float16') -> Callable:
     accum_dtype = "float"
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(
+        target=get_tilelang_target(),
+        out_idx=[-1],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _gemm_func(block_m: int, block_n: int, block_k: int, threads: int, num_stages: int,
                    enable_rasterization: bool) -> Callable:
 
@@ -44,12 +48,7 @@ def _gemm_kernel(m: int,
                 a_shared = T.alloc_shared(a_shared_shape, dtype)
                 b_shared = T.alloc_shared(b_shared_shape, dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                c_shared = T.alloc_shared((block_m, block_n), dtype)
-
-                T.annotate_layout({
-                    c_shared: tilelang.layout.make_swizzled_layout(c_shared),
-                })
-                T.use_swizzle(10, enable=enable_rasterization)
+                T.use_swizzle(panel_size=4, order="col")
 
                 T.clear(c_local)
 
@@ -69,8 +68,7 @@ def _gemm_kernel(m: int,
                         T.copy(b[bx * block_n, _k * block_k], b_shared)  # [block_n, block_k]
                     T.gemm(a_shared, b_shared, c_local, trans_a, trans_b)
 
-                T.copy(c_local, c_shared)
-                T.copy(c_shared, c[by * block_m, bx * block_n])
+                T.copy(c_local, c[by * block_m, bx * block_n])
 
         return _gemm_main
 
@@ -108,7 +106,7 @@ def _(m: int, n: int, k: int,
 
 
 class GemmKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  m: int,
@@ -136,23 +134,14 @@ class GemmKernel(Kernel):
         # From tilelang/examples/gemm/example_gemm_autotune.py
         sm_version = get_sm_version()
 
-        if sm_version in {80}:
+        if sm_version in {31}:
             return {
-                "block_m": 128,
-                "block_n": 256,
-                "block_k": 32,
-                "num_stages": 2,
-                "threads": 128,
-                "enable_rasterization": True
-            }
-        if sm_version in {90}:
-            return {
-                "block_m": 128,
+                "block_m": 256,
                 "block_n": 256,
                 "block_k": 64,
                 "num_stages": 3,
-                "threads": 256,
-                "enable_rasterization": True
+                "threads": 512,
+                "enable_rasterization": False,
             }
 
         return {
@@ -171,7 +160,7 @@ class GemmKernel(Kernel):
         block_n = [64, 128, 256]
         block_k = [32, 64]
         num_stages = [0, 1, 2, 3]
-        threads = [128, 256]
+        threads = [128, 256, 512]
         enable_rasterization = [True, False]
         _configs = list(
             itertools.product(block_m, block_n, block_k, num_stages, threads, enable_rasterization))
@@ -199,7 +188,11 @@ class GemmKernel(Kernel):
 def _gemv_kernel(n: int, k: int, dtype: str = "float16") -> Callable:
     accum_dtype = "float"
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(
+        target=get_tilelang_target(),
+        out_idx=[-1],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _gemv_func(
         block_n: int,
         reduce_threads: int,
@@ -291,7 +284,7 @@ def _(n: int, k: int,
 
 
 class GemvKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  n: int,

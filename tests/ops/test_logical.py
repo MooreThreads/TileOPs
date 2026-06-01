@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Tests for logical elementwise ops (logical_and, logical_or, logical_not).
 
 Logical ops under test accept numeric tensors, interpret non-zero values
@@ -33,8 +36,8 @@ class LogicalTest(TestBase):
         self.ref_fn = ref_fn
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        a = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
-        b = torch.randn(self.n_total, dtype=self.dtype, device="cuda") > 0
+        a = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE) > 0
+        b = torch.randn(self.n_total, dtype=self.dtype, device=DEVICE) > 0
         a = a.to(self.dtype)
         b = b.to(self.dtype)
         return a, b
@@ -122,8 +125,8 @@ def test_logical_broadcast(
     op_name, op_cls, ref_fn, a_shape, b_shape,
 ) -> None:
     dtype = torch.float16
-    a = (torch.randn(*a_shape, dtype=dtype, device="cuda") > 0).to(dtype)
-    b = (torch.randn(*b_shape, dtype=dtype, device="cuda") > 0).to(dtype)
+    a = (torch.randn(*a_shape, dtype=dtype, device=DEVICE) > 0).to(dtype)
+    b = (torch.randn(*b_shape, dtype=dtype, device=DEVICE) > 0).to(dtype)
     op = op_cls(a_shape=a_shape, b_shape=b_shape, dtype=dtype)
     ref = ref_fn(a.bool(), b.bool())
     with torch.no_grad():
@@ -163,17 +166,17 @@ class LogicalNotTest(TestBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.dtype == torch.bool:
-            x = torch.rand(self.n_total, device="cuda") > 0.5
+            x = torch.rand(self.n_total, device=DEVICE) > 0.5
             return (x,)
 
         if self.dtype == torch.uint8:
-            x = torch.randint(0, 8, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(0, 8, (self.n_total,), device=DEVICE, dtype=self.dtype)
         elif self.dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
-            x = torch.randint(-4, 4, (self.n_total,), device="cuda", dtype=self.dtype)
+            x = torch.randint(-4, 4, (self.n_total,), device=DEVICE, dtype=self.dtype)
         else:
-            x = torch.randn(self.n_total, device="cuda", dtype=self.dtype)
+            x = torch.randn(self.n_total, device=DEVICE, dtype=self.dtype)
 
-        mask = torch.rand(self.n_total, device="cuda") > 0.5
+        mask = torch.rand(self.n_total, device=DEVICE) > 0.5
         x[mask] = 0
         return (x,)
 
@@ -216,8 +219,8 @@ def _gen_int_logical_inputs(
         lo, hi = -8, 8
     else:
         lo, hi = -32, 32
-    a = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
-    b = torch.randint(lo, hi, (n,), dtype=dtype, device="cuda")
+    a = torch.randint(lo, hi, (n,), dtype=dtype, device=DEVICE)
+    b = torch.randint(lo, hi, (n,), dtype=dtype, device=DEVICE)
     # Force a mix of zeros so non-zero truthiness is non-trivial.
     a[::3] = 0
     b[::5] = 0
@@ -244,8 +247,8 @@ def test_logical_int_bool_matrix(
     n = 4_096
     shape = (n,)
     if dtype == torch.bool:
-        a = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
-        b = torch.randint(0, 2, (n,), device="cuda").to(torch.bool)
+        a = torch.randint(0, 2, (n,), device=DEVICE).to(torch.bool)
+        b = torch.randint(0, 2, (n,), device=DEVICE).to(torch.bool)
     else:
         a, b = _gen_int_logical_inputs(n, dtype)
     op = op_cls(a_shape=shape, b_shape=shape, dtype=dtype)

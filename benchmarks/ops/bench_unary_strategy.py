@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Strategy benchmark for UnaryKernel: direct vs explicit_parallel vs register_copy.
 
 Uses relu as the representative op. Sweeps DNN-realistic 2D shapes
@@ -53,7 +56,7 @@ class UnaryStrategyBenchCase:
         self.output_dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        return (torch.randn(*self.shape, device="cuda", dtype=self.dtype),)
+        return (torch.randn(*self.shape, device=DEVICE, dtype=self.dtype),)
 
 
 class UnaryStrategyBenchmark(BenchmarkBase[UnaryStrategyBenchCase]):

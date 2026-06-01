@@ -445,7 +445,7 @@ class GroupedGemmPersistentKernel(Kernel):
         >>> C = kernel(A, B, true_sizes, true_offsets)  # [numel, N]
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

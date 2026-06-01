@@ -10,6 +10,7 @@ from tileops.kernels.elementwise import (
     MaskedFillTensorValueFwdKernel,
 )
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ..op_base import Op
 from ._base import _OP_REGISTRY, _apply_fp8_post_cast, _validate_scalar_param_repr
@@ -110,8 +111,13 @@ class MaskedFillFwdOp(Op):
     def forward(
         self, input: torch.Tensor, mask: torch.Tensor, value: torch.Tensor,  # noqa: A002
     ) -> torch.Tensor:
-        if not (input.is_cuda and mask.is_cuda and value.is_cuda):
-            raise ValueError("Inputs must be CUDA tensors")
+        for name, t in [
+            ("input", input),
+            ("mask", mask),
+            ("value", value),
+        ]:
+            if not is_backend_tensor(t):
+                raise ValueError(backend_tensor_error(name))
         if input.dtype != self.dtype:
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if mask.dtype != torch.bool:
@@ -233,16 +239,16 @@ class MaskedFillScalarFwdOp(Op):
         return _apply_fp8_post_cast(result, self.kernel)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        if not input.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("Input"))
         if input.dtype != self.dtype:
             raise ValueError(f"Expected input.dtype {self.dtype}, got {input.dtype}")
         if tuple(input.shape) != self.input_shape:
             raise ValueError(
                 f"Expected input.shape {self.input_shape}, got {tuple(input.shape)}"
             )
-        if not mask.is_cuda:
-            raise ValueError("Mask must be a CUDA tensor")
+        if not is_backend_tensor(mask):
+            raise ValueError(backend_tensor_error("Mask"))
         if mask.dtype != torch.bool:
             raise ValueError(f"Expected mask.dtype torch.bool, got {mask.dtype}")
         if tuple(mask.shape) != self.mask_shape:

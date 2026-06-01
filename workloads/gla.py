@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -23,9 +26,9 @@ class GLADecodeTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, DK, DV = self.batch, self.heads, self.dim_k, self.dim_v
-        q = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=self.dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=self.dtype) * 0.1
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=self.dtype)
-        state = torch.randn(B, H, DK, DV, device="cuda", dtype=self.dtype) * 0.1
+        q = torch.randn(B, H, DK, device=DEVICE, dtype=self.dtype) * 0.1
+        k = torch.randn(B, H, DK, device=DEVICE, dtype=self.dtype) * 0.1
+        v = torch.randn(B, H, DV, device=DEVICE, dtype=self.dtype) * 0.1
+        gk = -torch.rand(B, H, DK, device=DEVICE, dtype=self.dtype)
+        state = torch.randn(B, H, DK, DV, device=DEVICE, dtype=self.dtype) * 0.1
         return q, k, v, gk, state

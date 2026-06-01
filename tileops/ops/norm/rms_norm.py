@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import math
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -36,8 +39,8 @@ class RMSNormFwdOp(Op):
 
     Example:
         >>> op = RMSNormFwdOp(normalized_shape=(4096,), dtype=torch.float16)
-        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-        >>> w = torch.randn(4096, dtype=torch.float16, device="cuda")
+        >>> x = torch.randn(1024, 4096, dtype=torch.float16, device=DEVICE)
+        >>> w = torch.randn(4096, dtype=torch.float16, device=DEVICE)
         >>> y = op(x, w)  # shape: (1024, 4096)
     """
 

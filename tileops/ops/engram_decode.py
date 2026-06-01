@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.engram import EngramDecodeKernel
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from .op_base import Op
 
@@ -97,8 +98,8 @@ class EngramDecodeOp(Op):
               y_t:            (B, d) — output to add as residual.
               new_conv_state: (B, max_conv_len, d) — updated state for next step.
         """
-        if not e_t.is_cuda:
-            raise ValueError("e_t must be a CUDA tensor")
+        if not is_backend_tensor(e_t):
+            raise ValueError(backend_tensor_error("e_t"))
         if e_t.dtype != self.dtype:
             raise ValueError(f"Expected dtype {self.dtype}, got {e_t.dtype}")
 

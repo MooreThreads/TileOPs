@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
@@ -41,9 +44,9 @@ class NsaCmpFwdTest(WorkloadBase):
         chunk_num = chunk_offsets[-1].item()
 
         # float16, data Tie-breaking
-        q = torch.randn((self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device="cuda")
-        k = torch.randn((chunk_num, self.head_kv, self.dim_k), dtype=self.dtype, device="cuda")
-        v = torch.randn((chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device="cuda")
+        q = torch.randn((self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device=DEVICE)
+        k = torch.randn((chunk_num, self.head_kv, self.dim_k), dtype=self.dtype, device=DEVICE)
+        v = torch.randn((chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device=DEVICE)
 
         self.chunk_num = chunk_offsets[-1].item()
         return (

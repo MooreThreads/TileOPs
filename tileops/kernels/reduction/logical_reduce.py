@@ -328,7 +328,7 @@ class LogicalReduceKernel(Kernel):
         tune: Whether to autotune (default False).
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

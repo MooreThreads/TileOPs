@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Compare GroupedGemmPersistentKernel vs nopad vs padded reference.
 
 Tests the three implementations across:
@@ -92,12 +95,12 @@ def bench_padded(numel, E, N, K, A, B, sizes, offsets, block_m=64):
     """Padded reference: block_m-aligned per-expert slabs."""
     sizes_py = sizes.tolist()
     padded_batch_sum = sum(math.ceil(s / block_m) * block_m for s in sizes_py)
-    pad_offsets = torch.zeros(E, dtype=torch.int32, device="cuda")
+    pad_offsets = torch.zeros(E, dtype=torch.int32, device=DEVICE)
     cur = 0
     for i, s in enumerate(sizes_py):
         pad_offsets[i] = cur
         cur += math.ceil(s / block_m) * block_m
-    A_pad = torch.zeros(padded_batch_sum, K, dtype=_DTYPE, device="cuda")
+    A_pad = torch.zeros(padded_batch_sum, K, dtype=_DTYPE, device=DEVICE)
     for s, so, po in zip(sizes_py, offsets.tolist(), pad_offsets.tolist(), strict=True):
         A_pad[po:po + s] = A[so:so + s]
     kernel = GroupedGemmKernel(

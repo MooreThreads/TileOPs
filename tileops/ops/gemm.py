@@ -4,7 +4,7 @@ import torch
 
 from tileops.kernels.gemm import GemmKernel, GemvKernel
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import backend_tensor_error, get_sm_version, is_backend_tensor
 
 from .op_base import Op
 
@@ -58,6 +58,30 @@ class GemmOp(Op):
         return kernels
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if not is_backend_tensor(a):
+            raise ValueError(backend_tensor_error("a"))
+        if not is_backend_tensor(b):
+            raise ValueError(backend_tensor_error("b"))
+        if a.dtype != self.dtype:
+            raise ValueError(f"Expected a.dtype {self.dtype}, got {a.dtype}")
+        if b.dtype != self.dtype:
+            raise ValueError(f"Expected b.dtype {self.dtype}, got {b.dtype}")
+        if a.ndim != 2:
+            raise ValueError(f"Expected a to be 2D, got {a.ndim}D")
+        if b.ndim != 2:
+            raise ValueError(f"Expected b to be 2D, got {b.ndim}D")
+
+        expected_a_shape = (self.K, self.M) if self.trans_a else (self.M, self.K)
+        expected_b_shape = (self.N, self.K) if self.trans_b else (self.K, self.N)
+        if tuple(a.shape) != expected_a_shape:
+            raise ValueError(
+                f"Expected a.shape {expected_a_shape}, got {tuple(a.shape)}"
+            )
+        if tuple(b.shape) != expected_b_shape:
+            raise ValueError(
+                f"Expected b.shape {expected_b_shape}, got {tuple(b.shape)}"
+            )
+
         if self.use_gemv_kernel:
             if self.gemv_mode == "lhs_row":
                 a_vec = a.reshape(-1)

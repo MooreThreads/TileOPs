@@ -8,11 +8,15 @@ claim to the full PyTorch scalar contract.
 
 from __future__ import annotations
 
+from tileops.utils import get_backend_name, is_available
+
+DEVICE = get_backend_name()
+
 import pytest
 import torch
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA required"
+    not is_available(), reason=f"{DEVICE.upper()} required"
 )
 
 _FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
@@ -21,11 +25,11 @@ _DIM_IDS = ["dim=None", "dim=0", "dim=-1", "dim=()", "dim=[]"]
 
 
 def _make_scalar(dtype: torch.dtype) -> torch.Tensor:
-    return torch.tensor(1.5, dtype=dtype, device="cuda")
+    return torch.tensor(1.5, dtype=dtype, device=DEVICE)
 
 
 def _make_zero_scalar(dtype: torch.dtype) -> torch.Tensor:
-    return torch.tensor(0.0, dtype=dtype, device="cuda")
+    return torch.tensor(0.0, dtype=dtype, device=DEVICE)
 
 
 @pytest.mark.smoke
@@ -121,9 +125,9 @@ def test_invalid_dof_welford_reductions_match_pytorch(
     from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
 
     if shape == (2, 1):
-        x = torch.tensor([[1.5], [2.5]], dtype=torch.float32, device="cuda")
+        x = torch.tensor([[1.5], [2.5]], dtype=torch.float32, device=DEVICE)
     else:
-        x = torch.tensor([1.5], dtype=torch.float32, device="cuda")
+        x = torch.tensor([1.5], dtype=torch.float32, device=DEVICE)
 
     for op_cls, torch_fn in [
         (VarFwdOp, torch.var),

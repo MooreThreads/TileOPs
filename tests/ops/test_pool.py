@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import pytest
@@ -68,7 +71,7 @@ class AvgPool1dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self, n: int, c_in: int, l_in: int) -> tuple[torch.Tensor]:
-        x = torch.randn(n, l_in, c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(n, l_in, c_in, device=DEVICE, dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -224,7 +227,7 @@ class AvgPool2dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self, n: int, c_in: int, h_in: int, w_in: int) -> tuple[torch.Tensor]:
-        x = torch.randn(n, h_in, w_in, c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(n, h_in, w_in, c_in, device=DEVICE, dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -355,7 +358,7 @@ def test_avg_pool2d_rejects_invalid_param_types(kwargs: dict[str, object], match
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool2d_negative_divisor_override_matches_torch() -> None:
-    x = torch.randn(1, 8, 8, 4, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 8, 8, 4, device=DEVICE, dtype=torch.float16).contiguous()
     op = AvgPool2dOp(
         n=1,
         c_in=4,
@@ -468,7 +471,7 @@ class AvgPool3dTest(TestBase):
         self.dtype = dtype
 
     def gen_inputs(self, n: int, c_in: int, d_in: int, h_in: int, w_in: int) -> tuple[torch.Tensor]:
-        x = torch.randn(n, d_in, h_in, w_in, c_in, device="cuda", dtype=self.dtype).contiguous()
+        x = torch.randn(n, d_in, h_in, w_in, c_in, device=DEVICE, dtype=self.dtype).contiguous()
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
@@ -600,7 +603,7 @@ def test_avg_pool3d_rejects_invalid_param_types(kwargs: dict[str, object], match
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_avg_pool3d_negative_divisor_override_matches_torch() -> None:
-    x = torch.randn(1, 4, 6, 6, 3, device="cuda", dtype=torch.float16).contiguous()
+    x = torch.randn(1, 4, 6, 6, 3, device=DEVICE, dtype=torch.float16).contiguous()
     op = AvgPool3dOp(
         n=1,
         c_in=3,

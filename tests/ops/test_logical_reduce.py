@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Correctness tests for logical reduce ops (any, all, count_nonzero).
 
 Covers: AnyFwdOp, AllFwdOp, CountNonzeroFwdOp.
@@ -197,22 +200,22 @@ def _exact_compare_int64(output: torch.Tensor, output_ref: torch.Tensor) -> None
 def _make_noncontig_input(m: int, n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a non-contiguous 2D tensor of shape (m, n*2) for slicing tests."""
     if dtype == torch.bool:
-        return torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device="cuda")
-    return torch.randn(m, n * 2, dtype=dtype, device="cuda")
+        return torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device=DEVICE)
+    return torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
 
 
 def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
     """Create a 1D tensor of shape (n,) for 1D tests."""
     if dtype == torch.bool:
-        return torch.randint(0, 2, (n,), dtype=torch.bool, device="cuda")
-    return torch.randn(n, dtype=dtype, device="cuda")
+        return torch.randint(0, 2, (n,), dtype=torch.bool, device=DEVICE)
+    return torch.randn(n, dtype=dtype, device=DEVICE)
 
 
 def _make_nd_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
     """Create an N-D tensor for dim/keepdim tests."""
     if dtype == torch.bool:
-        return torch.randint(0, 2, shape, dtype=torch.bool, device="cuda")
-    return torch.randn(shape, dtype=dtype, device="cuda")
+        return torch.randint(0, 2, shape, dtype=torch.bool, device=DEVICE)
+    return torch.randn(shape, dtype=dtype, device=DEVICE)
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +249,7 @@ def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
     op = AnyFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().any(dim=-1)
     y = op(x)
@@ -258,7 +261,7 @@ def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.any_op import AnyFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=DEVICE)
     op = AnyFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().any(dim=-1)
     y = op(x)
@@ -335,7 +338,7 @@ def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
     op = AllFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().all(dim=-1)
     y = op(x)
@@ -347,7 +350,7 @@ def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.all_op import AllFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=DEVICE)
     op = AllFwdOp(dtype=dtype, dim=-1)
     ref = x.bool().all(dim=-1)
     y = op(x)
@@ -424,7 +427,7 @@ def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> Non
 def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
@@ -436,7 +439,7 @@ def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype)
 def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=DEVICE)
     op = CountNonzeroFwdOp(dtype=dtype, dim=-1)
     ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
     y = op(x)
@@ -688,7 +691,7 @@ def test_logical_reduce_accepts_bool(op_name: str) -> None:
 
     cls = getattr(mod, op_name)
     op = cls(dtype=torch.bool, dim=-1)
-    x = torch.randint(0, 2, (_M, _N), device="cuda").bool()
+    x = torch.randint(0, 2, (_M, _N), device=DEVICE).bool()
     out = op(x)
     assert out.dtype == torch.bool
     assert out.shape == (_M,)
@@ -700,7 +703,7 @@ def test_count_nonzero_returns_int64() -> None:
     from tileops.ops.reduction.count_nonzero import CountNonzeroFwdOp
 
     op = CountNonzeroFwdOp(dtype=torch.float16, dim=-1)
-    x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
+    x = torch.randn(_M, _N, dtype=torch.float16, device=DEVICE)
     out = op(x)
     assert out.dtype == torch.int64, (
         f"CountNonzero output dtype {out.dtype} != int64"
@@ -715,7 +718,7 @@ def test_logical_reduce_returns_bool(op_name: str) -> None:
 
     cls = getattr(mod, op_name)
     op = cls(dtype=torch.float16, dim=-1)
-    x = torch.randn(_M, _N, dtype=torch.float16, device="cuda")
+    x = torch.randn(_M, _N, dtype=torch.float16, device=DEVICE)
     out = op(x)
     assert out.dtype == torch.bool
 

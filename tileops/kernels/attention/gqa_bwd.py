@@ -52,7 +52,7 @@ def _flashattn_bwd_preprocess_kernel(batch: int, heads: int, seq_len: int, dim: 
 
 
 class FlashAttnBwdPreprocessKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self, batch: int, heads: int, seq_len: int, dim: int, dtype: torch.dtype) -> None:
         super().__init__()
@@ -102,7 +102,7 @@ def _flashattn_bwd_postprocess_kernel(batch: int,
 
 
 class FlashAttnBwdPostprocessKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self, batch: int, heads: int, seq_len: int, dim: int, dtype: torch.dtype) -> None:
         super().__init__()
@@ -233,7 +233,7 @@ def _mha_bwd_kernel(batch: int,
 
 
 class MHABwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -416,7 +416,7 @@ def _mha_bwd_wgmma_pipelined_kernel(batch: int,
 
 
 class MHABwdWgmmaPipelinedKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -581,7 +581,7 @@ def _gqa_bwd_kernel(batch: int,
 
 
 class GQABwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,
@@ -762,7 +762,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(batch: int,
 
 
 class GQABwdWgmmaPipelinedKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31]
 
     def __init__(self,
                  batch: int,

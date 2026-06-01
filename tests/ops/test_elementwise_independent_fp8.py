@@ -10,6 +10,10 @@ non-fp8 dtypes (positive path).
 import pytest
 import torch
 
+from tileops.utils import get_backend_name, is_available
+
+DEVICE = get_backend_name()
+
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
@@ -28,7 +32,7 @@ def test_where_rejects_fp8_dtype(bad_dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize(
     "dtype",
     [torch.float16, torch.bfloat16, torch.float32],
@@ -38,9 +42,9 @@ def test_where_accepts_manifest_dtypes(dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import WhereFwdOp
 
     shape = (4, 8)
-    cond = torch.randint(0, 2, shape, device="cuda").bool()
-    inp = torch.randn(shape, device="cuda", dtype=dtype)
-    other = torch.randn(shape, device="cuda", dtype=dtype)
+    cond = torch.randint(0, 2, shape, device=DEVICE).bool()
+    inp = torch.randn(shape, device=DEVICE, dtype=dtype)
+    other = torch.randn(shape, device=DEVICE, dtype=dtype)
     op = WhereFwdOp(condition=shape, input=shape, other=shape, dtype=dtype)
     out = op(cond, inp, other)
     ref = torch.where(cond, inp, other)

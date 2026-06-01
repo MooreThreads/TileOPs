@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 from typing import Optional
 
 import torch
@@ -155,16 +158,16 @@ class FP8LightingIndexerTest(WorkloadBase):
             self.seq_len,
             self.heads,
             self.index_dim,
-            device='cuda',
+            device=DEVICE,
             dtype=torch.bfloat16)
         IndexK = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
             self.index_dim,
-            device='cuda',
+            device=DEVICE,
             dtype=torch.bfloat16)
-        Weights = torch.randn(self.seq_len, self.heads, device='cuda', dtype=self.accum_dtype)
+        Weights = torch.randn(self.seq_len, self.heads, device=DEVICE, dtype=self.accum_dtype)
         CuSeqLenKS, CuSeqLenKE = self.generate_random_cu_seqlens(
             cp_size=4, cp_rank=3, kv_stride=1, average_q_len=2048)
         return IndexQ, IndexK, Weights, CuSeqLenKS, CuSeqLenKE

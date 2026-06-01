@@ -304,7 +304,7 @@ class _RopeKernelBase(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
     ROTATION_STYLE: str = "neox"  # "neox" or "non_neox"
 
@@ -408,7 +408,7 @@ class RopeNeoxKernel(_RopeKernelBase):
 class RopeNeoxPositionIdsKernel(Kernel):
     """GPT-NeoX style RoPE kernel for packed THD tensors with explicit positions."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     def __init__(self, num_tokens: int, num_heads: int, head_dim: int, rotary_dim: int,

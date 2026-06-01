@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -36,20 +39,20 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdTest(WorkloadBase):
         total_q = sum(self.seqlens_q)
         total_k = sum(self.seqlens_k)
         q = torch.randn(total_q, self.heads, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
+                        dtype=self.dtype, device=DEVICE) * 0.1
         k = torch.randn(total_k, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
+                        dtype=self.dtype, device=DEVICE) * 0.1
         v = torch.randn(total_k, self.heads_kv, self.dim,
-                        dtype=self.dtype, device="cuda") * 0.1
+                        dtype=self.dtype, device=DEVICE) * 0.1
 
         cu_seqlens_q = torch.tensor(
             [0] + list(torch.cumsum(
                 torch.tensor(self.seqlens_q), 0).tolist()),
-            dtype=torch.int32, device="cuda")
+            dtype=torch.int32, device=DEVICE)
         cu_seqlens_k = torch.tensor(
             [0] + list(torch.cumsum(
                 torch.tensor(self.seqlens_k), 0).tolist()),
-            dtype=torch.int32, device="cuda")
+            dtype=torch.int32, device=DEVICE)
         max_seqlen_q = max(self.seqlens_q)
 
         return q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q

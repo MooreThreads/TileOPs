@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -22,8 +25,8 @@ class TopkSelectorTest(WorkloadBase):
             self.seq_len_kv,
             self.kv_group,
             dtype=self.in_dtype,
-            device="cuda")
-        starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device="cuda")
+            device=DEVICE)
+        starts = torch.zeros(self.batch, self.seq_len, dtype=self.out_dtype, device=DEVICE)
         ends = torch.ones(self.batch, self.seq_len, dtype=self.out_dtype,
-                          device="cuda") * self.seq_len_kv
+                          device=DEVICE) * self.seq_len_kv
         return index_score, starts, ends

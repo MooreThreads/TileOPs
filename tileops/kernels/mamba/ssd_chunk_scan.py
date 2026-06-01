@@ -418,7 +418,7 @@ class SSDChunkScanFwdKernel(Kernel):
       out:         [B, S, H, P]        float32     seqlen-fused
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

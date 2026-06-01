@@ -12,6 +12,10 @@ import inspect
 import pytest
 import torch
 
+from tileops.utils import get_backend_name, is_available
+
+DEVICE = get_backend_name()
+
 _INPLACE_PARAM_FREE_OPS = (
     "ReluFwdOp", "SiluFwdOp", "HardswishFwdOp",
     "HardsigmoidFwdOp", "MishFwdOp", "SeluFwdOp",
@@ -23,6 +27,17 @@ _INPLACE_PARAMETRIC_OPS = (
 _CLAMP_OPS = ("ClampFwdOp", "ClampScalarFwdOp", "ClampMinFwdOp", "ClampMaxFwdOp")
 
 
+def _selu_ref(x: torch.Tensor) -> torch.Tensor:
+    return (
+        1.0507009873554805
+        * torch.where(
+            x.float() > 0,
+            x.float(),
+            1.6732632423543772 * torch.expm1(x.float()),
+        )
+    ).to(x.dtype)
+
+
 def _torch_reference(op_name: str):
     """Map an activation op class to its ``torch.nn.functional`` reference."""
     refs = {
@@ -31,7 +46,7 @@ def _torch_reference(op_name: str):
         "HardswishFwdOp": torch.nn.functional.hardswish,
         "HardsigmoidFwdOp": torch.nn.functional.hardsigmoid,
         "MishFwdOp": torch.nn.functional.mish,
-        "SeluFwdOp": torch.nn.functional.selu,
+        "SeluFwdOp": _selu_ref,
         "LeakyReluFwdOp": torch.nn.functional.leaky_relu,
         "EluFwdOp": torch.nn.functional.elu,
         "HardtanhFwdOp": torch.nn.functional.hardtanh,
@@ -58,7 +73,7 @@ def _clamp_construct_kwargs(op_name: str) -> tuple[tuple, dict]:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize("op_name", _CLAMP_OPS)
 def test_clamp_family_kernel_map_override_is_dispatched(op_name: str) -> None:
     """A user-supplied ``kernel_map`` value must reach the kernel build.
@@ -105,7 +120,7 @@ def test_nan_to_num_canonical_kwarg_names() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize(
     "op_name", _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
 )
@@ -122,7 +137,7 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
     n_total = 64
     dtype = torch.float16
     op = _construct_inplace_op(mod, op_name, n_total, dtype, inplace=True)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     expected = _torch_reference(op_name)(x.clone())
     y = op(x)
     assert y is x, (
@@ -135,7 +150,7 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize(
     "op_name", _INPLACE_PARAM_FREE_OPS + _INPLACE_PARAMETRIC_OPS,
 )
@@ -146,7 +161,7 @@ def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> No
     n_total = 64
     dtype = torch.float16
     op = _construct_inplace_op(mod, op_name, n_total, dtype, inplace=False)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     x_before = x.clone()
     y = op(x)
     assert y is not x, f"{op_name}: inplace=False must return a fresh tensor"
@@ -165,7 +180,7 @@ def test_gelu_approximate_validation() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(not is_available(), reason=f"{DEVICE.upper()} required")
 @pytest.mark.parametrize("approximate", ["none", "tanh"])
 def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
     """Both ``approximate='none'`` and ``'tanh'`` must dispatch end-to-end.
@@ -179,7 +194,7 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
     n_total = 128
     dtype = torch.float16
     op = mod.GeluFwdOp(N_total=n_total, dtype=dtype, approximate=approximate)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     y = op(x)
     expected = torch.nn.functional.gelu(x, approximate=approximate)
     assert y.shape == x.shape

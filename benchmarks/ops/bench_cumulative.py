@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 """Benchmarks for cumulative ops (cumsum, cumprod)."""
 
 from typing import Optional
@@ -34,9 +37,9 @@ class CumulativeBenchTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         if self.op_kind == "cumprod":
-            x = torch.rand(self.m, self.n, dtype=self.dtype, device="cuda") * 0.01 + 0.99
+            x = torch.rand(self.m, self.n, dtype=self.dtype, device=DEVICE) * 0.01 + 0.99
         else:
-            x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+            x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:

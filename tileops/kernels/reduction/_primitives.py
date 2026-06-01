@@ -10,6 +10,8 @@ infrastructure is available from the start.
 
 import tilelang.language as T
 
+from tileops.utils import current_device, get_backend_name, is_available
+
 __all__ = [
     "DEFAULT_ALIGNMENT",
     "MAX_SINGLE_TILE_COLS",
@@ -42,14 +44,9 @@ SHARED_MEMORY_BUDGET_BYTES: int = 48 * 1024
 
 
 def device_smem_budget(device_index: int | None = None) -> int:
-    """Return the opt-in shared memory budget for a CUDA device.
+    """Return the shared memory budget for the active backend device.
 
-    If ``device_index`` is ``None``, the current CUDA device is used.
-
-    Modern GPUs (SM80+) support shared memory well beyond the 48 KiB
-    default.  TileLang automatically configures
-    ``cudaFuncSetAttribute`` when a kernel allocates more than 48 KiB,
-    so it is safe to use the full opt-in budget.
+    If ``device_index`` is ``None``, the current backend device is used.
 
     Falls back to ``SHARED_MEMORY_BUDGET_BYTES`` (48 KiB) only if
     CUDA/device properties are unavailable.  Invalid explicit device
@@ -65,17 +62,18 @@ def device_smem_budget(device_index: int | None = None) -> int:
         return SHARED_MEMORY_BUDGET_BYTES
 
     try:
-        if not torch.cuda.is_available():
+        if not is_available():
             if explicit:
                 raise RuntimeError(
-                    f"CUDA is not available but explicit device_index={device_index} was requested"
+                    f"{get_backend_name().upper()} is not available but "
+                    f"explicit device_index={device_index} was requested"
                 )
             return SHARED_MEMORY_BUDGET_BYTES
 
         if device_index is None:
-            device_index = torch.cuda.current_device()
+            device_index = current_device()
 
-        props = torch.cuda.get_device_properties(device_index)
+        props = getattr(torch, get_backend_name()).get_device_properties(device_index)
         smem_optin = getattr(props, "shared_memory_per_block_optin", 0)
         if smem_optin > 0:
             return smem_optin

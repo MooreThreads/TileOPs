@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -16,9 +19,9 @@ class MhaDecodeTest(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         Q = torch.randn(
-            self.batch, self.seq_len_q, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_q, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
         K = torch.randn(
-            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_kv, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
         V = torch.randn(
-            self.batch, self.seq_len_kv, self.heads, self.dim, device='cuda', dtype=self.dtype)
+            self.batch, self.seq_len_kv, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
         return Q, K, V

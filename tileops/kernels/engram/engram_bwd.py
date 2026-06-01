@@ -21,6 +21,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_sm_version, get_tilelang_target
 
 __all__ = ["EngramGateConvBwdKernel"]
 
@@ -39,6 +40,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
     KS = CONV_KERNEL_SIZE
 
     @tilelang.jit(
+        target=get_tilelang_target(),
         out_idx=[12, 13, 14, 15, 16, 17, 18],
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -140,9 +142,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 d_vnorm = T.alloc_fragment((d_padded,), accum_dtype)
                 dvhat_local = T.alloc_fragment((d_padded,), accum_dtype)
                 vhat_local = T.alloc_fragment((d_padded,), accum_dtype)
-                vhat_2d = T.alloc_fragment((1, d_padded), accum_dtype)
-                dot_2d = T.alloc_fragment((1, d_padded), accum_dtype)
-                dot_sum = T.alloc_fragment((1,), accum_dtype)
+                dot_sum = T.alloc_shared((1,), accum_dtype)
 
                 bid = by
                 tid = bx
@@ -166,7 +166,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 rrms_v_val = rrms_v[bid, tid]
                 for j in T.Parallel(d_padded):
                     vhat_local[j] = T.cast(vhat[bid, tid, j], accum_dtype)
-                    vhat_2d[0, j] = vhat_local[j]
 
                 # drms_w_v: d(w_v[j]) += d_vnorm[j] * vhat[j] * rrms_v
                 for j in T.Parallel(d_padded):
@@ -177,13 +176,15 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
 
                 # ⑦ bwd: RMSNorm(vhat) -> d(vhat)
                 # d(vhat) = rrms * w * d_vnorm - rrms^3 * vhat * (1/d) * sum(vhat * w * d_vnorm)
+                for j in T.Parallel(1):
+                    dot_sum[j] = 0.0
                 for j in T.Parallel(d_padded):
-                    dot_2d[0, j] = (
+                    T.atomic_add(
+                        dot_sum[0],
                         vhat_local[j]
                         * T.cast(rms_w_v[j], accum_dtype)
-                        * d_vnorm[j]
+                        * d_vnorm[j],
                     )
-                T.reduce_sum(dot_2d, dot_sum, dim=1)
 
                 for j in T.Parallel(d_padded):
                     dvhat_local[j] = (
@@ -212,13 +213,9 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 dk_local = T.alloc_fragment((d_padded,), accum_dtype)
                 dv_local = T.alloc_fragment((d_padded,), accum_dtype)
 
-                # 2D fragments for reduce_sum
-                dalpha_2d = T.alloc_fragment((1, d_padded), accum_dtype)
-                dalpha_sum = T.alloc_fragment((1,), accum_dtype)
-                dot_h_2d = T.alloc_fragment((1, d_padded), accum_dtype)
-                dot_h_sum = T.alloc_fragment((1,), accum_dtype)
-                dot_k_2d = T.alloc_fragment((1, d_padded), accum_dtype)
-                dot_k_sum = T.alloc_fragment((1,), accum_dtype)
+                dalpha_sum = T.alloc_shared((1,), accum_dtype)
+                dot_h_sum = T.alloc_shared((1,), accum_dtype)
+                dot_k_sum = T.alloc_shared((1,), accum_dtype)
 
                 bid = by
                 tid = bx
@@ -235,10 +232,11 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
 
                 # ⑥ bwd: vhat = alpha * v
                 # dalpha = sum(dvhat * v),  dv = alpha * dvhat
+                for j in T.Parallel(1):
+                    dalpha_sum[j] = 0.0
                 for j in T.Parallel(d_padded):
-                    dalpha_2d[0, j] = dvhat_local[j] * v_local[j]
                     dv_local[j] = alpha_val * dvhat_local[j]
-                T.reduce_sum(dalpha_2d, dalpha_sum, dim=1)
+                    T.atomic_add(dalpha_sum[0], dvhat_local[j] * v_local[j])
 
                 # ⑤ bwd: alpha = sigmoid(dot / sqrt(d))
                 # d(dot) = dalpha * alpha * (1 - alpha) / sqrt(d)
@@ -251,13 +249,15 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
 
                 # ③ bwd: RMSNorm(H) -> dH
                 # d(h_norm) = ddot * k_norm
+                for j in T.Parallel(1):
+                    dot_h_sum[j] = 0.0
                 for j in T.Parallel(d_padded):
-                    dot_h_2d[0, j] = (
+                    T.atomic_add(
+                        dot_h_sum[0],
                         h_local[j]
                         * T.cast(rms_w_h[j], accum_dtype)
                         * ddot_val * k_norm_local[j]
                     )
-                T.reduce_sum(dot_h_2d, dot_h_sum, dim=1)
                 for j in T.Parallel(d_padded):
                     dh_local[j] = (
                         rrms_h_val * T.cast(rms_w_h[j], accum_dtype)
@@ -274,13 +274,15 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                     )
 
                 # ④ bwd: RMSNorm(k) -> dk
+                for j in T.Parallel(1):
+                    dot_k_sum[j] = 0.0
                 for j in T.Parallel(d_padded):
-                    dot_k_2d[0, j] = (
+                    T.atomic_add(
+                        dot_k_sum[0],
                         k_local[j]
                         * T.cast(rms_w_h[j], accum_dtype)
                         * ddot_val * h_norm_local[j]
                     )
-                T.reduce_sum(dot_k_2d, dot_k_sum, dim=1)
                 for j in T.Parallel(d_padded):
                     dk_local[j] = (
                         rrms_k_val * T.cast(rms_w_h[j], accum_dtype)
@@ -390,7 +392,7 @@ class EngramGateConvBwdKernel(Kernel):
       Pass 2:  Gate bwd -> dH, dk, dv + drms_w_h accumulation
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
@@ -416,10 +418,14 @@ class EngramGateConvBwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if get_sm_version() == 31:
+            return {"threads": 128}
         return {"threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if get_sm_version() == 31:
+            return [{"threads": t} for t in [128, 256]]
         return [{"threads": t} for t in [128, 256, 512]]
 
     def forward(

@@ -1,3 +1,6 @@
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 import torch
 
 from workloads.workload_base import WorkloadBase
@@ -29,19 +32,19 @@ class DsaDecodeTest(WorkloadBase):
             self.seq_len,
             self.heads,
             self.dim + self.dim_tail,
-            device='cuda',
+            device=DEVICE,
             dtype=self.dtype)
         kv = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.heads_kv,
             self.dim + self.dim_tail,
-            device='cuda',
+            device=DEVICE,
             dtype=self.dtype)
         indices = torch.full((self.batch, self.seq_len, self.heads_kv, self.topk),
                              self.seq_len_kv,
                              dtype=torch.int32,
-                             device='cuda')
+                             device=DEVICE)
         for b in range(self.batch):
             for t in range(self.seq_len):
                 for h in range(self.heads_kv):

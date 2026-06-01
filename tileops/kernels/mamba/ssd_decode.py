@@ -309,7 +309,7 @@ class SSDDecodeKernel(Kernel):
     triton kernel (selective_state_update.py in mamba_ssm).
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,

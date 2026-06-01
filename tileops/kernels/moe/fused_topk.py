@@ -334,7 +334,7 @@ class FusedTopKKernel(Kernel):
         config: Optional kernel config dict (key: "TOKENS_PER_BLOCK").
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31]
 
     def __init__(
         self,
