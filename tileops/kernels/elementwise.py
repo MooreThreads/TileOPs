@@ -1201,6 +1201,13 @@ class ReluFwdKernel(FloatUnaryKernel):
     def op_func(x):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
+    @property
+    def default_config(self):
+        strategy = getattr(self, "strategy", self.DEFAULT_STRATEGY)
+        if self.dtype in (torch.float16, torch.bfloat16) and strategy == "register_copy":
+            return {"threads": 256, "num_per_thread": 2}
+        return super().default_config
+
 
 class _AlphaScaledBinaryKernel(BinaryKernel):
     """Shared base for ``y = a (op) alpha * b`` kernels.
@@ -1394,7 +1401,8 @@ class PowFwdKernel(BinaryKernel):
     def op_func(a, b):
         a_f32 = T.Cast("float32", a)
         b_f32 = T.Cast("float32", b)
-        return T.Cast(a.dtype, T.pow(a_f32, b_f32))
+        # Positive-base fast path; full torch.pow has extra domain rules.
+        return T.Cast(a.dtype, T.exp2(T.log2(a_f32) * b_f32))
 
 
 class FloorDivideFwdKernel(BinaryKernel):
@@ -2318,12 +2326,14 @@ def _make_elu_kernel(N, dtype, alpha, output_dtype=None, is_fp8=False,
                         idx = (bx * threads_arg + i) * npt_arg + j
                         if idx < N:
                             zero = T.cast(0, "float32")
-                            a = T.cast(alpha, "float32")
                             one = T.cast(1.0, "float32")
+                            log2e = T.cast(1.4426950408889634, "float32")
+                            alpha32 = T.cast(alpha, "float32")
                             v32 = T.cast(x[idx], "float32")
+                            neg = alpha32 * (T.exp2(v32 * log2e) - one)
                             y[idx] = T.Cast(
                                 out_dtype,
-                                T.if_then_else(v32 > zero, v32, a * (T.exp(v32) - one)),
+                                T.if_then_else(v32 > zero, v32, neg),
                             )
 
             return main
@@ -2366,6 +2376,12 @@ class EluFwdKernel(ParametricUnaryKernel):
 
     def _builder_args(self):
         return (self.alpha,)
+
+    @property
+    def default_config(self):
+        if self.dtype in (torch.float16, torch.bfloat16):
+            return {"threads": 128, "num_per_thread": 2}
+        return super().default_config
 
 
 @functools.lru_cache(maxsize=32)
@@ -2517,6 +2533,12 @@ class SoftplusFwdKernel(ParametricUnaryKernel):
     def _builder_args(self):
         return (self.beta, self.threshold)
 
+    @property
+    def default_config(self):
+        if self.dtype in (torch.float16, torch.bfloat16):
+            return {"threads": 128, "num_per_thread": 2}
+        return super().default_config
+
 
 @functools.lru_cache(maxsize=32)
 def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
@@ -2527,14 +2549,15 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
     for flat index ``idx``, channel = (idx // inner_size) % C, where
     ``inner_size`` is the product of all dimensions after the channel dim.
 
-    For non-fp8 dtypes, uses register_copy strategy for input/output to
-    improve memory coalescing for the main data path.
+    For non-fp8 dtypes, launches one grid axis per channel to avoid
+    per-element channel div/mod.
 
     For fp8 dtypes, uses explicit_parallel with fp16 accumulation
     (register_copy is unreliable for 8-bit fragments).
     """
     out_dtype = output_dtype or dtype
     block_size = threads * npt
+    outer_size = N // (C * inner_size)
 
     if is_fp8:
         accum = _fp8_accum_dtype_str()
@@ -2547,16 +2570,20 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
                 weight: T.Tensor((C,), dtype),
                 y: T.Tensor((N,), out_dtype),
             ):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                with T.Kernel(
+                    T.ceildiv(inner_size, block_size), C, outer_size,
+                    threads=threads_arg,
+                ) as (bx, by, bz):
+                    base = (bz * C + by) * inner_size
+                    w_val = weight[by]
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
-                        idx = bx * block_size + k
-                        if idx < N:
+                        inner = bx * block_size + k
+                        if inner < inner_size:
+                            idx = base + inner
                             val = x[idx]
-                            ch = (idx // inner_size) % C
-                            w = weight[ch]
                             v = T.cast(val, accum)
-                            wf = T.cast(w, accum)
+                            wf = T.cast(w_val, accum)
                             zero = T.cast(0, accum)
                             y[idx] = T.if_then_else(v > zero, T.Cast(out_dtype, v), T.Cast(out_dtype, wf * v))
 
@@ -2571,17 +2598,23 @@ def _make_prelu_kernel(N, C, inner_size, dtype, output_dtype=None,
                 weight: T.Tensor((C,), dtype),
                 y: T.Tensor((N,), out_dtype),
             ):
-                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                with T.Kernel(
+                    T.ceildiv(inner_size, block_size), C, outer_size,
+                    threads=threads_arg,
+                ) as (bx, by, bz):
+                    base = (bz * C + by) * inner_size
+                    w_val = weight[by]
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         k = i * npt_arg + j
-                        idx = bx * block_size + k
-                        if idx < N:
-                            ch = (idx // inner_size) % C
+                        inner = bx * block_size + k
+                        if inner < inner_size:
+                            idx = base + inner
+                            val = x[idx]
                             zero = T.cast(0, dtype)
                             y[idx] = T.if_then_else(
-                                x[idx] > zero,
-                                x[idx],
-                                weight[ch] * x[idx],
+                                val > zero,
+                                val,
+                                w_val * val,
                             )
 
             return main
@@ -2628,6 +2661,16 @@ class PreluFwdKernel(ParametricUnaryKernel):
 
     def _builder_positional_args(self):
         return (self.N_total, self.C, self.inner_size, self.dtype_str)
+
+    @property
+    def default_config(self):
+        if self.dtype == torch.float16:
+            return {"threads": 128, "num_per_thread": 8}
+        if self.dtype == torch.bfloat16:
+            if getattr(self, "inner_size", None) is not None and self.inner_size <= 1024:
+                return {"threads": 512, "num_per_thread": 2}
+            return {"threads": 128, "num_per_thread": 2}
+        return super().default_config
 
     def forward(self, x, weight):
         return self._compiled_fn(x, weight)

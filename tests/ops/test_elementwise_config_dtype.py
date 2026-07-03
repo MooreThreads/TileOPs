@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from tileops.kernels.elementwise import (
+    AbsFwdKernel,
     AddFwdKernel,
     EluFwdKernel,
     EqFwdKernel,
@@ -19,9 +20,11 @@ from tileops.kernels.elementwise import (
     LogicalOrFwdKernel,
     LtFwdKernel,
     NeFwdKernel,
+    PowFwdKernel,
     PreluFwdKernel,
     ReluFwdKernel,
     SiluAndMulFwdKernel,
+    SoftplusFwdKernel,
 )
 
 # ---------------------------------------------------------------------------
@@ -29,7 +32,7 @@ from tileops.kernels.elementwise import (
 # ---------------------------------------------------------------------------
 
 
-INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, EluFwdKernel, HardtanhFwdKernel]
+INDEPENDENT_KERNELS_SIMPLE = [LeakyReluFwdKernel, HardtanhFwdKernel]
 
 
 @pytest.mark.full
@@ -53,19 +56,66 @@ def test_independent_kernels_use_expected_default_npt(kernel_cls, dtype, expecte
 
 @pytest.mark.full
 @pytest.mark.parametrize(
-    ("dtype", "expected_npt"),
+    ("dtype", "expected_threads", "expected_npt"),
     [
-        (torch.float32, 4),
-        (torch.float16, 8),
-        (torch.bfloat16, 8),
-        (torch.float8_e4m3fn, 16),
-        (torch.float8_e5m2, 16),
+        (torch.float32, 256, 4),
+        (torch.float16, 128, 2),
+        (torch.bfloat16, 128, 2),
+        (torch.float8_e4m3fn, 256, 16),
+        (torch.float8_e5m2, 256, 16),
     ],
 )
-def test_prelu_preserves_dtype_driven_default_npt(dtype, expected_npt):
-    """Prelu is the custom-signature outlier and should keep the same dtype mapping."""
+@pytest.mark.parametrize("kernel_cls", [EluFwdKernel, SoftplusFwdKernel])
+def test_elu_softplus_use_measured_dtype_default_config(
+    kernel_cls, dtype, expected_threads, expected_npt,
+):
+    kernel = kernel_cls.__new__(kernel_cls)
+    kernel.dtype = dtype
+    assert kernel.default_config["threads"] == expected_threads
+    assert kernel.default_config["num_per_thread"] == expected_npt
+
+
+@pytest.mark.full
+@pytest.mark.parametrize(
+    ("dtype", "expected_threads", "expected_npt"),
+    [
+        (torch.float32, 256, 4),
+        (torch.float16, 128, 8),
+        (torch.bfloat16, 128, 2),
+        (torch.float8_e4m3fn, 256, 16),
+        (torch.float8_e5m2, 256, 16),
+    ],
+)
+def test_prelu_uses_measured_dtype_default_config(dtype, expected_threads, expected_npt):
     kernel = PreluFwdKernel.__new__(PreluFwdKernel)
     kernel.dtype = dtype
+    assert kernel.default_config["threads"] == expected_threads
+    assert kernel.default_config["num_per_thread"] == expected_npt
+
+
+@pytest.mark.full
+def test_prelu_bf16_small_inner_size_uses_measured_default_config():
+    kernel = PreluFwdKernel.__new__(PreluFwdKernel)
+    kernel.dtype = torch.bfloat16
+    kernel.inner_size = 28 * 28
+    assert kernel.default_config["threads"] == 512
+    assert kernel.default_config["num_per_thread"] == 2
+
+
+@pytest.mark.full
+@pytest.mark.parametrize(
+    ("dtype", "expected_threads", "expected_npt"),
+    [
+        (torch.float32, 256, 4),
+        (torch.float16, 256, 2),
+        (torch.bfloat16, 256, 2),
+    ],
+)
+def test_relu_uses_measured_dtype_default_config(dtype, expected_threads, expected_npt):
+    kernel = ReluFwdKernel.__new__(ReluFwdKernel)
+    kernel.dtype = dtype
+    kernel.strategy = "register_copy"
+    assert kernel.default_config["threads"] == expected_threads
     assert kernel.default_config["num_per_thread"] == expected_npt
 
 
@@ -135,17 +185,18 @@ def test_fused_gated_kernel_sets_output_dtype_in_init():
 def test_unary_default_config_preserves_strategy_npt_split():
     """Unary kernels should keep the explicit_parallel/register_copy npt split."""
     with (
-        patch.object(ReluFwdKernel, "_build_kernel", return_value=None),
-        patch.object(ReluFwdKernel, "init_config"),
+        patch.object(AbsFwdKernel, "_build_kernel", return_value=None),
+        patch.object(AbsFwdKernel, "init_config"),
     ):
-        explicit = ReluFwdKernel(N_total=1024, dtype=torch.float16, strategy="explicit_parallel")
-        register = ReluFwdKernel(N_total=1024, dtype=torch.float16, strategy="register_copy")
+        explicit = AbsFwdKernel(N_total=1024, dtype=torch.float16, strategy="explicit_parallel")
+        register = AbsFwdKernel(N_total=1024, dtype=torch.float16, strategy="register_copy")
     assert explicit.default_config["num_per_thread"] == 4
     assert register.default_config["num_per_thread"] == 8
 
 
 @pytest.mark.full
-def test_binary_default_config_preserves_strategy_npt_split():
+@pytest.mark.parametrize("kernel_cls", [AddFwdKernel, PowFwdKernel, GeFwdKernel])
+def test_binary_default_config_preserves_strategy_npt_split(kernel_cls):
     """Binary kernels should keep the explicit_parallel/register_copy npt split."""
     common_kwargs = {
         "N_total": 1024,
@@ -157,12 +208,13 @@ def test_binary_default_config_preserves_strategy_npt_split():
         "b_numel": 1024,
     }
     with (
-        patch.object(AddFwdKernel, "_build_kernel", return_value=None),
-        patch.object(AddFwdKernel, "init_config"),
+        patch.object(kernel_cls, "_build_kernel", return_value=None),
+        patch.object(kernel_cls, "init_config"),
     ):
-        explicit = AddFwdKernel(strategy="explicit_parallel", **common_kwargs)
-        register = AddFwdKernel(strategy="register_copy", **common_kwargs)
+        explicit = kernel_cls(strategy="explicit_parallel", **common_kwargs)
+        register = kernel_cls(strategy="register_copy", **common_kwargs)
     assert explicit.default_config["num_per_thread"] == 4
+    assert register.default_config["threads"] == 256
     assert register.default_config["num_per_thread"] == 8
 
 

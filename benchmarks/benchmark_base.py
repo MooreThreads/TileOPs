@@ -92,8 +92,27 @@ _logger = logging.getLogger("tileops.bench")
 # A single test function may call record() multiple times (tileops + baseline).
 _bench_results = threading.local()
 
+_BENCH_TARGET_RECORD_NAME = "tileops_bench_target"
 
-def _sum_kernel_time_us(kineto_results):
+
+def _is_l2_flush_kernel_name(name: str) -> bool:
+    """Return True for kernels launched by the benchmark L2 flush buffer."""
+    if "vectorized_elementwise" in name and "FillFunctor" in name:
+        return True
+    return "musa::dnn" in name and "KernelFill" in name
+
+
+def _is_launch_api_event_name(name: str) -> bool:
+    """Return True for host launch API events reported in backend activity."""
+    return name in {
+        "cudaLaunchKernel",
+        "cuLaunchKernel",
+        "musaLaunchKernel",
+        "muLaunchKernel",
+    }
+
+
+def _sum_kernel_time_us(kineto_results, event_name: Optional[str] = None):
     """Extract total backend kernel time directly from C++ Kineto events.
 
     Bypasses ``profiler.key_averages()`` which triggers expensive Python
@@ -105,10 +124,22 @@ def _sum_kernel_time_us(kineto_results):
     for evt in kineto_results.events():
         if evt.device_type() == backend_device_type:
             name = evt.name()
-            if "vectorized_elementwise" in name and "FillFunctor" in name:
+            if event_name is not None:
+                if name == event_name:
+                    total_us += evt.duration_ns() / 1000.0
+                continue
+            if _is_l2_flush_kernel_name(name) or _is_launch_api_event_name(name):
                 continue
             total_us += evt.duration_ns() / 1000.0
     return total_us
+
+
+def _get_bench_profiler_activities() -> list[Any]:
+    activities = [get_profiler_activity()]
+    cpu_activity = getattr(torch.profiler.ProfilerActivity, "CPU", None)
+    if cpu_activity is not None:
+        activities.insert(0, cpu_activity)
+    return activities
 
 
 # ---------------------------------------------------------------------------
@@ -145,20 +176,23 @@ def bench_kernel(
     n_repeat: int = 50,
     n_trials: int = 3,
 ) -> float:
-    """Benchmark a GPU kernel with pure kernel timing via CUPTI.
+    """Benchmark a GPU kernel with pure backend kernel timing.
 
     Protocol (adapted from NVIDIA SOL-ExecBench, arxiv.org/abs/2603.19173):
       1. Lock GPU clocks externally (nvidia-smi).
       2. Run *n_warmup* un-timed iterations with L2 flush.
       3. For each of *n_trials* trials, profile *n_repeat* iterations
-         under CUPTI to get pure kernel execution time (no launch overhead).
-         L2 is flushed before every iteration.  Input tensors are cloned
-         each iteration so the kernel always sees fresh addresses.
+         under torch.profiler to get pure kernel execution time (no launch
+         overhead).  L2 is flushed before every iteration.  Input tensors are
+         drawn from a small cloned pool when memory allows, so the kernel sees
+         varied addresses across iterations.
       4. Report the median trial mean (robust to outlier trials).
 
-    Uses CUPTI via torch.profiler for accurate kernel-only timing, with
-    direct Kineto C++ event iteration to avoid Python parsing overhead.
-    Falls back to CUDA events if CUPTI is unavailable.
+    Uses torch.profiler/Kineto for accurate kernel-only timing, with direct
+    Kineto C++ event iteration to avoid Python parsing overhead.  The measured
+    callable is wrapped in a profiler marker so L2 flush kernels and profiler
+    warmup work are not included.  Falls back to backend timing events if the
+    profiler path is unavailable.
 
     Args:
         fn: Callable to benchmark.  If *args* is provided, called as
@@ -219,8 +253,11 @@ def bench_kernel(
 
     def _on_trace_ready(prof):
         kr = prof.profiler.kineto_results
-        kernel_us = _sum_kernel_time_us(kr) / n_repeat
-        trial_means.append(kernel_us * 1e-3)
+        kernel_us = _sum_kernel_time_us(
+            kr, event_name=_BENCH_TARGET_RECORD_NAME,
+        ) / n_repeat
+        if kernel_us > 0.0:
+            trial_means.append(kernel_us * 1e-3)
 
     try:
         with suppress_stdout_stderr():
@@ -228,7 +265,7 @@ def bench_kernel(
                 wait=0, warmup=1, active=1, repeat=n_trials,
             )
             profiler = torch.profiler.profile(
-                activities=[get_profiler_activity()],
+                activities=_get_bench_profiler_activities(),
                 schedule=schedule,
                 on_trace_ready=_on_trace_ready,
             )
@@ -242,7 +279,8 @@ def bench_kernel(
                     # Active step (measured → _on_trace_ready)
                     for i in range(n_repeat):
                         cache.zero_()
-                        _run(i)
+                        with torch.profiler.record_function(_BENCH_TARGET_RECORD_NAME):
+                            _run(i)
                     profiler.step()
     except RuntimeError:
         pass

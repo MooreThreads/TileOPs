@@ -1,157 +1,157 @@
-# TileOPs Operator Support Matrix
+# TileOPs 算子支持矩阵
 
-Last updated: 2026-04-23
+最近更新：2026-06-11
 
-## Scope
+这个文件是 TileOPs MUSA 算子支持状态和 Q2 性能状态的统一入口。
+原始日志、完整 CSV、一次性实验报告默认放在本地 `docs/reports/` 下，但不要求随 patch 提交；
+这里记录可长期保留的当前结论和最近一次 patch 的变化。
 
-This document answers three different questions separately:
+## 口径定义
 
-1. What operators exist in the repository
-2. Which operators have explicit MUSA support and correctness evidence
-3. Which operators are still pending migration
+### 支持状态
 
-## Current Snapshot
+`已支持` 表示：
 
-- Top-level `tileops.ops.__all__` currently exports `96` symbols from [tileops/ops/__init__.py](../tileops/ops/__init__.py).
-- There are `3` additional `engram` operators present in the repo but not exported from top-level `tileops.ops`:
-  - `EngramGateConvFwdOp`
-  - `EngramGateConvBwdOp`
-  - `EngramDecodeOp`
-- Based on the current repo state, the operators with explicit MUSA correctness evidence in this fork are the `engram` operators plus `GemmOp` (including its `gemv` fallback paths), `LayerNormFwdOp`, `RMSNormFwdOp`, `SoftmaxFwdOp`, and `LogSoftmaxFwdOp`.
-- A small set of operators already shows backend-abstraction work in code or tests, but has not been validated on MUSA in this migration branch.
+- 该 op 在 `tileops/manifest` 中的状态是 `implemented`。
+- 最新 case-aware MUSA smoke 报告能把至少一个 PASS case 映射到该 op。
+- 该 op 映射到的 case 中没有 FAIL 或 UNKNOWN。
 
-## Status Legend
+`部分通过` 表示该 op 至少有一个 case 通过，但同时存在失败或未知 case。
 
-| Status | Meaning |
-| --- | --- |
-| `MUSA verified` | Has explicit MUSA-oriented code path and was validated in docker correctness runs |
-| `Backend-ready candidate` | Code or tests already use backend abstraction such as `get_backend_name()` or `is_backend_tensor()`, but no MUSA validation evidence was collected in this branch |
-| `Pending` | Still appears CUDA-first, or no MUSA migration evidence has been added yet |
+`待支持` 包括 `spec-only`、全部 skip、无映射 case、以及全部失败的 op。
 
-## Operator Families
+### 性能指标
 
-| Family | Representative operators | Repo count | MUSA status | Evidence / notes |
-| --- | --- | ---: | --- | --- |
-| `Engram` | `EngramGateConvFwdOp`, `EngramGateConvBwdOp`, `EngramDecodeOp` | 3 | `MUSA verified` | Backend tensor checks are in [tileops/ops/engram.py](../tileops/ops/engram.py#L22), [tileops/ops/engram.py](../tileops/ops/engram.py#L130), [tileops/ops/engram_decode.py](../tileops/ops/engram_decode.py#L21); tests include expanded full cases in [tests/ops/test_engram.py](../tests/ops/test_engram.py#L70) and [tests/ops/test_engram.py](../tests/ops/test_engram.py#L237) |
-| `Attention` | `MultiHeadAttentionFwdOp`, `GroupedQueryAttentionFwdOp`, `NSAFwdVarlenOp`, `DeepSeekSparseAttentionDecodeWithKVCacheFwdOp`, `MultiHeadLatentAttentionDecodeWithKVCacheFwdOp` | 16 | `Pending` | Present under [tileops/ops/attention/__init__.py](../tileops/ops/attention/__init__.py) |
-| `Norm` | `LayerNormFwdOp`, `RMSNormFwdOp`, `BatchNormFwdOp`, `BatchNormBwdOp`, `GroupNormFwdOp`, `InstanceNormFwdOp`, `FusedAddLayerNormFwdOp`, `FusedAddRMSNormFwdOp`, `AdaLayerNormFwdOp`, `AdaLayerNormZeroFwdOp`, `RowNormOp` | 11 | `Partially verified` | `LayerNormFwdOp` and `RMSNormFwdOp` are MUSA verified. Other norm ops still contain many `is_cuda` checks according to repo scan |
-| `Reduction` | `SoftmaxFwdOp`, `LogSoftmaxFwdOp`, `LogSumExpFwdOp`, `SumFwdOp`, `MeanFwdOp`, `VarFwdOp`, `ArgmaxFwdOp`, `CumsumFwdOp`, `L2NormFwdOp` | 19 | `Partially verified` | `SoftmaxFwdOp` and `LogSoftmaxFwdOp` are MUSA verified. `LogSumExpFwdOp` is still blocked by MUSA arch gating in [tileops/kernels/reduction/logsumexp.py](../tileops/kernels/reduction/logsumexp.py#L275) |
-| `Elementwise` | `UnaryOp`, `BinaryOp`, `FusedGatedOp` | 3 | `Pending` | Still contains direct `.is_cuda` checks and CUDA device carriers in [tileops/ops/elementwise.py](../tileops/ops/elementwise.py) |
-| `Convolution / Pool / Rope` | `Conv1dFwdOp`, `Conv1dBiasFwdOp`, `Conv2dOp`, `Conv3dOp`, `AvgPool1dOp`, `AvgPool2dOp`, `AvgPool3dOp`, `RopeLlama31Op`, `RopeNeoxOp`, `RopeYarnOp` | 12 | `Pending` | Operators exist, but no MUSA migration evidence has been added in this branch |
-| `GEMM / Grouped GEMM` | `GemmOp`, `GroupedGemmOp` | 2 | `Partially verified` | `GemmOp` is MUSA verified, including `gemv` fallback branches; `GroupedGemmOp` is still pending. Workload and tests are backend-aware in [workloads/gemm.py](../workloads/gemm.py#L7) and [tests/ops/test_gemm.py](../tests/ops/test_gemm.py#L13) |
-| `DeltaNet family` | `DeltaNetOp`, `DeltaNetFwdOp`, `DeltaNetBwdOp`, `DeltaNetDecodeOp`, `GatedDeltaNetOp`, `GatedDeltaNetFwdOp`, `GatedDeltaNetBwdOp`, `GatedDeltaNetDecodeOp`, `GLAFwdOp`, `GLABwdOp`, `GLADecodeOp` | 11 | `Pending` | Workloads are still largely CUDA-first |
-| `SSD family` | `SSDChunkScanFwdOp`, `SSDChunkStateFwdOp`, `SSDDecodeOp`, `SSDStatePassingFwdOp` | 4 | `Pending` | Current op code still uses `.is_cuda` checks in multiple files |
-| `FP8 utilities` | `FP8QuantOp`, `FP8LightingIndexerOp` | 2 | `Pending` | No MUSA migration evidence in this fork |
-| `MHC / FFT / Dropout / DaCumsum / TopK selector` | `MHCPreOp`, `MHCPostOp`, `FFTC2COp`, `DropoutOp`, `DaCumsumFwdOp`, `TopkSelectorOp` | 6 | `Pending` | Present in repo, but not yet migrated |
-| `MoE package` | `FusedTopKOp`, `MoePermuteAlignFwdOp`, `MoePermuteNopadFwdOp`, `MoePermutePaddedFwdOp`, `MoeUnpermuteFwdOp`, `MoeGroupedGemmNopadFwdOp`, `FusedMoeExpertsFwdOp`, `FusedMoeExpertsPaddedFwdOp`, `FusedMoe`, `SharedFusedMoE` | 10 | `Pending` | Top-level `tileops.ops` currently exports only `MoePermuteAlignFwdOp`; the rest are under [tileops/ops/moe/__init__.py](../tileops/ops/moe/__init__.py) |
+Q2 性能范围是本地 tracking 表 `docs/reports/q2_tileops_50op_tracking_20260607.csv` 中选定的 50 个 elementwise op。
 
-## What Is Supported Now
+主指标采用 op 平均 shape SOL，不做 bytes/耗时加权，也不让 case 多的 op 占更大权重。
+计算时先对每个 op 的 shape/dtype case 直接平均，再对 50 个 op 直接平均：
 
-At the moment, the MUSA-supported subset in this fork is:
+```text
+op_avg_shape_sol =
+  mean_over_cases(s5000_case_tbps / (h20_case_tbps * 1.6 / 4.0))
 
-| Operator | Status | Notes |
-| --- | --- | --- |
-| `EngramGateConvFwdOp` | `Supported` | Correctness passed on MUSA smoke and full shapes |
-| `EngramGateConvBwdOp` | `Supported` | Backward numerical issue was fixed and then revalidated on MUSA |
-| `EngramDecodeOp` | `Supported` | Single-step and multi-step decode correctness passed on MUSA |
-| `GemmOp` | `Supported` | Mainstream `gemm` plus `gemv` fallback paths passed MUSA smoke/proof cases |
-| `LayerNormFwdOp` | `Supported` | Main op path, backend validation path, and stable benchmark entry were verified on MUSA |
-| `RMSNormFwdOp` | `Supported` | Main op path, backend validation path, and lightweight MUSA correctness/benchmark proofs were verified |
-| `SoftmaxFwdOp` | `Supported` | Direct op path and lightweight MUSA correctness/benchmark proofs were verified |
-| `LogSoftmaxFwdOp` | `Supported` | Direct op path and lightweight MUSA correctness/benchmark proofs were verified |
+avg_op_shape_sol =
+  mean_over_ops(op_avg_shape_sol)
+```
 
-## What Is Closest To Support
+补充参考指标：
 
-These are the best next candidates because the repo already contains backend abstraction in at least part of the path:
+- SOL 达标阈值：`>= 0.8`
+- Torch 加速比达标阈值：`torch_ms / tileops_ms >= 1.0`
 
-| Candidate | Why it is close |
-| --- | --- |
-| `LogSumExpFwdOp` | Shared op base is backend-ready, but the kernel class still rejects MUSA arch 31 in `supported_archs` |
-| `GroupedGemmOp` | Natural next step after `GemmOp` because the standalone GEMM path is now proven on MUSA |
-| `Fused / companion norm ops` | `LayerNormFwdOp` and `RMSNormFwdOp` are now proven, so fused norm variants can reuse the same bring-up pattern |
+## 当前快照
 
-## Remaining Migration Backlog
+| 项目                      |     当前结果 | 对比 / 备注                        |
+| ------------------------- | -----------: | ---------------------------------- |
+| Manifest op 总数          |          132 | 来自最新 manifest-backed 支持报告  |
+| 已支持 op                 |     65 / 132 | 严格 case-aware smoke 口径         |
+| 部分通过 op               |     15 / 132 | 有些 case 通过，有些失败或未知     |
+| 待支持 op                 |     52 / 132 | 包括 `spec-only` 和无 case 的 op   |
+| Q2 选定 op 支持           |      50 / 50 | 选定 Q2 op 已全部支持              |
+| Q2 manifest benchmark     | 255 / 255 ok | 上一版 S5000 baseline 为 254 / 255 |
+| Q2 manifest 全通过 op     |      50 / 50 | 上一版 S5000 baseline 为 49 / 50   |
+| 主指标：op 平均 shape SOL |        1.132 | 上一版为 1.076                     |
+| op 平均 shape SOL 达标    |      40 / 50 | 上一版为 38 / 50                   |
+| Torch 加速比 >= 1.0       |      34 / 50 | 补充指标                           |
 
-If the goal is to build a practical `TileOPs`, the remaining work is approximately:
+本地证据文件（不随本次 patch 提交）：
 
-1. Finish top-level export cleanup:
-   `engram` exists but is not re-exported from [tileops/ops/__init__.py](../tileops/ops/__init__.py)
-2. Promote backend-ready candidates to real support:
-   `GroupedGemm`, `LogSumExp`, fused norms
-3. Remove CUDA-only assumptions from op/workload/test layers:
-   direct `device="cuda"`, `.is_cuda`, and `torch.cuda.*`
-4. Patch kernel `supported_archs` and TileLang target wiring for MUSA
-5. Add docker-based correctness evidence family by family
-6. Only then do performance tuning
+- 支持报告：
+  `docs/reports/musa_ops_support_report_20260610_current_smoke_case.md`
+- 当前 S5000 benchmark：
+  `docs/reports/q2_50_s5000_manifest_current_20260610.csv`
+- H20 benchmark：
+  `docs/reports/q2_50_h20_manifest_20260608_130806.csv`
+- 按 op 聚合后的性能数据：
+  `docs/reports/q2_50_current_perf_summary_20260610.csv`
+- 聚合摘要：
+  `docs/reports/q2_50_current_perf_summary_20260610.md`
 
-## Recommended Tracking Order
+## 按 Family 统计
 
-Recommended migration order for the next phase:
+| Family        | 已支持 / 总数 | 部分通过 | 待支持 | 备注                                            |
+| ------------- | ------------: | -------: | -----: | ----------------------------------------------- |
+| attention     |        0 / 15 |        4 |     11 | 一些 GQA smoke case 通过，但还没有完整支持的 op |
+| convolution   |         0 / 2 |        0 |      2 | 当前 conv 行还是 `spec-only`                    |
+| elementwise   |       65 / 71 |        0 |      6 | Q2 当前主线支持 family                          |
+| moe           |        0 / 11 |        1 |     10 | 一个 MoE op 有部分 smoke 覆盖                   |
+| normalization |        0 / 12 |        5 |      7 | 严格 smoke 口径下只有部分覆盖，没有完整支持     |
+| reduction     |        0 / 19 |        5 |     14 | 多个 reduce op 只有部分 case 通过               |
+| scan          |         0 / 2 |        0 |      2 | 待支持                                          |
 
-1. `LogSumExpFwdOp`
-2. `GroupedGemmOp`
-3. Higher-level attention, DeltaNet, SSD, and MoE families
+## 最近 Patch 摘要
 
-## Migration Gantt / Todo
+Patch：`414daf7 Optimize several elementwise ops`
 
-### Column Legend
+### 修改内容
 
-| Column | Meaning |
-| --- | --- |
-| `Op` | Op-layer interface, backend checks, dispatch, top-level export |
-| `Workload` | Input generation and local reference path |
-| `Test` | Smoke/full correctness coverage in docker |
-| `Kernel` | TileLang kernel target, supported arch, lowering correctness |
-| `Benchmark` | Stable perf harness on MUSA |
+- `PowFwdOp`：在当前 manifest/test 合同下，对正数 base 使用
+  `exp2(log2(a) * b)` 快路径。
+- `EluFwdOp`：fp16/bf16 默认配置改为 `threads=128, npt=2`，负分支使用
+  `exp2(x * log2e)`。
+- `SoftplusFwdOp`：fp16/bf16 默认配置改为 `threads=128, npt=2`。
+- `PreluFwdOp`：使用 channel-grid launch，去掉每个元素上的 channel
+  div/mod，并使用实测得到的 dtype 默认配置。
+- `ReluFwdOp`：fp16/bf16 register-copy 默认配置改为 `threads=256, npt=2`。
+- 已删除或拒绝的改动：shared binary `npt=2`、NanToNum `128/1`、scalar
+  hoist 类改动；原因是收益太小、回退明显或缺少足够性能证据。
 
-### Progress Labels
+### 支持变化
 
-| Label | Meaning |
-| --- | --- |
-| `Done` | Completed and validated in the current fork |
-| `In progress` | Partially migrated, but not yet complete |
-| `Todo` | Not started or not yet evidenced |
-| `N/A` | Not a near-term requirement for that row |
+| 指标                       |      之前 |      现在 |
+| -------------------------- | --------: | --------: |
+| Q2 选定 op 支持            |   50 / 50 |   50 / 50 |
+| Q2 manifest benchmark case | 254 / 255 | 255 / 255 |
+| Q2 manifest 全通过 op      |   49 / 50 |   50 / 50 |
 
-### Execution Plan
+新增跑干净的 benchmark case 是
+`NegFwdOp / elementwise-256M / torch.bfloat16`；上一版 baseline 记录的是 warmup hang。
 
-| Priority | Family | Target window | Op | Workload | Test | Kernel | Benchmark | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `P0` | `Engram` | `Done` | `Done` | `Done` | `Done` | `Done` | `In progress` | Correctness is complete on MUSA; decode still has optimization headroom |
-| `P0` | `GEMM` | `Done` | `Done` | `Done` | `Done` | `Done` | `Done` | `GemmOp` main path and `gemv` fallback paths are now proven on MUSA; reusable benchmark entry exists in `benchmarks/ops/bench_gemm.py` |
-| `P0` | `LayerNorm` | `Done` | `Done` | `Done` | `Done` | `Done` | `Done` | `LayerNormFwdOp` main path is proven on MUSA; benchmark entry is stabilized by disabling autotune-by-default |
-| `P0` | `RMSNorm` | `Done` | `Done` | `Done` | `Done` | `Done` | `Done` | `RMSNormFwdOp` main path is proven on MUSA; benchmark entry is stabilized by disabling autotune-by-default |
-| `P1` | `Softmax / LogSoftmax` | `Done` | `Done` | `Done` | `Done` | `Done` | `Done` | Shared softmax op base is backend-aware, and both ops now have lightweight MUSA correctness plus stable benchmark proof entries |
-| `P1` | `LogSumExp` | `W2` | `In progress` | `Todo` | `Blocked` | `Blocked` | `Todo` | Current blocker is MUSA arch gating in the kernel class rather than an op-layer mismatch |
-| `P2` | `GroupedGemm` | `W2` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | Natural extension now that standalone GEMM is formally supported |
-| `P2` | `Elementwise` | `W3` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | Many direct CUDA assumptions remain in op code |
-| `P2` | `Norm extras` | `W3` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | `BatchNorm`, `GroupNorm`, `InstanceNorm`, fused norms, Ada norms |
-| `P3` | `Convolution / Pool / Rope` | `W4` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | Medium-value family, but lower urgency than GEMM and Norm basics |
-| `P3` | `FP8 utilities` | `W4` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | Likely needs extra dtype and lowering validation |
-| `P3` | `MHC / FFT / Dropout / DaCumsum / TopK selector` | `W5` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | Mixed utility bucket, lower priority unless directly needed |
-| `P4` | `DeltaNet / GatedDeltaNet / GLA` | `W6+` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | More complicated recurrence kernels; postpone until base families are stable |
-| `P4` | `SSD family` | `W6+` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | Still CUDA-first in current code shape |
-| `P4` | `Attention family` | `W7+` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | High complexity and validation cost; should come after GEMM/norm/reduction base paths |
-| `P4` | `MoE package` | `W8+` | `Todo` | `Todo` | `Todo` | `Todo` | `Todo` | Broadest surface area and likely multi-kernel dependency chain |
+### 性能变化
 
-### Family Checklist Template
+| 指标                      |    之前 |    现在 |
+| ------------------------- | ------: | ------: |
+| 主指标：op 平均 shape SOL |   1.076 |   1.132 |
+| op 平均 shape SOL 达标    | 38 / 50 | 40 / 50 |
 
-Use this checklist each time a family starts:
+主要正收益：
 
-| Step | Exit criterion |
-| --- | --- |
-| `Op` | No hard-coded CUDA validation path remains in the targeted op entry |
-| `Workload` | Inputs and references allocate on active backend |
-| `Test` | At least one smoke and one mainstream full case pass in docker |
-| `Kernel` | MUSA target and supported arch are wired and compile cleanly |
-| `Benchmark` | At least one stable perf command exists and runs on pinned MUSA device |
+| Op            | 上一版 SOL | 当前 SOL |   变化 | Torch 加速比 |
+| ------------- | ---------: | -------: | -----: | -----------: |
+| PowFwdOp      |      0.702 |    2.107 | +1.406 |        1.900 |
+| EluFwdOp      |      0.312 |    0.906 | +0.594 |        1.052 |
+| PreluFwdOp    |      0.113 |    0.556 | +0.443 |        1.808 |
+| SoftplusFwdOp |      0.477 |    0.756 | +0.280 |        1.086 |
+| ReluFwdOp     |      1.010 |    1.108 | +0.097 |        1.052 |
 
-### Next Concrete Sprint
+当前主要性能缺口：
 
-Recommended next sprint items:
+| Op             | op 平均 shape SOL | Torch 加速比 | 备注                                     |
+| -------------- | ----------------: | -----------: | ---------------------------------------- |
+| PreluFwdOp     |             0.556 |        1.808 | 已明显提升，但仍低于目标                 |
+| NanToNumFwdOp  |             0.567 |        0.462 | `npt>1` 被 TileLang MUSA vectorizer 阻塞 |
+| LeakyReluFwdOp |             0.660 |        1.004 | 低于 SOL 目标                            |
+| HardtanhFwdOp  |             0.674 |        1.011 | 低于 SOL 目标                            |
+| SubFwdOp       |             0.717 |        1.000 | 简单 binary baseline 仍低于目标          |
+| MulFwdOp       |             0.723 |        1.005 | 简单 binary baseline 仍低于目标          |
+| AddFwdOp       |             0.724 |        1.014 | 简单 binary baseline 仍低于目标          |
+| LerpFwdOp      |             0.727 |        1.358 | 低于 SOL 目标                            |
+| SoftplusFwdOp  |             0.756 |        1.086 | config 有收益，但数学路径仍偏低          |
 
-| Item | Goal |
-| --- | --- |
-| `LogSumExpFwdOp` | Remove the current MUSA arch gate, then validate correctness and benchmark path |
-| `GroupedGemmOp` | Reuse the now-verified GEMM bring-up path for the grouped variant |
-| `FusedAddRMSNormFwdOp` | Reuse the now-verified RMSNorm bring-up path for the fused variant |
+Torch 加速比低于 1.0：
+
+| Op                                                        | Torch/TileOps | op 平均 shape SOL |
+| --------------------------------------------------------- | ------------: | ----------------: |
+| NanToNumFwdOp                                             |         0.462 |             0.567 |
+| MaximumFwdOp                                              |         0.780 |             0.824 |
+| MinimumFwdOp                                              |         0.788 |             0.834 |
+| EqFwdOp / NeFwdOp / LtFwdOp / LeFwdOp / GeFwdOp / GtFwdOp |         ~0.79 |            >=1.89 |
+
+## Patch 历史
+
+| 日期       | Patch                                      | 支持变化                                 | 性能变化                                      | 本地证据                                 |
+| ---------- | ------------------------------------------ | ---------------------------------------- | --------------------------------------------- | ---------------------------------------- |
+| 2026-06-10 | `414daf7 Optimize several elementwise ops` | Q2 benchmark 254/255 -> 255/255 cases ok | 主 SOL 1.076 -> 1.132；达标 op 38/50 -> 40/50 | `q2_50_current_perf_summary_20260610.md` |
+
+后续每次提交都在这里追加一行，并同步刷新上面的当前快照。

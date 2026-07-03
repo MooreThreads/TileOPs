@@ -17,8 +17,10 @@ import torch
 from benchmarks.benchmark_base import BenchmarkBase, BenchmarkReport
 from tileops.manifest import load_manifest, load_workloads
 from tileops.ops.elementwise import MaskedFillFwdOp
+from tileops.utils import get_backend_name, synchronize
 from workloads.workload_base import WorkloadBase
 
+DEVICE = get_backend_name()
 _OP_NAME = "MaskedFillFwdOp"
 
 # Skip the whole module while the manifest entry is still spec-only:
@@ -57,11 +59,10 @@ class MaskedFillTest(WorkloadBase):
 
     def gen_inputs(self):
         torch.manual_seed(42)
-        dev = "cuda"
-        x = torch.randn(self.input_shape, dtype=self.dtype, device=dev)
+        x = torch.randn(self.input_shape, dtype=self.dtype, device=DEVICE)
         # Roughly half-true mask exercises both branches of the predicated select.
-        mask = torch.randint(0, 2, self.mask_shape, device=dev).bool()
-        value = torch.zeros((), dtype=self.dtype, device=dev)
+        mask = torch.randint(0, 2, self.mask_shape, device=DEVICE).bool()
+        value = torch.zeros((), dtype=self.dtype, device=DEVICE)
         return x, mask, value
 
     def ref_program(self, *args):
@@ -124,7 +125,7 @@ def test_masked_fill_bench(
 
     # Warmup: trigger JIT compilation before timed profiling.
     op(x, mask, value)
-    torch.cuda.synchronize()
+    synchronize()
 
     result = bm.profile(op, x, mask, value)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
@@ -133,7 +134,7 @@ def test_masked_fill_bench(
         return x.masked_fill(mask, value)
 
     _torch_fn(x, mask, value)  # warmup
-    torch.cuda.synchronize()
+    synchronize()
 
     result_torch = bm.profile(_torch_fn, x, mask, value)
     BenchmarkReport.record(op, locals(), result_torch, tag="torch-ref")

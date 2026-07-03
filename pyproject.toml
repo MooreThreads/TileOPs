@@ -1,12 +1,12 @@
 [project]
-name = "tileops"
+name = "tileops-musa"
 version = "0.0.1.dev2"
-description = "TileOPs kernels for efficient LLM inference on MUSA."
+description = "TileOPs-musa kernels for efficient LLM inference on MUSA."
 readme = "README.md"
 authors = [{ name = "Moore Threads Technology Co., Ltd" }]
 dependencies = [
     "torch>=2.1.0,<2.11.0",
-    # TileOPs requires a MUSA-enabled TileLang runtime. Do not install
+    # TileOps-MUSA requires a MUSA-enabled TileLang runtime. Do not install
     # upstream PyPI tilelang here; use the environment-provided MUSA build.
     # FIXME(apache-tvm-ffi-pin): Remove once tilelang carries its own
     # apache-tvm-ffi<0.1.10 pin (already on tilelang main, not yet released).
