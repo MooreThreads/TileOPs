@@ -70,7 +70,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
     B = batch_size  # shorter alias for tensor shapes
 
     @tilelang.jit(
-        out_idx=[4, 5, 6],
+        out_idx=[3, 4, 5],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
         },
@@ -117,8 +117,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
 
         @T.macro
         def fused_bitrev_smem_stages(
-            x_real: T.Tensor((B, n), real_dtype),
-            x_imag: T.Tensor((B, n), real_dtype),
+            x_pair: T.Tensor((B, n, 2), real_dtype),
             lut_real: T.Tensor((lut_size,), real_dtype),
             lut_imag: T.Tensor((lut_size,), real_dtype),
             y_real: T.Tensor((B, n), real_dtype),
@@ -134,6 +133,10 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
             with T.Kernel(smem_blocks, B, threads=threads) as (bx, bb):
                 smem_r = T.alloc_shared([smem_per_block], real_dtype)
                 smem_i = T.alloc_shared([smem_per_block], real_dtype)
+                # The input is interleaved, so one vectorized load brings both
+                # components. The bit-reversed index is scattered either way;
+                # this only removes the second transaction to the same address.
+                pair = T.alloc_local((2,), real_dtype)
 
                 # ---- load first half: smem[0..threads-1] from bit-reversed x ----
                 for i in T.Parallel(threads):
@@ -143,11 +146,13 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
                         temp = T.alloc_var("int32")
                         rev_idx = 0
                         temp = idx
-                        for _bit in T.serial(log2n):
+                        for _bit in T.unroll(log2n):
                             rev_idx = (rev_idx << 1) | (temp & 1)
                             temp = temp >> 1
-                        smem_r[i] = x_real[bb, rev_idx]
-                        smem_i[i] = x_imag[bb, rev_idx]
+                        for v in T.vectorized(2):
+                            pair[v] = x_pair[bb, rev_idx, v]
+                        smem_r[i] = pair[0]
+                        smem_i[i] = pair[1]
 
                 # ---- load second half: smem[threads..smem_per_block-1] ----
                 for i in T.Parallel(threads):
@@ -158,11 +163,13 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
                         temp = T.alloc_var("int32")
                         rev_idx = 0
                         temp = idx
-                        for _bit in T.serial(log2n):
+                        for _bit in T.unroll(log2n):
                             rev_idx = (rev_idx << 1) | (temp & 1)
                             temp = temp >> 1
-                        smem_r[j] = x_real[bb, rev_idx]
-                        smem_i[j] = x_imag[bb, rev_idx]
+                        for v in T.vectorized(2):
+                            pair[v] = x_pair[bb, rev_idx, v]
+                        smem_r[j] = pair[0]
+                        smem_i[j] = pair[1]
 
                 T.sync_threads()
 
@@ -179,16 +186,11 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
                             j_idx = group * m_s + k
                             l_idx = j_idx + half_m_s
 
-                            if dtype == "complex128":
-                                # Reuse the pre-built LUT instead of evaluating
-                                # expensive FP64 cos/sin. Its stage layout is
-                                # LUT[half_m - 1 + k] = exp(-2pi*i*k/m).
-                                tw_r = T.cast(lut_real[lut_base_s + k], accum_dtype)
-                                tw_i = T.cast(lut_imag[lut_base_s + k], accum_dtype)
-                            else:
-                                angle = -2.0 * _PI * T.cast(k, "float64") / T.cast(m_s, "float64")
-                                tw_r = T.cos(T.cast(angle, accum_dtype))
-                                tw_i = T.sin(T.cast(angle, accum_dtype))
+                            # LUT[half_m - 1 + k] = exp(-2pi*i*k/m). complex64
+                            # used to recompute this with cos/sin on every
+                            # butterfly, and the same k repeats across the stage.
+                            tw_r = T.cast(lut_real[lut_base_s + k], accum_dtype)
+                            tw_i = T.cast(lut_imag[lut_base_s + k], accum_dtype)
 
                             u_r = T.cast(smem_r[j_idx], accum_dtype)
                             u_i = T.cast(smem_i[j_idx], accum_dtype)
@@ -562,8 +564,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
 
         @T.prim_func
         def _fft_lut_main(
-            x_real: T.Tensor((B, n), real_dtype),  # type: ignore
-            x_imag: T.Tensor((B, n), real_dtype),  # type: ignore
+            x_pair: T.Tensor((B, n, 2), real_dtype),  # type: ignore
             lut_real: T.Tensor((lut_size,), real_dtype),  # type: ignore
             lut_imag: T.Tensor((lut_size,), real_dtype),  # type: ignore
             # Split outputs are global scratch for non-final LUT stages. The
@@ -575,8 +576,7 @@ def _fft_c2c_kernel(n: int, batch_size: int = 1, dtype: str = "complex64") -> Ca
             # Fused bit-reversal + SMEM butterfly stages: single kernel launch,
             # one global-memory read of x, one write of y for all SMEM stages.
             fused_bitrev_smem_stages(
-                x_real,
-                x_imag,
+                x_pair,
                 lut_real,
                 lut_imag,
                 y_real,
@@ -630,13 +630,12 @@ def _fft_c2c_run(
     dtype: str,
     block_size: int,
     threads: int,
-    x_real: torch.Tensor,
-    x_imag: torch.Tensor,
+    x_pair: torch.Tensor,
     lut_real: torch.Tensor,
     lut_imag: torch.Tensor,
 ) -> torch.Tensor:
     _, _, y_pair = _fft_c2c_kernel(n, batch_size, dtype)(block_size, threads)(
-        x_real, x_imag, lut_real, lut_imag
+        x_pair, lut_real, lut_imag
     )
     return y_pair
 
@@ -686,7 +685,7 @@ class FFTC2CKernel(Kernel):
     Optimization notes and benchmark results: https://github.com/tile-ai/TileOPs/issues/310
     """
 
-    supported_archs = [75, 80, 86, 89, 90]
+    supported_archs = [31, 75, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -727,8 +726,7 @@ class FFTC2CKernel(Kernel):
 
     def forward(
         self,
-        x_real: torch.Tensor,
-        x_imag: torch.Tensor,
+        x_pair: torch.Tensor,
         lut_real: torch.Tensor,
         lut_imag: torch.Tensor,
     ) -> torch.Tensor:
@@ -736,8 +734,7 @@ class FFTC2CKernel(Kernel):
         Compute 1D DFT on pre-split real/imaginary parts using a pre-built LUT.
 
         Args:
-            x_real:   Real part, shape (n,).
-            x_imag:   Imaginary part, shape (n,).
+            x_pair: Interleaved real and imaginary input, shape (batch_size, n, 2).
             lut_real: Twiddle real parts, shape (n-1,).
             lut_imag: Twiddle imaginary parts, shape (n-1,).
 
@@ -750,8 +747,7 @@ class FFTC2CKernel(Kernel):
             self.dtype_str,
             self.config["block_size"],
             self.config["threads"],
-            x_real,
-            x_imag,
+            x_pair,
             lut_real,
             lut_imag,
         )

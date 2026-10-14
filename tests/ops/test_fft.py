@@ -1,3 +1,5 @@
+from functools import partial
+
 import pytest
 import torch
 
@@ -8,6 +10,17 @@ from workloads.fft import FFTWorkload
 
 class FFTTest(FFTWorkload, TestBase):
     pass
+
+
+def _cpu_complex_compare(
+    output: torch.Tensor, output_ref: torch.Tensor, *, atol: float, rtol: float
+) -> None:
+    torch.testing.assert_close(
+        output.detach().cpu(),
+        output_ref.detach().cpu(),
+        atol=atol,
+        rtol=rtol,
+    )
 
 
 class FFTFixture(FixtureBase):
@@ -38,4 +51,8 @@ def test_fft_c2c(n: int, dtype: torch.dtype, tune: bool, batch_shape: tuple) -> 
         tolerances = {"atol": 1e-4, "rtol": 1e-4}
     else:
         tolerances = {"atol": 1e-8, "rtol": 1e-8}
-    test.check(op, *test.gen_inputs(), **tolerances)
+    test.check(
+        op,
+        *test.gen_inputs(),
+        compare=partial(_cpu_complex_compare, **tolerances),
+    )

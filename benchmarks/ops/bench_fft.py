@@ -7,6 +7,7 @@ from benchmarks.benchmark_base import (
     workloads_to_params,
 )
 from tileops.ops import FFTC2CFwdOp
+from tileops.utils import synchronize
 from workloads.fft import FFTWorkload
 
 
@@ -20,7 +21,7 @@ def test_fft_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = FFTC2CFwdOp(tune=True)
 
     op(*inputs)
-    torch.cuda.synchronize()
+    synchronize()
 
     bm = ManifestBenchmark(op, test)
 

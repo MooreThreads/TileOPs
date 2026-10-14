@@ -5,6 +5,7 @@ import torch
 
 from tileops.kernels.fft import FFTC2CKernel
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import is_backend_tensor
 
 from .op_base import Op
 
@@ -108,7 +109,7 @@ class FFTC2CFwdOp(Op):
             last dimension.
         """
         x = input
-        if not x.is_cuda:
+        if not is_backend_tensor(x):
             raise ValueError("input must be a CUDA tensor")
         if x.dtype not in (torch.complex64, torch.complex128):
             raise ValueError(f"input.dtype must be complex64 or complex128, got {x.dtype}")
@@ -118,14 +119,12 @@ class FFTC2CFwdOp(Op):
         if n <= 0 or n & (n - 1) != 0:
             raise ValueError(f"FFT size must be a positive power of 2, got {n}")
 
-        x_real = x.real.contiguous()
-        x_imag = x.imag.contiguous()
         original_shape = x.shape
 
-        # Flatten all batch dimensions into a single batch dimension
-        batch_size = x_real[..., 0].numel() if x.ndim > 1 else 1
-        x_real = x_real.reshape(batch_size, n)
-        x_imag = x_imag.reshape(batch_size, n)
+        # view_as_real is a metadata view of the interleaved storage, so the
+        # kernel reads the input directly and no split kernel is launched.
+        batch_size = x[..., 0].numel() if x.ndim > 1 else 1
+        x_pair = torch.view_as_real(x).reshape(batch_size, n, 2)
 
         self.n = n
         self.dtype = x.dtype
@@ -134,7 +133,7 @@ class FFTC2CFwdOp(Op):
             "fft_c2c_kernel", (input,), (n, batch_size, x.dtype, x.device.index)
         )
         self.kernel = kernel
-        y_pair = kernel(x_real, x_imag, self.twiddle_real, self.twiddle_imag)
+        y_pair = kernel(x_pair, self.twiddle_real, self.twiddle_imag)
 
         # The kernel writes the final butterfly directly in interleaved layout;
         # view_as_complex is metadata-only and launches no packing kernel.
