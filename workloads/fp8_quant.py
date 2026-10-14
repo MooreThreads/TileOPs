@@ -1,6 +1,9 @@
 import torch
 
+from tileops.utils import get_backend_name
 from workloads.workload_base import WorkloadBase
+
+DEVICE = get_backend_name()
 
 
 class FP8QuantWorkload(WorkloadBase):
@@ -20,7 +23,7 @@ class FP8QuantWorkload(WorkloadBase):
             self.kv_group,
             self.index_dim,
             dtype=self.in_dtype,
-            device="cuda",
+            device=DEVICE,
         )
         return (input_tensor,)
 

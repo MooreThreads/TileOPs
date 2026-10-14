@@ -116,7 +116,7 @@ class FP8QuantKernel(Kernel):
         ValueError: ``block_m`` is not positive, raised where the kernel is built.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     # This kernel's launch, not the device's. A block reducing a row across its threads
     # runs _LANE_THREADS of them; a block reducing a row inside one thread runs _ROW_THREADS.

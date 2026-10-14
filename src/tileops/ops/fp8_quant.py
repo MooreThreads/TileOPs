@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.fp8_quant import FP8QuantKernel
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import is_backend_tensor
 
 from .op_base import Op
 
@@ -84,7 +85,7 @@ class FP8QuantFwdOp(Op):
         Returns:
             ``scale_tensor``, ``output_tensor``, as the manifest declares.
         """
-        if not input_tensor.is_cuda:
+        if not is_backend_tensor(input_tensor):
             raise ValueError("FP8QuantFwdOp expects a CUDA input tensor")
         if input_tensor.ndim != 4:
             raise ValueError("FP8QuantFwdOp expects input_tensor shape [B, S, G, D]")
