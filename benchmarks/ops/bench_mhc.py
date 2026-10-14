@@ -16,11 +16,12 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
+from tileops.utils import get_backend_name
 from workloads.mhc import MHCPostWorkload, MHCPreWorkload
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.
-_TUNE = True
+_TUNE = get_backend_name() != "musa"
 
 # Sinkhorn epsilon is not part of any manifest workload; use the manifest
 # signature default.
@@ -111,7 +112,9 @@ def test_mhc_post_bench(batch: int, n_expand: int, c_x: int, dtype: torch.dtype)
         {
             "tileops": op,
             "torch-ref": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
+            # MUSA TorchInductor lowers the broadcasted MHC post reference to
+            # a stride-0 mm operand rejected by muDNN.
+            # TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
         },
         *inputs,
     )

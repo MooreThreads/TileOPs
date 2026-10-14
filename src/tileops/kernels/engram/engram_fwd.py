@@ -28,6 +28,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
+from tileops.utils import get_sm_version, get_tilelang_target
 
 __all__ = ["EngramGateConvFwdKernel"]
 
@@ -40,6 +41,7 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
     d_padded = align_up(d, ALIGNMENT)
 
     @tilelang.jit(
+        target=get_tilelang_target(),
         out_idx=[6, 7, 8, 9, 10, 11],
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -201,7 +203,7 @@ class EngramGateConvFwdKernel(Kernel):
     Outputs: Y (M,T,d), vhat (M,T,d), alpha (M,T), rrms_h/k/v (M,T)
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -231,10 +233,14 @@ class EngramGateConvFwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if get_sm_version() == 31:
+            return {"threads": 128}
         return {"threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if get_sm_version() == 31:
+            return [{"threads": t} for t in [128, 256]]
         return [{"threads": t} for t in [128, 256, 512]]
 
     def forward(

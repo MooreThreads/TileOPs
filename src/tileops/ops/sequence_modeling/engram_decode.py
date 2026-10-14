@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.engram import EngramDecodeKernel
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -139,7 +140,7 @@ class EngramDecodeFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not e_t.is_cuda:
+        if not is_backend_tensor(e_t):
             raise ValueError("e_t must be a CUDA tensor")
         self._validate_dtypes(
             e_t,

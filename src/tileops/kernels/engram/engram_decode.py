@@ -47,6 +47,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
+from tileops.utils import get_sm_version, get_tilelang_target
 
 __all__ = ["EngramDecodeKernel"]
 
@@ -69,6 +70,7 @@ def _engram_decode_kernel(batch, d_mem, d, max_conv_len, conv_kernel_size, dilat
     w = conv_kernel_size
 
     @tilelang.jit(
+        target=get_tilelang_target(),
         out_idx=[8, 9],
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -249,7 +251,7 @@ class EngramDecodeKernel(Kernel):
         dtype: data type.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -296,10 +298,14 @@ class EngramDecodeKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if get_sm_version() == 31:
+            return {"threads": 256}
         return {"threads": 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if get_sm_version() == 31:
+            return [{"threads": t} for t in [128, 256]]
         return [{"threads": t} for t in [128, 256, 512]]
 
     def forward(

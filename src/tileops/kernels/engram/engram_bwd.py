@@ -24,6 +24,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
+from tileops.utils import get_sm_version
 
 __all__ = ["EngramGateConvBwdKernel"]
 
@@ -38,6 +39,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
 
     @tilelang.jit(
         out_idx=[12, 13, 14, 15, 16, 17, 18, 19],
+        pass_configs={"tl.disable_shuffle_elect": True},
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads):
@@ -355,7 +357,7 @@ class EngramGateConvBwdKernel(Kernel):
       Pass 2:  Gate bwd -> dH, dk, dv + drms_w_h accumulation
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -385,10 +387,12 @@ class EngramGateConvBwdKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": 128}
+        return {"threads": 32 if get_sm_version(self.device_index) == 31 else 128}
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if get_sm_version(self.device_index) == 31:
+            return [{"threads": 32}]
         return [{"threads": t} for t in [128, 256, 512]]
 
     def forward(

@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.engram import EngramGateConvBwdKernel, EngramGateConvFwdKernel
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -127,7 +128,7 @@ class EngramGateConvFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not H.is_cuda:
+        if not is_backend_tensor(H):
             raise ValueError("H must be a CUDA tensor")
         self._validate_dtypes(H, k, v, rms_w_h, rms_w_v, conv_w)
         self.dtype = H.dtype
@@ -296,7 +297,7 @@ class EngramGateConvBwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not dY.is_cuda:
+        if not is_backend_tensor(dY):
             raise ValueError("dY must be a CUDA tensor")
         self._validate_dtypes(
             dY,

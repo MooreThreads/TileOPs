@@ -66,7 +66,7 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
 
 
 class MHCPostKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,

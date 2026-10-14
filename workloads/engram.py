@@ -1,7 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from workloads.workload_base import WorkloadBase
+from tileops.utils import get_backend_name
+from workloads.workload_base import WorkloadBase, benchmark_compare_active
+
+DEVICE = get_backend_name()
 
 CONV_KERNEL_SIZE = 4
 
@@ -15,16 +18,22 @@ class EngramGateConvFwdWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        rms_w_h = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device="cuda") * 0.02
+        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=DEVICE)
+        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=DEVICE) * 0.1
+        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=DEVICE) * 0.1
+        rms_w_h = torch.ones(self.d, dtype=self.dtype, device=DEVICE)
+        rms_w_v = torch.ones(self.d, dtype=self.dtype, device=DEVICE)
+        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device=DEVICE) * 0.02
         return H, k, v, rms_w_h, rms_w_v, conv_w
 
     def ref_program(self, H, k, v, rms_w_h, rms_w_v, conv_w):
-        return engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
+        device = H.device
+        if benchmark_compare_active():
+            return engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
+        outputs = engram_gate_conv_fwd_torch(
+            H.cpu(), k.cpu(), v.cpu(), rms_w_h.cpu(), rms_w_v.cpu(), conv_w.cpu(), self.eps
+        )
+        return tuple(output.to(device) for output in outputs)
 
 
 class EngramGateConvBwdWorkload(WorkloadBase):
@@ -37,13 +46,13 @@ class EngramGateConvBwdWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         """Generate inputs including saved intermediates from a reference forward."""
-        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda")
-        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
-        rms_w_h = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device="cuda") * 0.02
-        dY = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device="cuda") * 0.1
+        H = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=DEVICE)
+        k = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=DEVICE) * 0.1
+        v = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=DEVICE) * 0.1
+        rms_w_h = torch.ones(self.d, dtype=self.dtype, device=DEVICE)
+        rms_w_v = torch.ones(self.d, dtype=self.dtype, device=DEVICE)
+        conv_w = torch.randn(CONV_KERNEL_SIZE, self.d, dtype=self.dtype, device=DEVICE) * 0.02
+        dY = torch.randn(self.M, self.seq_len, self.d, dtype=self.dtype, device=DEVICE) * 0.1
 
         # Compute saved intermediates via reference forward
         def _rmsnorm(x, w):
@@ -69,21 +78,39 @@ class EngramGateConvBwdWorkload(WorkloadBase):
     def ref_program(
         self, dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
     ):
-        return ref_engram_gate_conv_bwd(
-            dY,
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-            vhat,
-            alpha,
-            rrms_h,
-            rrms_k,
-            rrms_v,
+        device = dY.device
+        if benchmark_compare_active():
+            return ref_engram_gate_conv_bwd(
+                dY,
+                H,
+                k,
+                v,
+                rms_w_h,
+                rms_w_v,
+                conv_w,
+                vhat,
+                alpha,
+                rrms_h,
+                rrms_k,
+                rrms_v,
+                self.eps,
+            )
+        outputs = ref_engram_gate_conv_bwd(
+            dY.cpu(),
+            H.cpu(),
+            k.cpu(),
+            v.cpu(),
+            rms_w_h.cpu(),
+            rms_w_v.cpu(),
+            conv_w.cpu(),
+            vhat.cpu(),
+            alpha.cpu(),
+            rrms_h.cpu(),
+            rrms_k.cpu(),
+            rrms_v.cpu(),
             self.eps,
         )
+        return tuple(output.to(device) for output in outputs)
 
 
 class EngramDecodeWorkload(WorkloadBase):
@@ -98,22 +125,36 @@ class EngramDecodeWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        e_t = torch.randn(self.batch, self.d_mem, dtype=self.dtype, device="cuda") * 0.1
-        h_t = torch.randn(self.batch, self.d, dtype=self.dtype, device="cuda")
+        e_t = torch.randn(self.batch, self.d_mem, dtype=self.dtype, device=DEVICE) * 0.1
+        h_t = torch.randn(self.batch, self.d, dtype=self.dtype, device=DEVICE)
         # Full conv_state (max_conv_len entries)
         conv_state = (
-            torch.randn(self.batch, self.max_conv_len, self.d, dtype=self.dtype, device="cuda")
+            torch.randn(self.batch, self.max_conv_len, self.d, dtype=self.dtype, device=DEVICE)
             * 0.1
         )
-        W_K = torch.randn(self.d_mem, self.d, dtype=self.dtype, device="cuda") * 0.02
-        W_V = torch.randn(self.d_mem, self.d, dtype=self.dtype, device="cuda") * 0.02
-        rms_w_h = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        rms_w_v = torch.ones(self.d, dtype=self.dtype, device="cuda")
-        conv_w = torch.randn(self.conv_kernel_size, self.d, dtype=self.dtype, device="cuda") * 0.02
+        W_K = torch.randn(self.d_mem, self.d, dtype=self.dtype, device=DEVICE) * 0.02
+        W_V = torch.randn(self.d_mem, self.d, dtype=self.dtype, device=DEVICE) * 0.02
+        rms_w_h = torch.ones(self.d, dtype=self.dtype, device=DEVICE)
+        rms_w_v = torch.ones(self.d, dtype=self.dtype, device=DEVICE)
+        conv_w = torch.randn(self.conv_kernel_size, self.d, dtype=self.dtype, device=DEVICE) * 0.02
         return e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w
 
     def ref_program(self, e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w):
-        y_ref, state_ref = engram_decode_step_torch(
+        if benchmark_compare_active():
+            return engram_decode_step_torch(
+                e_t,
+                h_t,
+                conv_state,
+                W_K,
+                W_V,
+                rms_w_h,
+                rms_w_v,
+                conv_w,
+                self.max_conv_len,
+                self.dilation,
+                self.eps,
+            )
+        return engram_decode_step_cpu_reference(
             e_t,
             h_t,
             conv_state,
@@ -126,7 +167,6 @@ class EngramDecodeWorkload(WorkloadBase):
             self.dilation,
             self.eps,
         )
-        return y_ref, state_ref
 
 
 def _rmsnorm(x, w, eps=1e-6):
@@ -284,3 +324,40 @@ def engram_decode_step_torch(
 
     y_t = F.silu(conv_out) + v_hat
     return y_t.to(h_t.dtype), new_conv_state
+
+
+def engram_decode_step_cpu_reference(
+    e_t,
+    h_t,
+    conv_state,
+    W_K,
+    W_V,
+    rms_w_h,
+    rms_w_v,
+    conv_w,
+    max_conv_len,
+    dilation,
+    eps=1e-6,
+):
+    """Run the Engram decode reference on CPU and return tensors to the caller device.
+
+    The MUSA torch path currently produces an incorrect depthwise-convolution
+    result for this workload, while the CPU implementation agrees with the
+    TileOPs kernel. Keeping the reference on CPU makes that backend limitation
+    explicit instead of masking it with a relaxed tolerance.
+    """
+    device = e_t.device
+    outputs = engram_decode_step_torch(
+        e_t.cpu(),
+        h_t.cpu(),
+        conv_state.cpu(),
+        W_K.cpu(),
+        W_V.cpu(),
+        rms_w_h.cpu(),
+        rms_w_v.cpu(),
+        conv_w.cpu(),
+        max_conv_len,
+        dilation,
+        eps,
+    )
+    return tuple(output.to(device) for output in outputs)

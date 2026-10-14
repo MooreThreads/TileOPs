@@ -2,7 +2,10 @@ import math
 
 import torch
 
+from tileops.utils import get_backend_name
 from workloads.workload_base import WorkloadBase
+
+DEVICE = get_backend_name()
 
 
 class MHCPreWorkload(WorkloadBase):
@@ -41,10 +44,10 @@ class MHCPreWorkload(WorkloadBase):
         c_x = self.c_x
 
         phi = torch.randn(
-            [n_expand * c_x, n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32
+            [n_expand * c_x, n_expand * n_expand + 2 * n_expand], device=DEVICE, dtype=torch.float32
         )
-        x = torch.randn([batch, n_expand * c_x], device="cuda", dtype=torch.bfloat16)
-        b = torch.randn([n_expand * n_expand + 2 * n_expand], device="cuda", dtype=torch.float32)
+        x = torch.randn([batch, n_expand * c_x], device=DEVICE, dtype=torch.bfloat16)
+        b = torch.randn([n_expand * n_expand + 2 * n_expand], device=DEVICE, dtype=torch.float32)
         return phi, x, b
 
     def ref_program(
@@ -77,9 +80,9 @@ class MHCPostWorkload(WorkloadBase):
         n_expand = self.n_expand
         c_x = self.c_x
 
-        x_layer_out = torch.randn([batch, c_x], device="cuda", dtype=self.dtype)
-        h_post = torch.randn([batch, n_expand], device="cuda", dtype=torch.float32)
-        x_res = torch.randn([batch, n_expand * c_x], device="cuda", dtype=self.dtype)
+        x_layer_out = torch.randn([batch, c_x], device=DEVICE, dtype=self.dtype)
+        h_post = torch.randn([batch, n_expand], device=DEVICE, dtype=torch.float32)
+        x_res = torch.randn([batch, n_expand * c_x], device=DEVICE, dtype=self.dtype)
         return x_layer_out, h_post, x_res
 
     def ref_program(

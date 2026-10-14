@@ -21,6 +21,9 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
         out_idx=[-1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_PTXAS_REGISTER_USAGE_LEVEL: 10,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -53,6 +56,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
 
                 for i in T.Parallel(block_x_b):
                     acc_r_sqr[i] = 0
+                T.clear(xsqr)
 
                 for k in T.Pipelined(loop_range, num_stages=num_stages):
                     T.copy(
@@ -256,7 +260,7 @@ def _mhc_pre_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat1
 
 
 class MHCPreKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
