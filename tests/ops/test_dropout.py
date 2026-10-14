@@ -12,6 +12,9 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 
 class DropoutStatFixture(FixtureBase):
@@ -83,7 +86,7 @@ def test_dropout_statistical_rate(n_total: int, dtype: torch.dtype, p: float) ->
     """Verify that the fraction of dropped elements is within 3 sigma of p."""
     from tileops.ops.dropout import DropoutFwdOp
 
-    x = torch.ones(n_total, dtype=dtype, device="cuda")
+    x = torch.ones(n_total, dtype=dtype, device=DEVICE)
     op = DropoutFwdOp(p=p, seed=42)
     y = op(x)
 
@@ -105,27 +108,26 @@ def test_dropout_scale_factor(n_total: int, dtype: torch.dtype, p: float) -> Non
     """Verify non-dropped elements are scaled by 1/(1-p)."""
     from tileops.ops.dropout import DropoutFwdOp
 
-    x = torch.ones(n_total, dtype=dtype, device="cuda")
+    x = torch.ones(n_total, dtype=dtype, device=DEVICE)
     op = DropoutFwdOp(p=p, seed=123)
     y = op(x)
 
     # Non-zero elements should be scaled by 1/(1-p)
     mask = y != 0
-    if mask.any():
-        expected_scale = 1.0 / (1.0 - p)
-        non_zero_vals = y[mask].float()
-        if dtype == torch.float32:
-            atol, rtol = 1e-5, 1e-5
-        elif dtype == torch.float16:
-            atol, rtol = 1e-3, 1e-3
-        else:  # bfloat16
-            atol, rtol = 1.6e-2, 1.6e-2
-        torch.testing.assert_close(
-            non_zero_vals,
-            torch.full_like(non_zero_vals, expected_scale),
-            atol=atol,
-            rtol=rtol,
-        )
+    expected_scale = 1.0 / (1.0 - p)
+    checked = torch.where(mask, y, torch.full_like(y, expected_scale)).float()
+    if dtype == torch.float32:
+        atol, rtol = 1e-5, 1e-5
+    elif dtype == torch.float16:
+        atol, rtol = 1e-3, 1e-3
+    else:  # bfloat16
+        atol, rtol = 1.6e-2, 1.6e-2
+    torch.testing.assert_close(
+        checked,
+        torch.full_like(checked, expected_scale),
+        atol=atol,
+        rtol=rtol,
+    )
 
 
 @DropoutDeterminismFixture
@@ -133,7 +135,7 @@ def test_dropout_deterministic_replay(n_total: int, dtype: torch.dtype, p: float
     """Same seed must produce identical output."""
     from tileops.ops.dropout import DropoutFwdOp
 
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     op1 = DropoutFwdOp(p=p, seed=777)
     op2 = DropoutFwdOp(p=p, seed=777)
     y1 = op1(x)
@@ -146,7 +148,7 @@ def test_dropout_different_seeds(n_total: int, dtype: torch.dtype, p: float) -> 
     """Different seeds must produce different outputs (with overwhelming probability)."""
     from tileops.ops.dropout import DropoutFwdOp
 
-    x = torch.ones(n_total, dtype=dtype, device="cuda")
+    x = torch.ones(n_total, dtype=dtype, device=DEVICE)
     op1 = DropoutFwdOp(p=p, seed=42)
     op2 = DropoutFwdOp(p=p, seed=99)
     y1 = op1(x)
@@ -159,7 +161,7 @@ def test_dropout_p0_identity(n_total: int, dtype: torch.dtype) -> None:
     """p=0 means no dropout: output equals input."""
     from tileops.ops.dropout import DropoutFwdOp
 
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     op = DropoutFwdOp(p=0.0, seed=42)
     y = op(x)
     torch.testing.assert_close(y, x)
@@ -170,7 +172,7 @@ def test_dropout_p1_all_zeros(n_total: int, dtype: torch.dtype) -> None:
     """p=1 means all elements dropped: output is all zeros."""
     from tileops.ops.dropout import DropoutFwdOp
 
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     op = DropoutFwdOp(p=1.0, seed=42)
     y = op(x)
     assert torch.equal(y, torch.zeros_like(x)), "p=1 should produce all zeros"
@@ -181,7 +183,7 @@ def test_dropout_training_false(n_total: int, dtype: torch.dtype) -> None:
     """training=False means identity pass-through regardless of p."""
     from tileops.ops.dropout import DropoutFwdOp
 
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     op = DropoutFwdOp(p=0.5, seed=42, training=False)
     y = op(x)
     torch.testing.assert_close(y, x)
@@ -193,7 +195,7 @@ def test_dropout_preserves_shape(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.dropout import DropoutFwdOp
 
     shape = (100, n_total // 100)
-    x = torch.randn(shape, dtype=dtype, device="cuda")
+    x = torch.randn(shape, dtype=dtype, device=DEVICE)
     op = DropoutFwdOp(p=0.3, seed=42)
     y = op(x)
     assert y.shape == x.shape, f"Shape mismatch: {y.shape} vs {x.shape}"
@@ -231,7 +233,7 @@ def test_dropout_custom_config_p0_identity(
     """
     from tileops.kernels.dropout import DropoutKernel
 
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     kernel = DropoutKernel(
         n_total,
         dtype,
@@ -258,7 +260,7 @@ def test_dropout_custom_config_correctness(
 
     p = 0.5
     scale = 1.0 / (1.0 - p)
-    x = torch.ones(n_total, dtype=dtype, device="cuda")
+    x = torch.ones(n_total, dtype=dtype, device=DEVICE)
     kernel = DropoutKernel(
         n_total,
         dtype,

@@ -9,6 +9,7 @@ from ._base import (
     MultiInputElementwiseKernel,
     ScalarParamUnaryKernel,
 )
+from ._dtype import _FLOAT_DTYPES, _FP8_DTYPES
 
 __all__ = [
     "ClampFwdKernel",
@@ -22,6 +23,8 @@ class ClampFwdKernel(ScalarParamUnaryKernel):
     Computes in float32 and casts back at the store, so a half input keeps the
     precision of the comparison. A bound the caller omitted is not applied.
     """
+
+    SUPPORTED_DTYPES = _FLOAT_DTYPES + _FP8_DTYPES
 
     def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None, tune=False):
         self.min_val = min_val

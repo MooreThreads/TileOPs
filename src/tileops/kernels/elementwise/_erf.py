@@ -4,36 +4,27 @@ import tilelang.language as T
 
 __all__ = ["erf"]
 
-# |x| taken as saturated. erf(3.6) = 1 - 7.4e-7, far below half a float16 ulp.
-_CLAMP = 3.6
-
-# erf(x) = clip(t * P(w), -1, 1), t = clamp(x, -_CLAMP, _CLAMP), w = 1 - (t / _CLAMP)**2,
-# highest degree first. Worst case over the real line is 1.7e-5, an order below half
-# a float16 ulp at 1.0.
-_POLY_COEFFS = (
-    8.971932411193848,
-    -33.1397590637207,
-    53.60123062133789,
-    -48.02798080444336,
-    26.02545738220215,
-    -8.488715171813965,
-    1.7499406337738037,
-    -0.09359221160411835,
-    0.11330155283212662,
-    0.1387363225221634,
-    0.2777777910232544,
-)
+# Abramowitz and Stegun 7.1.26, the float32 constants the CPU reference
+# evaluates. The Horner step is an fma: a separate multiply and add rounds
+# the small-|x| tail one representable step off the reference.
+_P = 0.32759109139442444
+_A5 = 1.0614054203033447
+_A4 = -1.453152060508728
+_A3 = 1.421413779258728
+_A2 = -0.2844967246055603
+_A1 = 0.2548295855522156
 
 
 def erf(x, out_dtype):
     """Element-wise erf(x), evaluated and returned in float32.
 
-    ``erff`` is correct to 2 ulp of float32 and costs roughly twice the
-    polynomial's instruction count, which only a float32 result can hold.
+    float32 calls the device erf. float16 and bfloat16 follow the reference
+    polynomial: t = 1 / (1 + p|x|), then
+    sign(x) * (1 - poly(t) * t * exp(-x^2)), with every multiply-add fused.
 
-    NaN is not preserved: the clamp lowers to ``fminf``/``fmaxf``, which return
-    their non-NaN operand, so a NaN argument reads back as -1. Restoring it
-    costs a ``T.if_then_else``, which scalarises the element loop.
+    NaN is not preserved. The sign test is a comparison, which is false for
+    NaN, and the clamp then returns its non-NaN bound, so NaN reads back as
+    -1. Restoring NaN costs another ``T.if_then_else``.
 
     Args:
         x: The argument. Any float dtype; promoted to float32 before evaluation.
@@ -46,17 +37,19 @@ def erf(x, out_dtype):
     wide = T.cast(x, "float32")
     if out_dtype == "float32":
         return T.erf(wide)
+    zero = T.cast(0.0, "float32")
     one = T.cast(1.0, "float32")
-    clamped = T.min(T.max(wide, T.cast(-_CLAMP, "float32")), T.cast(_CLAMP, "float32"))
-    # Scaling the clamp out before squaring, not after, is what makes w exactly zero
-    # at the clamp: float32(1 / _CLAMP) * _CLAMP is 1.0, where 1 - x**2 / _CLAMP**2
-    # leaves 1e-8 once the backend contracts it into an FMA.
-    scaled = clamped * T.cast(1.0 / _CLAMP, "float32")
-    w = one - scaled * scaled
-    acc = T.cast(_POLY_COEFFS[0], "float32")
-    for coeff in _POLY_COEFFS[1:]:
-        acc = acc * w + T.cast(coeff, "float32")
-    # The clip keeps the backend from contracting the product into a caller's add,
-    # which would evaluate it to full width and land the tail 7e-9 short of +-1.
-    # GELU scales the 1 - erf(x) residual by x, so that error is unbounded in |x|.
-    return T.min(T.max(clamped * acc, -one), one)
+    ax = T.abs(wide)
+    den = T.ieee_fmaf(T.cast(_P, "float32"), ax, one)
+    t = one / den
+    z = T.cast(_A5, "float32")
+    z = T.ieee_fmaf(z, t, T.cast(_A4, "float32"))
+    z = T.ieee_fmaf(z, t, T.cast(_A3, "float32"))
+    z = T.ieee_fmaf(z, t, T.cast(_A2, "float32"))
+    z = T.ieee_fmaf(z, t, T.cast(_A1, "float32"))
+    ex = T.exp(-(wide * wide))
+    y = T.ieee_fmaf(z, t * (-ex), one)
+    # wide < 0 is false for NaN. The clamp lowers to fmin/fmax, which return
+    # their non-NaN operand, so a NaN argument comes back as -1.
+    y = T.if_then_else(wide < zero, -y, y)
+    return T.min(T.max(y, -one), one)

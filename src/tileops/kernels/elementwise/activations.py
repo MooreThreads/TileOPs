@@ -4,6 +4,7 @@ import functools
 
 import tilelang
 import tilelang.language as T
+import torch
 
 from tileops.kernels.constants import GELU_TANH_COEFF, INV_SQRT2, LOG2E, SQRT_2_OVER_PI
 
@@ -343,20 +344,27 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
 class GeluAndMulFwdKernel(FusedGatedKernel):
     """GELU-and-Mul: y = gelu(gate) * value.
 
-    Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
+    Uses exact GELU: gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2))), with the
+    device ``erff``. A widened float32 row is faster as one element per thread;
+    the 16-bit rows stay on the vectorized launch.
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
 
+    def __init__(self, M, N, dtype, config=None, tune=False):
+        if dtype == torch.float32 and (config or {}).get("strategy") is None:
+            config = dict(config or {})
+            config["strategy"] = "direct"
+        super().__init__(M, N, dtype, config=config, tune=tune)
+
     @staticmethod
     def activation_func(x):
-        inv_sqrt2 = T.cast(INV_SQRT2, "float32")  # 1/sqrt(2)
-        half = T.cast(0.5, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        x_f32 = T.Cast("float32", x)
-        erf_val = T.Cast(x.dtype, erf(x_f32 * inv_sqrt2, x.dtype))
-        return x * half * (one + erf_val)
+        inv_sqrt2 = T.cast(INV_SQRT2, "float32")
+        half = T.cast(0.5, "float32")
+        one = T.cast(1.0, "float32")
+        wide = T.cast(x, "float32")
+        return half * wide * (one + T.erf(wide * inv_sqrt2))
 
 
 class GeluTanhAndMulFwdKernel(FusedGatedKernel):

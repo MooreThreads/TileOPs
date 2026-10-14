@@ -16,6 +16,7 @@ import torch
 
 from tileops.kernels.dropout import DropoutKernel
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
@@ -131,8 +132,8 @@ class DropoutFwdOp(Op):
         Returns:
             ``output``, as the manifest declares.
         """
-        if not input.is_cuda:
-            raise ValueError("input must be a CUDA tensor")
+        if not is_backend_tensor(input):
+            raise ValueError(backend_tensor_error("input"))
         if input.dtype not in (torch.float16, torch.bfloat16, torch.float32):
             raise ValueError(
                 f"input.dtype must be float16, bfloat16, or float32, got {input.dtype}"

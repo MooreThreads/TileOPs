@@ -102,7 +102,7 @@ MaskedFillScalarFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32"}
+      input: {dtype: "bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
       mask: {dtype: "bool"}
     outputs:
       output: {dtype: "same_as(input)"}

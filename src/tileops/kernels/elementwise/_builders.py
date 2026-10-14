@@ -136,6 +136,7 @@ def _row_broadcast_prim(
     a_inner = plan.a_strides[-1]
     b_inner = plan.b_strides[-1]
     block_cols = threads * num_per_thread
+    stage = stage and block_cols <= inner
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
     tail_cols = inner - full_blocks * block_cols

@@ -43,9 +43,8 @@ def _make_prelu_kernel(N, dtype, C, inner_size, threads=256, npt=8):
                     idx = bx * block_size + k
                     val = x_reg[k]
                     ch = (idx // inner_size) % C
-                    w = weight[ch]
                     zero = T.cast(0, val.dtype)
-                    y_reg[k] = T.if_then_else(val > zero, val, w * val)
+                    y_reg[k] = T.if_then_else(val > zero, val, weight[ch] * val)
                 T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main

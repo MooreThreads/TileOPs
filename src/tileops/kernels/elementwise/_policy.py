@@ -20,6 +20,27 @@ _MAX_THREADS = 1024
 _TARGET_BLOCKS = 256
 
 
+def fit_block_config(config: dict, n_total: int | None) -> dict:
+    """Keep one launch block within the input extent for every strategy."""
+    if n_total is None or n_total <= 0:
+        return config
+
+    fitted = dict(config)
+    threads = fitted["threads"]
+    npt = fitted.get("num_per_thread", 1)
+    if fitted.get("strategy") == "direct":
+        fitted["threads"] = min(threads, n_total)
+        return fitted
+
+    while threads * npt > n_total and npt > 1:
+        npt //= 2
+    if threads * npt > n_total:
+        threads = max(1, n_total // npt)
+    fitted["threads"] = threads
+    fitted["num_per_thread"] = npt
+    return fitted
+
+
 def default_launch_config(
     *,
     strategy: str,

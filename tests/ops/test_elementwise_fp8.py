@@ -1,10 +1,4 @@
-"""Tests for fp8 dtype rejection in elementwise kernels.
-
-After narrowing `_FLOAT_DTYPES` to drop fp8, the elementwise / rope / dropout
-kernels no longer advertise fp8 in `SUPPORTED_DTYPES`. The tests here are
-sentinel checks that float and bitwise kernels correctly reject fp8 inputs
-at the kernel layer (exercising `SUPPORTED_DTYPES`, not `Op._validate_dtypes`).
-"""
+"""Tests for FP8 dtype boundaries in elementwise kernels."""
 
 import pytest
 import torch
@@ -80,6 +74,12 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
     from tileops.kernels.kernel_base import Kernel
 
     fp8_dtypes = set(_FP8_DTYPES)
+    fp8_supported = {
+        "LeakyReluFwdKernel",
+        "EluFwdKernel",
+        "ClampFwdKernel",
+        "MaskedFillFwdKernel",
+    }
     none_offenders = []
     type_offenders = []
     empty_offenders = []
@@ -108,6 +108,8 @@ def test_no_concrete_kernel_inherits_none_supported_dtypes():
             empty_offenders.append(cls.__name__)
             continue
         leaked = [dt for dt in supported if dt in fp8_dtypes]
+        if cls.__name__ in fp8_supported:
+            continue
         if leaked:
             fp8_offenders.append((cls.__name__, leaked))
     assert not none_offenders, f"Concrete kernels with SUPPORTED_DTYPES=None: {none_offenders}"

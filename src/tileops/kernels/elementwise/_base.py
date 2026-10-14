@@ -39,6 +39,7 @@ from ._policy import (
     default_launch_config,
     elementwise_autotune_configs,
     elementwise_output_plan,
+    fit_block_config,
 )
 
 __all__ = [
@@ -92,7 +93,7 @@ class _StrategyKernel(_ElementwiseKernel):
 
     @property
     def default_config(self) -> dict:
-        return default_launch_config(
+        config = default_launch_config(
             strategy=self.strategy,
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
@@ -103,6 +104,10 @@ class _StrategyKernel(_ElementwiseKernel):
             row_broadcast_inner=self.row_broadcast_inner,
             default_threads=self.DEFAULT_THREADS,
         )
+        return fit_block_config(config, self._config_work_size())
+
+    def _config_work_size(self) -> int | None:
+        return self.N_total
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -112,6 +117,7 @@ class _StrategyKernel(_ElementwiseKernel):
 
     def init_config(self, config=None, tune=False) -> None:
         Kernel.init_config(self, config, tune)
+        self.config = fit_block_config(self.config, self._config_work_size())
         # Tuning returns only the axes it swept; the rest keeps its default.
         self.config = {**self.default_config, **self.config}
         self.config["strategy"] = self.strategy
@@ -138,7 +144,7 @@ class UnaryKernel(_StrategyKernel):
             within the resolved strategy).
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     # Fragment copy is the default for float unaries.
     DEFAULT_STRATEGY = "register_copy"
@@ -258,7 +264,7 @@ class BinaryKernel(_StrategyKernel):
         N_total: Total output elements.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel", "register_copy"]
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
@@ -410,7 +416,7 @@ class FusedGatedKernel(_StrategyKernel):
             within the resolved strategy).
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     STRATEGIES = ["direct", "explicit_parallel"]
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
@@ -478,6 +484,9 @@ class FusedGatedKernel(_StrategyKernel):
             n_total=self.M * self.N,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
         )
+
+    def _config_work_size(self) -> int | None:
+        return self.N
 
     def forward(self, x):
         self._require_cuda(x=x)
@@ -671,7 +680,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     An argument the call leaves as ``None`` names no PrimFunc parameter.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
     DEFAULT_THREADS = 256
     INPUTS: tuple = ()
@@ -716,6 +725,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     def init_config(self, config=None, tune=False):
         Kernel.init_config(self, config, tune)
+        self.config = fit_block_config(self.config, self.N_total)
         cfg = self.config
         self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
 

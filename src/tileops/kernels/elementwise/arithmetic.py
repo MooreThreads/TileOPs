@@ -7,6 +7,8 @@ import tilelang.language as T
 import torch
 import tvm.tirx as tirx
 
+from tileops.utils import get_backend_name
+
 from ._base import (
     _FLOAT_DTYPES,
     BinaryKernel,
@@ -134,6 +136,13 @@ class RemainderFwdKernel(BinaryKernel):
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
+    @property
+    def default_config(self) -> dict:
+        config = super().default_config
+        if get_backend_name() == "musa" and self.strategy == "explicit_parallel":
+            config["num_per_thread"] = 8
+        return config
+
     @staticmethod
     def op_func(a, b):
         a_f32 = T.cast(a, "float32")
@@ -209,6 +218,13 @@ class LerpFwdKernel(BinaryKernel):
     """
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
+
+    @property
+    def default_config(self) -> dict:
+        config = super().default_config
+        if get_backend_name() == "musa" and self.strategy == "explicit_parallel":
+            config["num_per_thread"] = 8
+        return config
 
     @staticmethod
     def op_func(a, b):
@@ -317,6 +333,8 @@ class MaximumFwdKernel(BinaryKernel):
             return T.max(a, b)
         if str(a.dtype) in ("float16", "bfloat16"):
             return _nan_max(a, b)
+        if get_backend_name() == "musa":
+            return _propagate_nan(a, b, T.if_then_else(a == b, a, T.max(a, b)))
         return _propagate_nan(a, b, T.max(a, b))
 
 
@@ -356,7 +374,11 @@ class MinimumFwdKernel(BinaryKernel):
         if not _is_float_dtype_str(str(a.dtype)):
             return T.min(a, b)
         if str(a.dtype) in ("float16", "bfloat16"):
+            if get_backend_name() == "musa":
+                return T.if_then_else(a == b, a, _nan_min(a, b))
             return _nan_min(a, b)
+        if get_backend_name() == "musa":
+            return _propagate_nan(a, b, T.if_then_else(a == b, a, T.min(a, b)))
         return _propagate_nan(a, b, T.min(a, b))
 
 

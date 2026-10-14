@@ -14,12 +14,11 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.baselines import (
-    FLASHINFER_TAG,
+    # FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
-    assert_matches_reference,
     compiled_reference,
-    flashinfer_op,
-    reference_tolerance,
+    # flashinfer_op,
+    # reference_tolerance,
 )
 from benchmarks.benchmark_base import (
     BenchmarkBase,
@@ -612,12 +611,12 @@ _FUSED_BASELINES = {
 def _profile_fused_gated(bm: ManifestBenchmark, op, test, baseline_key: str) -> None:
     inputs = test.gen_inputs()
     baseline_fn = _FUSED_BASELINES[baseline_key]
-    flashinfer_fn = flashinfer_op(baseline_key)
-    assert_matches_reference(flashinfer_fn, baseline_fn, *inputs, **reference_tolerance(test.dtype))
+    # flashinfer_fn = flashinfer_op(baseline_key)
+    # assert_matches_reference(flashinfer_fn, baseline_fn, *inputs, **reference_tolerance(test.dtype))
     bm.compare(
         {
             "tileops": op,
-            FLASHINFER_TAG: flashinfer_fn,
+            # FLASHINFER_TAG: flashinfer_fn,
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },

@@ -10,7 +10,10 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.elementwise import ReluFwdKernel
 from tileops.ops.elementwise import ReluFwdOp
+from tileops.utils import get_backend_name
 from workloads.elementwise import RandnFlatWorkload, ReluWorkload
+
+DEVICE = get_backend_name()
 
 
 class ReluTest(ReluWorkload, TestBase):
@@ -120,7 +123,7 @@ class UnaryActivationTest(RandnFlatWorkload, TestBase):
 
 
 def _randn(n: int, dtype: torch.dtype) -> torch.Tensor:
-    return torch.randn(n, device="cuda", dtype=dtype)
+    return torch.randn(n, device=DEVICE, dtype=dtype)
 
 
 def _make_activation_test(n_total, dtype, gen_fn, ref_fn, op_cls, **op_kwargs):
@@ -200,7 +203,17 @@ def test_mish(n_total: int, dtype: torch.dtype) -> None:
 def test_selu(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SeluFwdOp
 
-    _make_activation_test(n_total, dtype, _randn, F.selu, SeluFwdOp)
+    # MUSA torch.selu currently omits ``scale`` on the positive branch.
+    # Keep the reference independent and follow the SELU definition:
+    # scale * x for x > 0, scale * alpha * (exp(x) - 1) otherwise.
+    def _selu_ref(x: torch.Tensor) -> torch.Tensor:
+        alpha = 1.6732632423543772
+        scale = 1.0507009873554805
+        x32 = x.float()
+        y = torch.where(x32 > 0, x32, alpha * torch.expm1(x32))
+        return (scale * y).to(x.dtype)
+
+    _make_activation_test(n_total, dtype, _randn, _selu_ref, SeluFwdOp)
 
 
 @pytest.mark.smoke
@@ -220,7 +233,7 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import SigmoidFwdOp
 
     def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+        x = torch.zeros(n, device=DEVICE, dtype=dtype)
         x[: n // 2] = -50.0
         x[n // 2 :] = 50.0
         return x
@@ -234,7 +247,7 @@ def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     from tileops.ops.elementwise import TanhFwdOp
 
     def _extreme(n, dtype):
-        x = torch.zeros(n, device="cuda", dtype=dtype)
+        x = torch.zeros(n, device=DEVICE, dtype=dtype)
         x[: n // 2] = -50.0
         x[n // 2 :] = 50.0
         return x
@@ -257,12 +270,12 @@ def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     inf, nan = float("inf"), float("nan")
     x = torch.tensor(
         [-largest, -1000.0, -8.0, 8.0, 1000.0, largest, -inf, inf, nan],
-        device="cuda",
+        device=DEVICE,
         dtype=dtype,
     )
-    torch.testing.assert_close(
-        GeluFwdOp()(x), F.gelu(x.float()).to(dtype), rtol=0, atol=0, equal_nan=True
-    )
+    x_cpu = x.cpu().float()
+    expected = (0.5 * x_cpu * (1.0 + torch.erf(x_cpu * (2.0**-0.5)))).to(dtype)
+    torch.testing.assert_close(GeluFwdOp()(x).cpu(), expected, rtol=0, atol=0, equal_nan=True)
 
 
 # Independent activation ops
@@ -341,8 +354,8 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
     H = n_total // C
     # Shape (1, C, H): batch=1, channels=C, spatial=H
     shape = (1, C, H)
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    weight = torch.randn(C, device="cuda", dtype=dtype).abs() * 0.1 + 0.01
+    x = torch.randn(shape, device=DEVICE, dtype=dtype)
+    weight = torch.randn(C, device=DEVICE, dtype=dtype).abs() * 0.1 + 0.01
     ref = F.prelu(x.float(), weight.float()).to(dtype)
 
     op = PreluFwdOp()
@@ -363,8 +376,8 @@ def test_prelu_batch_dim() -> None:
 
     dtype = torch.float32
     shape = (2, 4, 8)
-    x = torch.randn(shape, device="cuda", dtype=dtype)
-    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
+    x = torch.randn(shape, device=DEVICE, dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device=DEVICE, dtype=dtype)
     ref = F.prelu(x, weight)
     op = PreluFwdOp()
     out = op(x, weight)
@@ -383,8 +396,8 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
 
     dtype = torch.float32
     op = PreluFwdOp()
-    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device="cuda", dtype=dtype)
-    bad = torch.randn((2, 8, 4), device="cuda", dtype=dtype)
+    weight = torch.tensor([0.1, 0.2, 0.3, 0.4], device=DEVICE, dtype=dtype)
+    bad = torch.randn((2, 8, 4), device=DEVICE, dtype=dtype)
     with pytest.raises(ValueError, match=r"weight of length"):
         op(bad, weight)
 

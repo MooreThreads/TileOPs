@@ -24,6 +24,9 @@ from tileops.kernels.elementwise import (
     ReluFwdKernel,
     SiluAndMulFwdKernel,
 )
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 # Regression: a parametric kernel's block extent has to follow the config it is given
 
@@ -40,7 +43,7 @@ def test_parametric_unary_honours_a_non_default_config(threads: int, npt: int) -
     extent taken from the builder's arguments leaves part of each block untouched.
     """
     n = 4096 * 7 + 13
-    x = torch.randn(n, device="cuda", dtype=torch.float16)
+    x = torch.randn(n, device=DEVICE, dtype=torch.float16)
     kernel = LeakyReluFwdKernel(
         n, torch.float16, 0.01, config={"threads": threads, "num_per_thread": npt}
     )

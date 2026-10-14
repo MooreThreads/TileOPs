@@ -91,7 +91,7 @@ def _profile_and_record(
         bm.compare(functors, *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
+            pytest.skip("unsupported configuration")
         raise
 
 

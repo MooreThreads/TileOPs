@@ -71,7 +71,7 @@ class AlibiFwdKernel(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 

@@ -277,7 +277,7 @@ LeakyReluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -315,7 +315,7 @@ EluFwdOp:
   torch_compile_fullgraph: true
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32", mutated: true}
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2", mutated: true}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
@@ -483,7 +483,7 @@ ClampScalarFwdOp:
 
   signature:
     inputs:
-      input: {dtype: "float16 | bfloat16 | float32"}
+      input: {dtype: "float16 | bfloat16 | float32 | float8_e4m3fn | float8_e5m2"}
     outputs:
       output: {dtype: "same_as(input)"}
     params:
