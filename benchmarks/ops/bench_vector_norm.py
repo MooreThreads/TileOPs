@@ -73,7 +73,7 @@ def test_l1_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
+            pytest.skip("unsupported configuration")
         raise
 
 
@@ -105,7 +105,7 @@ def test_l2_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> Non
         bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
+            pytest.skip("unsupported configuration")
         raise
 
 
@@ -137,5 +137,5 @@ def test_inf_norm_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> No
         bm.compare(_functors(op, baseline_fn, flaggems_fn, inputs, dtype), *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
+            pytest.skip("unsupported configuration")
         raise

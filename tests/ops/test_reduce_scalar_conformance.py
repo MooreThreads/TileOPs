@@ -14,7 +14,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
+
 
 _FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
 _DTYPE_IDS = ["fp16", "bf16", "fp32"]
@@ -51,7 +54,7 @@ def _as_tuple(value):
 
 def _welford_ref(name: str, x, dim, keepdim):
     fn = {"VarFwdOp": torch.var, "StdFwdOp": torch.std, "VarMeanFwdOp": torch.var_mean}[name]
-    out = fn(x.float(), dim=dim, keepdim=keepdim, correction=1)
+    out = fn(x.float().cpu(), dim=dim, keepdim=keepdim, correction=1)
     return tuple(t.to(x.dtype) for t in _as_tuple(out))
 
 
@@ -59,13 +62,13 @@ def _welford_ref(name: str, x, dim, keepdim):
 @pytest.mark.parametrize("op_name, torch_fn", _ARITHMETIC)
 @pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
 def test_an_arithmetic_reduction_of_one_element_is_that_element(op_name, torch_fn, dim) -> None:
-    x = torch.tensor(1.5, dtype=torch.float16, device="cuda")
+    x = torch.tensor(1.5, dtype=torch.float16, device=DEVICE)
 
     y = _op(op_name, dim=dim)(x)
 
-    ref = torch_fn(x.float(), dim=dim).to(x.dtype)
+    ref = torch_fn(x.float().cpu(), dim=dim).to(x.dtype)
     assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(y.cpu(), ref, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.smoke
@@ -73,27 +76,27 @@ def test_an_arithmetic_reduction_of_one_element_is_that_element(op_name, torch_f
 @pytest.mark.parametrize("keepdim", [False, True], ids=["keepdim=False", "keepdim=True"])
 def test_the_scalar_path_honours_dtype_and_keepdim(dtype, keepdim) -> None:
     """Swept rather than crossed: neither reaches a branch ``dim`` does not."""
-    x = torch.tensor(1.5, dtype=dtype, device="cuda")
+    x = torch.tensor(1.5, dtype=dtype, device=DEVICE)
 
     y = _op("SumFwdOp", dim=None, keepdim=keepdim)(x)
 
-    ref = torch.sum(x.float(), dim=None, keepdim=keepdim).to(dtype)
+    ref = torch.sum(x.float().cpu(), dim=None, keepdim=keepdim).to(dtype)
     assert y.shape == ref.shape
     assert y.dtype == dtype
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(y.cpu(), ref, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", [0, -1], ids=["dim=0", "dim=-1"])
 def test_prod_of_one_element_is_that_element(dim) -> None:
     """``ProdFwdOp`` narrows ``dim`` to an int, so it is asked about the two it takes."""
-    x = torch.tensor(1.5, dtype=torch.float16, device="cuda")
+    x = torch.tensor(1.5, dtype=torch.float16, device=DEVICE)
 
     y = _op("ProdFwdOp", dim=dim)(x)
 
-    ref = torch.prod(x.float(), dim=dim).to(x.dtype)
+    ref = torch.prod(x.float().cpu(), dim=dim).to(x.dtype)
     assert y.shape == ref.shape
-    torch.testing.assert_close(y, ref, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(y.cpu(), ref, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.smoke
@@ -104,13 +107,13 @@ def test_prod_of_one_element_is_that_element(dim) -> None:
 @pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
 def test_a_welford_reduction_of_one_element_matches_torch(op_name, dim) -> None:
     """``correction=1`` over one element is undefined, and PyTorch calls that ``nan``."""
-    x = torch.tensor(1.5, dtype=torch.float16, device="cuda")
+    x = torch.tensor(1.5, dtype=torch.float16, device=DEVICE)
 
     got = _as_tuple(_op(op_name, dim=dim)(x))
 
     for g, w in zip(got, _welford_ref(op_name, x, dim, False), strict=True):
         assert g.shape == w.shape, f"{op_name} dim={dim}: {g.shape} vs {w.shape}"
-        torch.testing.assert_close(g, w, atol=1e-4, rtol=1e-4, equal_nan=True)
+        torch.testing.assert_close(g.cpu(), w, atol=1e-4, rtol=1e-4, equal_nan=True)
 
 
 @pytest.mark.smoke
@@ -123,12 +126,12 @@ def test_a_welford_reduction_of_one_element_matches_torch(op_name, dim) -> None:
 )
 def test_a_reduction_with_no_degrees_of_freedom_matches_torch(op_name, shape, dim) -> None:
     """A length-1 axis with ``correction=1``: the kernel cannot be built for it."""
-    x = torch.ones(shape, dtype=torch.float32, device="cuda").cumsum(0)
+    x = torch.ones(shape, dtype=torch.float32, device=DEVICE).cumsum(0)
 
     got = _as_tuple(_op(op_name, dim=dim)(x))
 
     for g, w in zip(got, _welford_ref(op_name, x, dim, False), strict=True):
-        torch.testing.assert_close(g, w, atol=1e-4, rtol=1e-4, equal_nan=True)
+        torch.testing.assert_close(g.cpu(), w, atol=1e-4, rtol=1e-4, equal_nan=True)
 
 
 @pytest.mark.smoke
@@ -139,11 +142,11 @@ def test_a_logical_reduction_of_one_element_matches_torch(
     op_name, torch_fn, out_dtype, dim, value
 ) -> None:
     """Both truth values, because the predicate is what these ops compute."""
-    x = torch.tensor(value, dtype=torch.float16, device="cuda")
+    x = torch.tensor(value, dtype=torch.float16, device=DEVICE)
 
     y = _op(op_name, dim=dim)(x)
 
-    ref = torch_fn(x, dim=dim)
+    ref = torch_fn(x.cpu(), dim=dim)
     assert y.dtype == out_dtype, f"{op_name}: {y.dtype}"
     assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
-    torch.testing.assert_close(y, ref, atol=0, rtol=0)
+    torch.testing.assert_close(y.cpu(), ref, atol=0, rtol=0)

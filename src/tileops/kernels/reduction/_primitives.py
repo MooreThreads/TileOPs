@@ -23,7 +23,7 @@ import torch
 
 from tileops.kernels.constants import SHARED_BANK_SPAN_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import device_busy_of
+from tileops.utils import current_device, device_busy_of, get_backend_name, is_available
 
 __all__ = [
     "AUTOTUNE_THREADS",
@@ -70,6 +70,7 @@ AUTOTUNE_THREADS: tuple[int, ...] = (128, 256, 512)
 
 # Thread count used when no candidate sweep runs.
 DEFAULT_THREADS: int = 256
+REDUCE_WORKSPACE_ELEM_BYTES: int = 4
 
 # Tile elements one thread may hold across its live fragments before ptxas spills.
 FRAGMENT_ELEMS_PER_THREAD: int = 64
@@ -145,6 +146,13 @@ class BlockConfigPlanner:
         self.num_buffers = num_buffers
         self.frag_slots = frag_slots
 
+    def _workspace_bytes(self, threads: int) -> int:
+        return threads * REDUCE_WORKSPACE_ELEM_BYTES
+
+    def _available_smem(self, threads: int, budget: int | None = None) -> int:
+        total = self.smem_budget if budget is None else budget
+        return max(0, total - self._workspace_bytes(threads))
+
     @property
     def _row_bytes(self) -> int:
         """Shared memory one untiled row occupies.
@@ -173,7 +181,7 @@ class BlockConfigPlanner:
         """
         return (
             self.N_padded > MAX_SINGLE_TILE_COLS
-            or self._row_bytes > self.smem_budget
+            or self._row_bytes + self._workspace_bytes(DEFAULT_THREADS) > self.smem_budget
             or not self.frag_fits(1, self.N_padded, DEFAULT_THREADS)
         )
 
@@ -204,7 +212,7 @@ class BlockConfigPlanner:
                 block_m,
                 self.elem_bytes,
                 self.N_padded,
-                budget=self.smem_budget,
+                budget=self._available_smem(threads),
             )
             if single == self.N_padded:
                 return 0
@@ -224,7 +232,7 @@ class BlockConfigPlanner:
             self.elem_bytes,
             self.N_padded,
             alignment=self._column_alignment(block_m, threads),
-            budget=min(self.smem_budget, col_budget),
+            budget=min(self._available_smem(threads), col_budget),
             num_buffers=self.num_buffers,
         )
 
@@ -291,9 +299,10 @@ class BlockConfigPlanner:
         if tile_n > MAX_SINGLE_TILE_COLS:
             return f"tile_n={tile_n} exceeds the {MAX_SINGLE_TILE_COLS} column cap"
         held = self.num_buffers * block_m * tile_n * self.elem_bytes
-        if held > self.smem_budget:
+        total = held + self._workspace_bytes(threads)
+        if total > self.smem_budget:
             return (
-                f"tile_n={tile_n} with block_m={block_m} needs {held} bytes of "
+                f"tile_n={tile_n} with block_m={block_m} needs {total} bytes of "
                 f"shared memory, over the {self.smem_budget} budget"
             )
         if not self.layout_ok(block_m, tile_n, threads):
@@ -318,7 +327,8 @@ class BlockConfigPlanner:
         and the sweep passes the device budget.  Capacity only, not a ranking:
         which of these to run untuned is ``default_config``'s call.
         """
-        max_block_m = (budget or self.smem_budget) // self._row_bytes
+        available = self._available_smem(threads, budget)
+        max_block_m = available // self._row_bytes
         return [
             bm
             for bm in self._BLOCK_MS
@@ -397,17 +407,18 @@ def device_smem_budget(device_index: int | None = None) -> int:
         return SHARED_MEMORY_BUDGET_BYTES
 
     try:
-        if not torch.cuda.is_available():
+        if not is_available():
             if explicit:
                 raise RuntimeError(
                     f"CUDA is not available but explicit device_index={device_index} was requested"
                 )
             return SHARED_MEMORY_BUDGET_BYTES
 
+        backend = getattr(torch, get_backend_name(), torch.cuda)
         if device_index is None:
-            device_index = torch.cuda.current_device()
+            device_index = current_device()
 
-        props = torch.cuda.get_device_properties(device_index)
+        props = backend.get_device_properties(device_index)
         smem_optin = getattr(props, "shared_memory_per_block_optin", 0)
         if smem_optin > 0:
             return smem_optin
@@ -537,21 +548,22 @@ def tune_by_forward(
         kernel.config = kernel.default_config
         return
 
+    backend = getattr(torch, get_backend_name(), torch.cuda)
     print(f"Start autotuning {kernel.__class__.__name__} (tiled path)...")
     best_config, best_time = configs[0], float("inf")
     for cfg in configs:
         kernel.config = cfg
         for _ in range(warmup):
             call(*probe_inputs)
-        torch.cuda.synchronize()
+        backend.synchronize()
 
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
+        start = backend.Event(enable_timing=True)
+        end = backend.Event(enable_timing=True)
         start.record()
         for _ in range(rep):
             call(*probe_inputs)
         end.record()
-        torch.cuda.synchronize()
+        backend.synchronize()
         elapsed = start.elapsed_time(end) / rep
 
         if elapsed < best_time:
@@ -575,8 +587,12 @@ def rows_for_axes(x: torch.Tensor, axes: "tuple[int, ...]") -> torch.Tensor:
     Reducing every axis gives ``M == 1``.
     """
     kept = _kept(x.ndim, axes)
-    n = prod(x.shape[a] for a in axes)
-    m = prod(x.shape[i] for i in kept)
+    n = 1
+    for axis in axes:
+        n *= x.shape[axis]
+    m = 1
+    for axis in kept:
+        m *= x.shape[axis]
     return x.permute(kept + list(axes)).contiguous().reshape(m, n)
 
 
@@ -772,8 +788,8 @@ class RowTiledAutotuneMixin:
 
         if split_eligible and best_config is not None:
             device = torch.device(
-                "cuda",
-                self.device_index if self.device_index is not None else torch.cuda.current_device(),
+                get_backend_name(),
+                self.device_index if self.device_index is not None else current_device(),
             )
             probe = torch.randn(self.M, self.N, dtype=self.dtype, device=device)
             swept_config = dict(self.config, split=False)

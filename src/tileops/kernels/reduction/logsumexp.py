@@ -113,8 +113,10 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
     """Fold per-segment ``(max, sum)`` into one logsumexp per row.
 
     The fold is over a few hundred fp32 pairs, so one warp per row is enough;
-    unlike softmax there is no second pass over the input. An all--inf row
-    reads ``-inf + log(0)``, which is torch's ``-inf``.
+    unlike softmax there is no second pass over the input. An all--inf row is
+    stored as ``-inf``, matching CPU ``torch.logsumexp``. ``log(0)`` lowers to a
+    finite value, so ``-inf + log(0)`` is not a reliable way to spell it, and the
+    device implementation of ``torch.logsumexp`` returns NaN for that row.
     """
     num_segs = ceildiv_int(N, seg_n)
     fold = make_split_fold(num_segs)
@@ -135,7 +137,14 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
 
                 if tx == 0:
                     fold(seg_max, seg_sum, pid_m * num_segs, row_max, row_sum, held)
-                    y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
+                    # An all--inf row has max -inf and sum 0. log(0) is finite
+                    # after lowering, so the sum would not be the -inf CPU
+                    # torch.logsumexp stores. if/else, not if_then_else: the
+                    # select evaluates both arms, and log(0) poisons the -inf arm.
+                    if row_max[0] == -T.infinity("float32"):
+                        y[pid_m] = -T.infinity(dtype)
+                    else:
+                        y[pid_m] = T.cast(row_max[0] + T.log(row_sum[0]), dtype)
 
         return main
 
@@ -173,7 +182,7 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
                 row_max = T.alloc_fragment((block_m,), "float32")
                 row_sum = T.alloc_fragment((block_m,), "float32")
 
-                if _needs_pad:
+                if _needs_pad or M % block_m != 0:
                     # Kernel-side boundary handling: element-wise load
                     # with T.if_then_else masking for padding columns
                     # and row-tail safety (M % block_m != 0).
@@ -203,7 +212,9 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
                 for i in T.Parallel(block_m):
                     out_local[i] = row_max[i] + T.log(row_sum[i])
 
-                T.copy(out_local, y[pid_m * block_m])
+                for i in T.Parallel(block_m):
+                    if pid_m * block_m + i < M:
+                        y[pid_m * block_m + i] = out_local[i]
 
         return main
 
@@ -252,27 +263,14 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                 T.fill(row_sum, 0.0)
 
                 for t in T.Serial(num_tiles):
-                    if _needs_mask:
-                        # Only the last tile may have out-of-bounds columns.
-                        # Use fast vectorized T.copy for all earlier tiles,
-                        # and element-wise T.if_then_else only for the last.
-                        with T.If(t < num_tiles - 1):
-                            with T.Then():
-                                T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
-                                T.copy(shared_buf, tile_local)
-                                for i in T.serial(block_m):
-                                    for j in T.Parallel(tile_n):
-                                        tile_f32[i, j] = T.cast(tile_local[i, j], "float32")
-                            with T.Else():
-                                for i in T.serial(block_m):
-                                    for j in T.Parallel(tile_n):
-                                        tile_f32[i, j] = T.if_then_else(
-                                            T.And(pid_m * block_m + i < M, t * tile_n + j < N),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j], "float32"
-                                            ),
-                                            T.cast(_neg_inf, "float32"),
-                                        )
+                    if _needs_mask or M % block_m != 0:
+                        for i in T.serial(block_m):
+                            for j in T.Parallel(tile_n):
+                                tile_f32[i, j] = T.if_then_else(
+                                    T.And(pid_m * block_m + i < M, t * tile_n + j < N),
+                                    T.cast(x[pid_m * block_m + i, t * tile_n + j], "float32"),
+                                    T.cast(_neg_inf, "float32"),
+                                )
                     else:
                         T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
                         T.copy(shared_buf, tile_local)
@@ -300,7 +298,9 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
                 for i in T.Parallel(block_m):
                     out_local[i] = row_max[i] + T.log(row_sum[i])
 
-                T.copy(out_local, y[pid_m * block_m])
+                for i in T.Parallel(block_m):
+                    if pid_m * block_m + i < M:
+                        y[pid_m * block_m + i] = out_local[i]
 
         return main
 
@@ -415,6 +415,102 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     return _func
 
 
+# Register kernel (one block per row, no shared staging)
+
+
+@functools.lru_cache(maxsize=32)
+def _logsumexp_kernel_register(M: int, N: int, dtype: str, threads: int, cols_per_thread: int):
+    """One block per row, streaming chunks through registers.
+
+    The single-tile kernel stages the whole row in shared memory and keeps a
+    fragment of every element. A reduction reads each element once, so the
+    staging is pure traffic: each thread keeps one running max and one running
+    sum and folds a chunk at a time.
+    """
+    chunk = threads * cols_per_thread
+    if N % chunk:
+        raise ValueError(f"register kernel needs N % {chunk} == 0, got N={N}")
+    num_chunks = N // chunk
+    num_warps = threads // WARP_LANES
+    vec_elems = min(cols_per_thread, VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype))
+    vec_groups = cols_per_thread // vec_elems
+    warp_stages = WARP_LANES.bit_length() - 1
+
+    @tilelang.jit(out_idx=[1])
+    def _func():
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            y: T.Tensor[(M,), dtype],
+        ):
+            with T.Kernel(M, threads=threads) as row:
+                tx = T.get_thread_binding()
+                held = T.alloc_local((cols_per_thread,), dtype)
+                held_f = T.alloc_local((cols_per_thread,), "float32")
+                m_run = T.alloc_local((1,), "float32")
+                s_run = T.alloc_local((1,), "float32")
+                m_chunk = T.alloc_local((1,), "float32")
+                s_chunk = T.alloc_local((1,), "float32")
+                other_m = T.alloc_local((1,), "float32")
+                other_s = T.alloc_local((1,), "float32")
+                warp_m = T.alloc_shared((num_warps,), "float32")
+                warp_s = T.alloc_shared((num_warps,), "float32")
+
+                m_run[0] = -T.infinity("float32")
+                s_run[0] = 0.0
+
+                for t in T.serial(num_chunks):
+                    for g in T.serial(vec_groups):
+                        for c in T.vectorized(vec_elems):
+                            held[g * vec_elems + c] = x[
+                                row, t * chunk + tx * cols_per_thread + g * vec_elems + c
+                            ]
+                    for c in T.serial(cols_per_thread):
+                        held_f[c] = T.cast(held[c], "float32")
+
+                    m_chunk[0] = held_f[0]
+                    for c in T.serial(1, cols_per_thread):
+                        m_chunk[0] = T.max(m_chunk[0], held_f[c])
+                    s_chunk[0] = 0.0
+                    for c in T.serial(cols_per_thread):
+                        s_chunk[0] = s_chunk[0] + T.exp(held_f[c] - m_chunk[0])
+
+                    m_new = T.max(m_run[0], m_chunk[0])
+                    s_run[0] = s_run[0] * T.exp(m_run[0] - m_new) + s_chunk[0] * T.exp(
+                        m_chunk[0] - m_new
+                    )
+                    m_run[0] = m_new
+
+                for stage in T.serial(warp_stages):
+                    other_m[0] = T.shfl_xor(
+                        m_run[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                    )
+                    other_s[0] = T.shfl_xor(
+                        s_run[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                    )
+                    m_new = T.max(m_run[0], other_m[0])
+                    s_run[0] = s_run[0] * T.exp(m_run[0] - m_new) + other_s[0] * T.exp(
+                        other_m[0] - m_new
+                    )
+                    m_run[0] = m_new
+                if tx % WARP_LANES == 0:
+                    warp_m[tx // WARP_LANES] = m_run[0]
+                    warp_s[tx // WARP_LANES] = s_run[0]
+                T.sync_threads()
+                if tx == 0:
+                    for w in T.serial(1, num_warps):
+                        m_new = T.max(warp_m[0], warp_m[w])
+                        warp_s[0] = warp_s[0] * T.exp(warp_m[0] - m_new) + warp_s[w] * T.exp(
+                            warp_m[w] - m_new
+                        )
+                        warp_m[0] = m_new
+                    y[row] = T.cast(warp_m[0] + T.log(warp_s[0]), dtype)
+
+        return main
+
+    return _func
+
+
 # Dispatch
 
 
@@ -452,11 +548,11 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         keepdim: Whether a reduced axis stays as a length-1 axis.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
-        device_index: CUDA device index for shared memory budget query.
-            When ``None``, ``torch.cuda.current_device()`` is used.
+        device_index: Backend device index for shared memory budget query.
+            When ``None``, the current backend device is used.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     _MAX_TILE_N_CANDIDATES = 3
 
     def __init__(
@@ -496,8 +592,21 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         # tile_n is baked into the kernel at build time, so pre-compute it from
         # default_config; autotune() rebuilds once per candidate width.
         self._streaming = _STREAM_POLICY.eligible(M, N, dtype)
+        # The single-tile kernel stages the whole row through shared memory.
+        # At 1024 rows of 4096 that staging is the whole kernel, and a register
+        # reduction (one running max and sum per thread) is faster. The same
+        # kernel loses on longer rows and on a handful of rows, so the gate
+        # stays on this shape.
+        self._register = (
+            not self._streaming
+            and dtype in (torch.float16, torch.bfloat16)
+            and M >= 256
+            and N == 4096
+        )
         self._tile_n = self.default_config["tile_n"]
-        if self._streaming:
+        if self._register:
+            self.kernel = _logsumexp_kernel_register(self.M, self.N, self.dtype_str, 64, 8)
+        elif self._streaming:
             self.kernel = _logsumexp_kernel_streaming(
                 self.M,
                 self.N,
@@ -518,7 +627,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         # When tune=True, autotune() already set self._tile_n and
         # self.config["tile_n"], and rebuilt the kernel.  Only apply
         # the post-init tile_n fixup for user-provided configs.
-        if not tune and not self._streaming:
+        if not tune and not self._streaming and not self._register:
             # If the caller supplied an explicit tile_n (e.g. from a
             # previous autotuner result), honour it.  Only fall back to
             # the heuristic when tile_n was not provided.
@@ -602,8 +711,8 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         return self._reduce_rows(x)
 
     def _sweep_applies(self) -> bool:
-        """The streaming kernel bakes its launch shape in; nothing to vary."""
-        return not self._streaming
+        """The streaming and register kernels bake their launch shape in."""
+        return not self._streaming and not self._register
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce *reduce_axes* of *x*.
@@ -657,7 +766,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, Kernel):
         long rows goes to the split pair: softmax's per-segment statistics,
         then a per-row fold.
         """
-        if self._streaming:
+        if self._streaming or self._register:
             return self.kernel()(x)
         seg_n = (
             split_seg_n(self.M, self.N, self.config["block_m"], self._split_target)

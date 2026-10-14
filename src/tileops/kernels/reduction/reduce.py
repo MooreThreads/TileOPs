@@ -28,7 +28,7 @@ from tileops.kernels.reduction._primitives import (
     torch_dtype_nbytes,
     tune_by_forward,
 )
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, current_device, get_backend_name
 
 __all__ = ["ReduceKernel"]
 
@@ -96,7 +96,7 @@ class ReduceKernel(Kernel):
             ``None`` reads the current device.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -139,7 +139,22 @@ class ReduceKernel(Kernel):
             num_buffers=2 if self._is_welford else 1,
             frag_slots=_FRAG_SLOTS.get(op_kind, 1),
         )
-        self._needs_tiling = self._planner.needs_tiling
+        self._musa_low_register = get_backend_name() == "musa" and op_kind == "mean"
+        # The generated Welford path materializes the whole row as a fragment
+        # twice. On MUSA a long row is faster as two streamed folds: one for
+        # the mean, one for the squared deviation.
+        self._musa_std_low_register = (
+            get_backend_name() == "musa"
+            and op_kind == "std"
+            and M >= 1
+            and N >= 4096
+            and N % 8 == 0
+        )
+        self._needs_tiling = (
+            self._planner.needs_tiling
+            and not self._musa_low_register
+            and not self._musa_std_low_register
+        )
         self.strategy = self._select_strategy()
 
         if self.strategy == "prod":
@@ -185,17 +200,59 @@ class ReduceKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return self._planner.default_config()
+        if self._musa_std_low_register:
+            return {"block_m": 1, "threads": 256 if self.N >= 32768 else 128}
+        if self._musa_low_register:
+            return {
+                "block_m": 1,
+                "threads": 256 if self.N >= 32768 else 128,
+            }
+        config = self._default_row_config(self._planner, self.M, self.N)
+        if not self._needs_tiling:
+            config["block_m"] = min(config["block_m"], max(1, self.M))
+        return config
+
+    def _default_row_config(self, planner, rows: int, cols: int) -> dict:
+        config = planner.default_config()
+        # Measured MP31 row and edge-axis partial reductions; leave other
+        # shapes with the shared planner.
+        if (
+            get_backend_name() == "musa"
+            and self.op_kind in {"sum", "mean", "amin", "amax", "std", "var", "var_mean"}
+            and self.dtype in {torch.float16, torch.bfloat16}
+            and rows in {512, 2048}
+            and cols == 4096
+            and not planner.needs_tiling
+        ):
+            config = {
+                "block_m": 1,
+                "threads": 128 if self.op_kind in {"amin", "amax"} else 64,
+            }
+        elif (
+            get_backend_name() == "musa"
+            and self.op_kind in {"amin", "amax"}
+            and self.dtype == torch.bfloat16
+            and (rows, cols) == (64, 32768)
+            and planner.needs_tiling
+        ):
+            # A 32768-wide tile does not fit shared memory. One element per
+            # thread, folded in registers.
+            config = {"block_m": 1, "threads": 256}
+        return config
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if self._musa_std_low_register:
+            return [{"block_m": 1, "threads": threads} for threads in (128, 256)]
+        if self._musa_low_register:
+            return [{"block_m": 1, "threads": threads} for threads in (128, 256)]
         return self._planner.autotune_configs()
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune the reduce kernel by benchmarking candidate configs."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-        x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
+        x = torch.randn(self.M, self.N, dtype=self.dtype, device=current_device())
         tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
     def forward(self, x: torch.Tensor) -> object:
@@ -262,6 +319,7 @@ class ReduceKernel(Kernel):
         lead, kept, trail, planner, cfg = edge_axis_plan(
             tuple(x.shape), k, j, self._elem_bytes, self._smem_budget
         )
+        cfg = self._default_row_config(planner, lead * kept, trail)
         inner_kind = "sum" if self.op_kind == "mean" else self.op_kind
         if planner.needs_tiling:
             rows_stage = self._simple_reduce_kernel_tiled(
@@ -308,6 +366,7 @@ class ReduceKernel(Kernel):
             num_buffers=2,
             frag_slots=_FRAG_SLOTS.get(self.op_kind, 1),
         )
+        cfg = self._default_row_config(planner, lead * kept, trail)
         if planner.needs_tiling:
             stage = self._welford_reduce_kernel_tiled(
                 lead * kept, trail, "partials", 0, self.dtype_str, cfg["tile_n"]
@@ -351,9 +410,10 @@ class ReduceKernel(Kernel):
         neither, and needs only a contiguous row of whole vectors owned by one
         block.
         """
+        kinds = ("sum", "mean", "amax", "amin")
         return (
             self.strategy == "simple_tiled"
-            and self.op_kind in ("sum", "mean")
+            and self.op_kind in kinds
             and self.config["block_m"] == 1
             and x.is_contiguous()
             and self.N % self._stream_vec() == 0
@@ -364,9 +424,10 @@ class ReduceKernel(Kernel):
     def _stream_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, vec: int):
         """Build a sum/mean kernel that folds the row into registers as it reads.
 
-        The row is summed in a different order from the tiled path: ``threads *
-        vec`` partial sums, each over a strided subsequence, then a tree over
-        those. A different order, not a stricter one.
+        The row is reduced in a different order from the tiled path: ``threads *
+        vec`` partials, each over a strided subsequence, then a tree over
+        those. A different order, not a stricter one. Sum and mean add; amax
+        and amin take the extreme.
         """
 
         @tilelang.jit(out_idx=[1])
@@ -381,19 +442,40 @@ class ReduceKernel(Kernel):
                     acc = T.alloc_fragment((threads, vec), "float32")
                     lane = T.alloc_fragment((threads,), "float32")
                     red = T.alloc_fragment((1,), "float32")
-                    T.clear(acc)
+                    # amin is negated and reduced with max. The min intrinsic is
+                    # slower than max on this device, and the sign flip is exact
+                    # for every finite value and for inf.
+                    if op_kind in ("amax", "amin"):
+                        T.fill(acc, -T.infinity("float32"))
+                    else:
+                        T.clear(acc)
                     for k in T.serial(steps):
                         for i, j in T.Parallel(threads, vec):
-                            acc[i, j] += T.Cast("float32", x[bm, (k * threads + i) * vec + j])
+                            loaded = T.Cast("float32", x[bm, (k * threads + i) * vec + j])
+                            value = -loaded if op_kind == "amin" else loaded
+                            if op_kind in ("amax", "amin"):
+                                acc[i, j] = T.max(acc[i, j], value)
+                            else:
+                                acc[i, j] += value
                     if not exact:
                         for i, j in T.Parallel(threads, vec):
                             col = steps * step + i * vec + j
                             with T.If(col < n):  # noqa: SIM117
                                 with T.Then():
-                                    acc[i, j] += T.Cast("float32", x[bm, col])
-                    T.reduce_sum(acc, lane, dim=1)
-                    T.reduce_sum(lane, red, dim=0)
-                    total = red[0] / float(n) if op_kind == "mean" else red[0]
+                                    loaded = T.Cast("float32", x[bm, col])
+                                    value = -loaded if op_kind == "amin" else loaded
+                                    if op_kind in ("amax", "amin"):
+                                        acc[i, j] = T.max(acc[i, j], value)
+                                    else:
+                                        acc[i, j] += value
+                    if op_kind in ("amax", "amin"):
+                        T.reduce_max(acc, lane, dim=1)
+                        T.reduce_max(lane, red, dim=0)
+                        total = -red[0] if op_kind == "amin" else red[0]
+                    else:
+                        T.reduce_sum(acc, lane, dim=1)
+                        T.reduce_sum(lane, red, dim=0)
+                        total = red[0] / float(n) if op_kind == "mean" else red[0]
                     out[bm] = T.Cast(out_dtype, total)
 
             return main
@@ -404,7 +486,15 @@ class ReduceKernel(Kernel):
         """Reduce the trailing axis of an ``(M, N)`` buffer."""
         if self.strategy == "prod":
             return self.kernel()(x)
-        block_m, threads = self.config["block_m"], self.config["threads"]
+        block_m = min(self.config["block_m"], self.M)
+        threads = self.config["threads"]
+        if self._musa_std_low_register:
+            return self._std_stream_kernel(
+                self.M,
+                self.N,
+                self.correction,
+                self.dtype_str,
+            )(threads)(x)
         if self.strategy in {"welford", "welford_tiled"}:
             if self.strategy == "welford_tiled":
                 program = self._welford_reduce_kernel_tiled(
@@ -727,6 +817,91 @@ class ReduceKernel(Kernel):
                         for w in T.serial(1, num_warps):
                             warp_prod[0] = warp_prod[0] * warp_prod[w]
                         out[row] = T.cast(warp_prod[0], dtype)
+
+            return main
+
+        return _func
+
+    @staticmethod
+    @functools.lru_cache(maxsize=32)
+    def _std_stream_kernel(m: int, n: int, correction: int, dtype: str):
+        """Std of each row, folded into registers instead of a row-wide fragment.
+
+        Pass one sums the row. Pass two sums squared deviations from that mean.
+        Both reductions are a per-thread strided fold plus a warp shuffle, so
+        the kernel keeps one fp32 accumulator per thread rather than ``N`` of
+        them. A row that is only a multiple of the vector width still has a
+        tail shorter than ``threads * vec``; that tail is masked in, or a
+        flattened ``dim=None`` row such as 8160 drops its last 480 values.
+        """
+
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            vec = 4
+            step = threads * vec
+            steps = n // step
+            tail = n - steps * step
+
+            @T.prim_func
+            def main(x: T.Tensor((m, n), dtype), out: T.Tensor((m,), dtype)):
+                with T.Kernel(m, threads=threads) as row:
+                    tx = T.get_thread_binding()
+                    acc = T.alloc_local((vec,), "float32")
+                    total = T.alloc_local((1,), "float32")
+                    warp_sum = T.alloc_shared((threads // WARP_LANES,), "float32")
+
+                    for c in T.serial(vec):
+                        acc[c] = T.cast(0.0, "float32")
+                    for k in T.serial(steps):
+                        for c in T.vectorized(vec):
+                            acc[c] += T.cast(x[row, (k * threads + tx) * vec + c], "float32")
+                    if tail > 0:
+                        for c in T.serial(vec):
+                            col = steps * step + tx * vec + c
+                            if col < n:
+                                acc[c] += T.cast(x[row, col], "float32")
+                    total[0] = acc[0]
+                    for c in T.serial(1, vec):
+                        total[0] = total[0] + acc[c]
+                    for stage in T.serial(_WARP_STAGES):
+                        total[0] = total[0] + T.shfl_xor(
+                            total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                        )
+                    if tx % WARP_LANES == 0:
+                        warp_sum[tx // WARP_LANES] = total[0]
+                    T.sync_threads()
+                    if tx == 0:
+                        for w in T.serial(1, threads // WARP_LANES):
+                            warp_sum[0] = warp_sum[0] + warp_sum[w]
+                    T.sync_threads()
+                    mean = warp_sum[0] / float(n)
+
+                    for c in T.serial(vec):
+                        acc[c] = T.cast(0.0, "float32")
+                    for k in T.serial(steps):
+                        for c in T.vectorized(vec):
+                            dev = T.cast(x[row, (k * threads + tx) * vec + c], "float32") - mean
+                            acc[c] += dev * dev
+                    if tail > 0:
+                        for c in T.serial(vec):
+                            col = steps * step + tx * vec + c
+                            if col < n:
+                                dev = T.cast(x[row, col], "float32") - mean
+                                acc[c] += dev * dev
+                    total[0] = acc[0]
+                    for c in T.serial(1, vec):
+                        total[0] = total[0] + acc[c]
+                    for stage in T.serial(_WARP_STAGES):
+                        total[0] = total[0] + T.shfl_xor(
+                            total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                        )
+                    if tx % WARP_LANES == 0:
+                        warp_sum[tx // WARP_LANES] = total[0]
+                    T.sync_threads()
+                    if tx == 0:
+                        for w in T.serial(1, threads // WARP_LANES):
+                            warp_sum[0] = warp_sum[0] + warp_sum[w]
+                        out[row] = T.cast(T.sqrt(warp_sum[0] / float(n - correction)), dtype)
 
             return main
 

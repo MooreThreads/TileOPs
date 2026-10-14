@@ -24,7 +24,11 @@ from tileops.kernels.reduction._split_softmax import (
     split_target_blocks,
 )
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from tileops.utils import get_backend_name
+from tileops.utils.skip_reasons import skip_requires_cooperative_launch
 from workloads.reduction import LogSoftmaxWorkload, LogSumExpWorkload, SoftmaxWorkload
+
+DEVICE = get_backend_name()
 
 # Tolerances (from docs/design/testing.md)
 
@@ -105,6 +109,7 @@ class SoftmaxTest(SoftmaxWorkload, TestBase):
         self.dim = dim
 
 
+@pytest.mark.op("SoftmaxFwdOp")
 @SoftmaxFixture
 def test_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = SoftmaxTest(shape, dtype, dim=dim)
@@ -132,11 +137,12 @@ class SoftmaxNonContigFixture(FixtureBase):
     ]
 
 
+@pytest.mark.op("SoftmaxFwdOp")
 @SoftmaxNonContigFixture
 def test_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     """Test softmax with non-contiguous input (sliced tensor)."""
     m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]  # non-contiguous slice
 
     op = SoftmaxFwdOp(dim=-1)
@@ -168,10 +174,11 @@ class Softmax1DFixture(FixtureBase):
     ]
 
 
+@pytest.mark.op("SoftmaxFwdOp")
 @Softmax1DFixture
 def test_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test softmax with 1D input (single row)."""
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=DEVICE)
     op = SoftmaxFwdOp(dim=-1)
 
     y_ref = F.softmax(x.float(), dim=-1).to(dtype)
@@ -249,6 +256,7 @@ class LogSoftmaxTest(LogSoftmaxWorkload, TestBase):
         self.dim = dim
 
 
+@pytest.mark.op("LogSoftmaxFwdOp")
 @LogSoftmaxFixture
 def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSoftmaxTest(shape, dtype, dim=dim)
@@ -327,6 +335,7 @@ class LogSumExpTest(LogSumExpWorkload, TestBase):
         self.dim = dim
 
 
+@pytest.mark.op("LogSumExpFwdOp")
 @LogSumExpFixture
 def test_logsumexp_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) -> None:
     test = LogSumExpTest(shape, dtype, dim=dim)
@@ -357,10 +366,11 @@ class LogSumExpKeepdimFixture(FixtureBase):
     ]
 
 
+@pytest.mark.op("LogSumExpFwdOp")
 @LogSumExpKeepdimFixture
 def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     """Test logsumexp with keepdim=True — output retains reduced dim as size 1."""
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = LogSumExpFwdOp(dim=dim, keepdim=True)
 
     y_ref = torch.logsumexp(x.float(), dim=dim, keepdim=True).to(dtype)
@@ -372,10 +382,11 @@ def test_logsumexp_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
     )
 
 
+@pytest.mark.op("LogSumExpFwdOp")
 @pytest.mark.smoke
 def test_logsumexp_streaming_special_values() -> None:
     """Streaming logsumexp preserves -inf, +inf, and NaN row semantics."""
-    x = torch.randn(256, 16384, dtype=torch.bfloat16, device="cuda")
+    x = torch.randn(256, 16384, dtype=torch.bfloat16, device=DEVICE)
     x[0] = float("-inf")
     x[1] = float("-inf")
     x[1, 7] = 2.0
@@ -415,11 +426,12 @@ class LogSoftmaxNonContigFixture(FixtureBase):
     ]
 
 
+@pytest.mark.op("LogSoftmaxFwdOp")
 @LogSoftmaxNonContigFixture
 def test_log_softmax_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     """Test log_softmax with non-contiguous input (sliced tensor)."""
     m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]
 
     op = LogSoftmaxFwdOp(dim=-1)
@@ -448,11 +460,12 @@ class LogSumExpNonContigFixture(FixtureBase):
     ]
 
 
+@pytest.mark.op("LogSumExpFwdOp")
 @LogSumExpNonContigFixture
 def test_logsumexp_non_contiguous(shape: tuple, dtype: torch.dtype) -> None:
     """Test logsumexp with non-contiguous input."""
     m, n = shape
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]
 
     op = LogSumExpFwdOp(dim=-1)
@@ -484,10 +497,11 @@ class LogSoftmax1DFixture(FixtureBase):
     ]
 
 
+@pytest.mark.op("LogSoftmaxFwdOp")
 @LogSoftmax1DFixture
 def test_log_softmax_1d(n: int, dtype: torch.dtype) -> None:
     """Test log_softmax with 1D input."""
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=DEVICE)
     op = LogSoftmaxFwdOp(dim=-1)
 
     y_ref = F.log_softmax(x.float(), dim=-1).to(dtype)
@@ -514,10 +528,11 @@ class LogSumExp1DFixture(FixtureBase):
     ]
 
 
+@pytest.mark.op("LogSumExpFwdOp")
 @LogSumExp1DFixture
 def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
     """Test logsumexp with 1D input -- output should be a scalar."""
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=DEVICE)
     op = LogSumExpFwdOp(dim=-1)
 
     y_ref = torch.logsumexp(x.float(), dim=-1).to(dtype)
@@ -533,10 +548,11 @@ def test_logsumexp_1d(n: int, dtype: torch.dtype) -> None:
 # list/tuple dims eagerly (before kernel build/execute).
 
 
+@pytest.mark.op("SoftmaxFwdOp")
 @pytest.mark.smoke
 def test_softmax_rejects_multidim_before_kernel() -> None:
     """SoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
-    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
+    x = torch.randn(4, 8, device=DEVICE, dtype=torch.float32)
     op = SoftmaxFwdOp(dim=[-1, 0])
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
@@ -544,20 +560,22 @@ def test_softmax_rejects_multidim_before_kernel() -> None:
     assert len(list(op.iter_kernels())) == 0
 
 
+@pytest.mark.op("LogSoftmaxFwdOp")
 @pytest.mark.smoke
 def test_log_softmax_rejects_multidim_before_kernel() -> None:
     """LogSoftmaxFwdOp must raise ValueError for list dim before touching the kernel."""
-    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
+    x = torch.randn(4, 8, device=DEVICE, dtype=torch.float32)
     op = LogSoftmaxFwdOp(dim=[-1, 0])
     with pytest.raises(ValueError, match="does not support multi-dim"):
         op(x)
     assert len(list(op.iter_kernels())) == 0
 
 
+@pytest.mark.op("LogSumExpFwdOp")
 @pytest.mark.smoke
 def test_logsumexp_accepts_multidim() -> None:
     """LogSumExpFwdOp must accept list dim without error (multi-dim is supported)."""
-    x = torch.randn(4, 8, device="cuda", dtype=torch.float32)
+    x = torch.randn(4, 8, device=DEVICE, dtype=torch.float32)
     op = LogSumExpFwdOp(dim=[0, 1])
     y = op(x)
     y_ref = torch.logsumexp(x.float(), dim=[0, 1])
@@ -582,12 +600,13 @@ def _expected_implicit_dim(ndim: int) -> int:
     return 0 if ndim in (0, 1, 3) else 1
 
 
+@pytest.mark.op("SoftmaxFwdOp")
 @SoftmaxImplicitDimFixture
 def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
     """SoftmaxFwdOp(dim=None) must match F.softmax(x, dim=None) and warn."""
     import warnings as _warnings
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = SoftmaxFwdOp(dim=None)
 
     with _warnings.catch_warnings(record=True) as caught:
@@ -609,12 +628,13 @@ def test_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> Non
     )
 
 
+@pytest.mark.op("LogSoftmaxFwdOp")
 @SoftmaxImplicitDimFixture
 def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) -> None:
     """LogSoftmaxFwdOp(dim=None) must match F.log_softmax(x, dim=None) and warn."""
     import warnings as _warnings
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = LogSoftmaxFwdOp(dim=None)
 
     with _warnings.catch_warnings(record=True) as caught:
@@ -636,6 +656,7 @@ def test_log_softmax_dim_none_implicit_axis(shape: tuple, dtype: torch.dtype) ->
     )
 
 
+@pytest.mark.op("SoftmaxFwdOp")
 @pytest.mark.smoke
 def test_softmax_dim_none_reused_across_ranks() -> None:
     """SoftmaxFwdOp(dim=None) must re-resolve per call across input ranks."""
@@ -643,9 +664,9 @@ def test_softmax_dim_none_reused_across_ranks() -> None:
 
     op = SoftmaxFwdOp(dim=None)
 
-    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
-    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
-    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+    x1 = torch.randn(4, dtype=torch.float32, device=DEVICE)
+    x2 = torch.randn(2, 4, dtype=torch.float32, device=DEVICE)
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device=DEVICE)
 
     with _warnings.catch_warnings():
         _warnings.simplefilter("ignore", UserWarning)
@@ -664,6 +685,7 @@ def test_softmax_dim_none_reused_across_ranks() -> None:
     assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.op("LogSoftmaxFwdOp")
 @pytest.mark.smoke
 def test_log_softmax_dim_none_reused_across_ranks() -> None:
     """LogSoftmaxFwdOp(dim=None) must re-resolve per call (no self.dim mutation)."""
@@ -671,9 +693,9 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
 
     op = LogSoftmaxFwdOp(dim=None)
 
-    x1 = torch.randn(4, dtype=torch.float32, device="cuda")
-    x2 = torch.randn(2, 4, dtype=torch.float32, device="cuda")
-    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device="cuda")
+    x1 = torch.randn(4, dtype=torch.float32, device=DEVICE)
+    x2 = torch.randn(2, 4, dtype=torch.float32, device=DEVICE)
+    x3 = torch.randn(4, 3, 5, dtype=torch.float32, device=DEVICE)
 
     with _warnings.catch_warnings():
         _warnings.simplefilter("ignore", UserWarning)
@@ -692,18 +714,41 @@ def test_log_softmax_dim_none_reused_across_ranks() -> None:
     assert torch.allclose(y3, y3_ref, atol=atol, rtol=rtol)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_name", ["SoftmaxFwdOp", "LogSoftmaxFwdOp"])
+def test_softmax_compile_fullgraph_warm_cache(
+    op_name: str,
+    isolated_dynamo,
+) -> None:
+    """The eager kernel fast path must retain the compile-time custom-op path."""
+    op_cls = SoftmaxFwdOp if op_name == "SoftmaxFwdOp" else LogSoftmaxFwdOp
+    ref_fn = F.softmax if op_name == "SoftmaxFwdOp" else F.log_softmax
+    op = op_cls(dim=-1)
+    x = torch.randn(64, 512, dtype=torch.bfloat16, device=DEVICE)
+    op(x)
+
+    compiled = torch.compile(op, fullgraph=True)
+    y = compiled(x)
+    ref = ref_fn(x.float(), dim=-1).to(x.dtype)
+    atol, rtol = _get_tolerances(x.dtype)
+
+    assert torch.allclose(y, ref, atol=atol, rtol=rtol), (
+        f"Compiled {op_name} mismatch: max err {(y - ref).abs().max()}"
+    )
+
+
 # Roofline regression: LogSoftmax FLOPs must equal 5 * M * N (not 6 * M * N).
 # Direct construction — no manifest-string indirection.
 
 
+@pytest.mark.op("LogSoftmaxFwdOp")
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_log_softmax_eval_roofline_flops_5mn() -> None:
     """LogSoftmaxFwdOp.eval_roofline() must report flops == 5 * M * N."""
     M, N = 64, 256
     dtype = torch.float16
     op = LogSoftmaxFwdOp(dim=-1)
-    x = torch.randn(M, N, dtype=dtype, device="cuda")
+    x = torch.randn(M, N, dtype=dtype, device=DEVICE)
     op(x)  # bind dynamic shape
     flops, mem_bytes = op.eval_roofline()
     elem_bytes = dtype.itemsize
@@ -713,8 +758,9 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
     )
 
 
+@pytest.mark.op("SoftmaxFwdOp")
+@pytest.mark.op("LogSoftmaxFwdOp")
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=["fp32", "fp16"])
 def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
     """A handful of long rows runs as segments plus a fold, not one block per row.
@@ -722,7 +768,7 @@ def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
     102400 is not a segment multiple, so the tail segment's masked lanes
     contribute ``exp(-inf) = 0`` to the fold.
     """
-    x = torch.randn(4, 102400, dtype=dtype, device="cuda")
+    x = torch.randn(4, 102400, dtype=dtype, device=DEVICE)
     atol, rtol = (1e-6, 1e-6) if dtype == torch.float32 else (1e-3, 1e-3)
     torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), atol=atol, rtol=rtol)
     torch.testing.assert_close(
@@ -730,40 +776,67 @@ def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
     )
 
 
+@pytest.mark.op("LogSumExpFwdOp")
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_logsumexp_few_long_rows_split_across_blocks() -> None:
     """logsumexp folds the shared segment statistics without re-reading the input."""
-    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
+    x = torch.randn(4, 102400, dtype=torch.float32, device=DEVICE)
     torch.testing.assert_close(
         LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1), atol=1e-5, rtol=1e-5
     )
 
 
+def _fully_masked_segment_input() -> torch.Tensor:
+    """A row whose first segments are entirely ``-inf``, the rest finite."""
+    x = torch.randn(4, 102400, dtype=torch.float32, device=DEVICE)
+    x[:, :4096] = float("-inf")  # first segments fully masked, rest finite
+    return x
+
+
+@pytest.mark.op("SoftmaxFwdOp")
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_split_rows_survive_fully_masked_segments() -> None:
+def test_split_rows_survive_fully_masked_segments_softmax() -> None:
     """A segment of only ``-inf`` contributes zero to the fold, not NaN.
 
     Masked inputs make whole segments ``-inf``; the segment-local max is then
     ``-inf`` and an unguarded ``exp(-inf - -inf)`` would poison rows the
-    single-block path computes fine. An all--inf row stays torch: NaN for
-    softmax, ``-inf`` for logsumexp.
+    single-block path computes fine. An all--inf row stays NaN, as in torch.
     """
-    x = torch.randn(4, 102400, dtype=torch.float32, device="cuda")
-    x[:, :4096] = float("-inf")  # first segments fully masked, rest finite
+    x = _fully_masked_segment_input()
     torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1))
-    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
 
+    x[0, :] = float("-inf")
+    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), equal_nan=True)
+
+
+@pytest.mark.op("LogSoftmaxFwdOp")
+@pytest.mark.smoke
+def test_split_rows_survive_fully_masked_segments_log_softmax() -> None:
+    """A fully masked segment folds to zero for log_softmax too."""
+    x = _fully_masked_segment_input()
     torch.testing.assert_close(
         LogSoftmaxFwdOp(dim=-1)(x), F.log_softmax(x, dim=-1), atol=5e-3, rtol=5e-3
     )
 
+
+@pytest.mark.op("LogSumExpFwdOp")
+@pytest.mark.smoke
+def test_split_rows_survive_fully_masked_segments_logsumexp() -> None:
+    """A fully masked segment contributes zero; an all--inf row stays ``-inf``.
+
+    The reference is CPU ``torch.logsumexp``. The device implementation returns
+    NaN for an all-``-inf`` row, which is not the value the CPU reference stores.
+    """
+    x = _fully_masked_segment_input()
+    ref = torch.logsumexp(x.cpu(), dim=-1).to(DEVICE)
+    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), ref)
+
     x[0, :] = float("-inf")
-    torch.testing.assert_close(SoftmaxFwdOp(dim=-1)(x), F.softmax(x, dim=-1), equal_nan=True)
-    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), torch.logsumexp(x, dim=-1))
+    ref = torch.logsumexp(x.cpu(), dim=-1).to(DEVICE)
+    torch.testing.assert_close(LogSumExpFwdOp(dim=-1)(x), ref)
 
 
+@skip_requires_cooperative_launch
 @pytest.mark.smoke
 def test_split_shape_runs_as_one_fused_kernel() -> None:
     """The manifest's split shape reads its row once, under a grid barrier.

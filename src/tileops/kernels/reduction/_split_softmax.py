@@ -11,7 +11,6 @@ from math import prod
 
 import tilelang
 import tilelang.language as T
-import torch
 
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
@@ -20,7 +19,7 @@ from tileops.kernels.reduction._primitives import (
     align_up,
     ceildiv_int,
 )
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, get_backend_name, get_sm_count, is_available
 
 __all__ = [
     "edge_split_partials_kernel",
@@ -47,17 +46,13 @@ _SPLIT_MAX_SEG_COLS = FRAGMENT_ELEMS_PER_THREAD * DEFAULT_THREADS
 def split_target_blocks(device_index: "int | None" = None) -> int:
     """The block count a split aims for: ``_OCCUPANCY_FACTOR`` per SM.
 
-    ``None`` reads the current device; without CUDA it falls back to an H200's
+    ``None`` reads the current device; without a backend device it falls back to an H200's
     SM count, mirroring ``device_smem_budget``'s auto-detect fallback.
     """
     try:
-        if not torch.cuda.is_available():
+        if not is_available():
             return _OCCUPANCY_FACTOR * 132
-        if device_index is None:
-            device_index = torch.cuda.current_device()
-        return (
-            _OCCUPANCY_FACTOR * torch.cuda.get_device_properties(device_index).multi_processor_count
-        )
+        return _OCCUPANCY_FACTOR * get_sm_count(device_index)
     except (RuntimeError, AssertionError):
         return _OCCUPANCY_FACTOR * 132
 
@@ -75,6 +70,8 @@ def split_seg_n(M: int, N: int, block_m: int, target_blocks: int) -> int:
         return 0
     num_segs = max(1, ceildiv_int(target_blocks, M))
     seg_n = min(align_up(ceildiv_int(N, num_segs), DEFAULT_ALIGNMENT), _SPLIT_MAX_SEG_COLS)
+    if get_backend_name() == "musa" and seg_n in (2560, 3072, 3584):
+        seg_n = 4096
     if ceildiv_int(N, seg_n) < 2:
         return 0
     return seg_n
@@ -224,6 +221,8 @@ def fused_split_plan(M: int, N: int, seg_n: int) -> "int | None":
     per-thread budget one fragment gets elsewhere, which is what picks the
     width: the narrowest power of two from ``WARP_LANES`` up that holds them.
     """
+    if get_backend_name() == "musa":
+        return None
     num_segs = ceildiv_int(N, seg_n)
     if num_segs * M > split_target_blocks():
         return None

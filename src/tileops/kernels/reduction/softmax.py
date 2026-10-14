@@ -42,10 +42,12 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
     split_target_blocks,
 )
+from tileops.utils import get_tilelang_target
 
-# These two kernels bake tile_n in at build time and default to the wider
+# These kernels bake tile_n in at build time and default to the wider
 # thread block; AUTOTUNE_THREADS still bounds what the sweep explores.
 _DEFAULT_TUNE_THREADS = 256
+_LOG2E = 1.4426950408889634
 
 __all__ = ["SoftmaxKernel"]
 
@@ -188,7 +190,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
     if op_kind == "softmax":
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(target=get_tilelang_target(), out_idx=[1])
         def _func(block_m, threads):
             @T.prim_func
             def main(
@@ -317,7 +319,7 @@ def _softmax_kernel_tiled(M: int, N: int, op_kind: str, dtype: str, tile_n: int)
 
     else:  # log_softmax
 
-        @tilelang.jit(out_idx=[1])
+        @tilelang.jit(target=get_tilelang_target(), out_idx=[1])
         def _func(block_m, threads):
             @T.prim_func
             def main(
@@ -626,11 +628,11 @@ class SoftmaxKernel(RowTiledAutotuneMixin, Kernel):
         norm_axis: Non-negative index of the axis the normalization runs over.
         config: Optional kernel configuration dict.
         tune: Whether to autotune (default False).
-        device_index: CUDA device index for shared memory budget query.
-            When ``None``, ``torch.cuda.current_device()`` is used.
+        device_index: Backend device index for shared memory budget query.
+            When ``None``, the current backend device is used.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,

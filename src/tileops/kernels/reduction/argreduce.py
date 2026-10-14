@@ -98,7 +98,7 @@ def _ordering_key(op_kind: str):
         sign = bits >> 31
         magnitude = T.bitwise_and(bits, T.int32(_KEY_MAGNITUDE))
         ordered = T.bitwise_xor(magnitude, sign) - sign
-        return T.if_then_else(oriented != oriented, T.int32(_KEY_NAN), ordered)
+        return T.if_then_else(T.isnan(oriented), T.int32(_KEY_NAN), ordered)
 
     return key_of
 
@@ -576,7 +576,7 @@ class ArgreduceKernel(Kernel):
             shared memory, so this is here for the architecture check alone.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90, 100]
+    supported_archs: list[int] = [31, 80, 86, 89, 90, 100]
 
     @staticmethod
     def _plan_row_split(M: int, N: int) -> int:

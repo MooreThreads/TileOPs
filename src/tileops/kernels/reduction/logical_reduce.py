@@ -43,7 +43,7 @@ from tileops.kernels.reduction.call_spec import (
     logical_edge_fused_region,
     logical_reduce_region,
 )
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, current_device
 
 __all__ = [
     "LogicalReduceEdgeFusedKernel",
@@ -558,7 +558,7 @@ class LogicalReduceKernel(Kernel):
 
         return _func
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     general: bool = True
 
     @classmethod
@@ -624,7 +624,10 @@ class LogicalReduceKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return self._planner.default_config()
+        config = self._planner.default_config()
+        if not self._needs_tiling:
+            config["block_m"] = min(config["block_m"], max(1, self.M))
+        return config
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -634,7 +637,7 @@ class LogicalReduceKernel(Kernel):
         """Autotune logical reduce, benchmarking tiled configs directly."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-        device = torch.cuda.current_device()
+        device = current_device()
         if self._kernel_dtype.is_floating_point:
             x = torch.randn(self.M, self.N, dtype=self._kernel_dtype, device=device)
         else:
@@ -717,8 +720,9 @@ class LogicalReduceKernel(Kernel):
                 self.M, self.N, self.op_kind, dtype_str, self.config["tile_n"]
             )
         else:
-            program = _logical_reduce_kernel(self.M, self.N, self.op_kind, dtype_str)
-        counted = program(self.config["block_m"], self.config["threads"])(x)
+            program = self.kernel
+        block_m = min(self.config["block_m"], self.M)
+        counted = program(block_m, self.config["threads"])(x)
         if self.op_kind == "count_nonzero":
             return counted.to(torch.int64)
         # 0 or 1 in int8 is bool's own representation, so this is a reinterpretation.

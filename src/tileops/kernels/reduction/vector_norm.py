@@ -33,6 +33,7 @@ from tileops.kernels.reduction._primitives import (
     rows_for_axes,
     tune_by_forward,
 )
+from tileops.utils import current_device
 
 __all__ = ["VectorNormKernel"]
 
@@ -261,7 +262,7 @@ class VectorNormKernel(Kernel):
         device_index: CUDA device the input lives on, for the shared-memory budget.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -325,7 +326,7 @@ class VectorNormKernel(Kernel):
         """Autotune vector norm, benchmarking tiled configs directly."""
         if not self._needs_tiling:
             return super().autotune(warmup=warmup, rep=rep)
-        x = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
+        x = torch.randn(self.M, self.N, dtype=self.dtype, device=current_device())
         tune_by_forward(self, x, warmup=warmup, rep=rep, forward=self._norm_rows)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -384,4 +385,5 @@ class VectorNormKernel(Kernel):
             )
         else:
             program = _vector_norm_kernel(self.M, self.N, self.op_kind, dtype_str)
-        return program(self.config["block_m"], self.config["threads"])(x)
+        block_m = min(self.config["block_m"], self.M)
+        return program(block_m, self.config["threads"])(x)

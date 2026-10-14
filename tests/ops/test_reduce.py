@@ -8,11 +8,14 @@ import pytest
 import torch
 
 from tests.test_base import FixtureBase, TestBase
+from tileops.utils import get_backend_name
 from workloads.reduction import (
     ProdWorkload,
     StdWorkload,
     SumWorkload,
 )
+
+DEVICE = get_backend_name()
 
 
 class ReduceBasicFixture(FixtureBase):
@@ -229,7 +232,7 @@ def test_reduce_caller_tile_n_validated() -> None:
     from tileops.kernels.reduction.reduce import ReduceKernel
 
     m, n, dtype = 8, 102400, torch.float16
-    x = torch.randn(m, n, dtype=dtype, device="cuda")
+    x = torch.randn(m, n, dtype=dtype, device=DEVICE)
 
     def run(tile_n: int, block_m: int = 2) -> None:
         kernel = ReduceKernel(
@@ -315,7 +318,7 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
 def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]
     op = SumFwdOp(dim=-1)
     ref = x.contiguous().float().sum(dim=-1).to(dtype)
@@ -328,7 +331,7 @@ def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_sum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
     op = SumFwdOp(dim=-1)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
@@ -340,7 +343,7 @@ def test_sum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 def test_sum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device="cuda")
+    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=DEVICE)
     op = SumFwdOp(dim=-1)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
@@ -447,7 +450,7 @@ def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) ->
 def test_var_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
     op = VarFwdOp(dim=-1)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
@@ -459,7 +462,7 @@ def test_var_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 def test_std_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
     op = StdFwdOp(dim=-1)
     ref = x.float().std(dim=-1, correction=1).to(dtype)
     y = op(x)
@@ -474,7 +477,7 @@ def test_std_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
 def test_sum_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=DEVICE)
     op = SumFwdOp(dim=-1)
     ref = x.float().sum(dim=-1).to(dtype)
     y = op(x)
@@ -488,7 +491,7 @@ def test_sum_1d(n: int, dtype: torch.dtype) -> None:
 def test_var_1d(n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=DEVICE)
     op = VarFwdOp(dim=-1)
     ref = x.float().var(dim=-1, correction=1).to(dtype)
     y = op(x)
@@ -505,7 +508,7 @@ def test_var_1d(n: int, dtype: torch.dtype) -> None:
 def test_var_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import VarFwdOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]
     op = VarFwdOp(dim=-1)
     ref = x.contiguous().float().var(dim=-1, correction=1).to(dtype)
@@ -518,7 +521,7 @@ def test_var_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 def test_std_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops.ops.reduction.reduce import StdFwdOp
 
-    x_full = torch.randn(m, n * 2, dtype=dtype, device="cuda")
+    x_full = torch.randn(m, n * 2, dtype=dtype, device=DEVICE)
     x = x_full[:, :n]
     op = StdFwdOp(dim=-1)
     ref = x.contiguous().float().std(dim=-1, correction=1).to(dtype)
@@ -551,7 +554,7 @@ def test_sum_spec_basic(m: int, n: int, dtype: torch.dtype) -> None:
     """Spec interface: SumFwdOp(dtype=..., dim=-1) on 2D input, multiple dtypes."""
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.randn(m, n, dtype=dtype, device="cuda")
+    x = torch.randn(m, n, dtype=dtype, device=DEVICE)
     op = SumFwdOp(dim=-1)
     ref = torch.sum(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -564,7 +567,7 @@ def test_sum_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
     """Spec interface: reduction along arbitrary dim (0, 1, -1) for 2D/3D tensors."""
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = SumFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.sum(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -577,7 +580,7 @@ def test_sum_spec_keepdim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dt
     """Spec interface: keepdim=True preserves the reduced dimension as size 1."""
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     # Force keepdim=True regardless of fixture param to specifically test shape preservation
     op = SumFwdOp(dim=dim, keepdim=True)
     ref = torch.sum(x.float(), dim=dim, keepdim=True).to(dtype)
@@ -592,7 +595,7 @@ def test_sum_spec_1d(n: int, dtype: torch.dtype) -> None:
     """Spec interface: 1D input reduces to scalar."""
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    x = torch.randn(n, dtype=dtype, device="cuda")
+    x = torch.randn(n, dtype=dtype, device=DEVICE)
     op = SumFwdOp(dim=-1)
     ref = torch.sum(x.float(), dim=-1).to(dtype)
     y = op(x)
@@ -607,7 +610,7 @@ def test_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     """Spec interface: MeanFwdOp with dim + keepdim."""
     from tileops.ops.reduction.reduce import MeanFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = MeanFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -621,7 +624,7 @@ def test_amax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     """Spec interface: AmaxFwdOp with dim + keepdim."""
     from tileops.ops.reduction.reduce import AmaxFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = AmaxFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.amax(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -635,7 +638,7 @@ def test_amin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     """Spec interface: AminFwdOp with dim + keepdim."""
     from tileops.ops.reduction.reduce import AminFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = AminFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.amin(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -649,7 +652,7 @@ def test_prod_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
     """Spec interface: ProdFwdOp with dim + keepdim."""
     from tileops.ops.reduction.reduce import ProdFwdOp
 
-    x = torch.rand(*shape, dtype=dtype, device="cuda") * 0.01 + 0.99
+    x = torch.rand(*shape, dtype=dtype, device=DEVICE) * 0.01 + 0.99
     op = ProdFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.prod(x.float(), dim=dim, keepdim=keepdim).to(dtype)
     y = op(x)
@@ -663,7 +666,7 @@ def test_var_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
     """Spec interface: VarFwdOp with dim + keepdim + correction."""
     from tileops.ops.reduction.reduce import VarFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = VarFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
@@ -677,7 +680,7 @@ def test_std_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
     """Spec interface: StdFwdOp with dim + keepdim + correction."""
     from tileops.ops.reduction.reduce import StdFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = StdFwdOp(dim=dim, keepdim=keepdim)
     ref = torch.std(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
     y = op(x)
@@ -691,7 +694,7 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
     """Spec interface: VarMeanFwdOp with dim + keepdim."""
     from tileops.ops.reduction.reduce import VarMeanFwdOp
 
-    x = torch.randn(*shape, dtype=dtype, device="cuda")
+    x = torch.randn(*shape, dtype=dtype, device=DEVICE)
     op = VarMeanFwdOp(dim=dim, keepdim=keepdim)
     ref_var = torch.var(x.float(), dim=dim, keepdim=keepdim, correction=1).to(dtype)
     ref_mean = torch.mean(x.float(), dim=dim, keepdim=keepdim).to(dtype)

@@ -51,20 +51,18 @@ def test_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     flaggems_fn = _flaggems_softmax("softmax", -1)
     assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **reference_tolerance(dtype))
+    functors = {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
     try:
-        bm.compare(
-            {
-                "tileops": op,
-                FLAGGEMS_TAG: flaggems_fn,
-                "torch": baseline_fn,
-                TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-            },
-            *inputs,
-        )
+        bm.compare(functors, *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
+            pytest.skip("unsupported configuration")
         raise
 
 
@@ -81,20 +79,18 @@ def test_log_softmax_bench(shape: tuple, dtype: torch.dtype) -> None:
 
     flaggems_fn = _flaggems_softmax("log_softmax", -1)
     assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **reference_tolerance(dtype))
+    functors = {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
     try:
-        bm.compare(
-            {
-                "tileops": op,
-                FLAGGEMS_TAG: flaggems_fn,
-                "torch": baseline_fn,
-                TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-            },
-            *inputs,
-        )
+        bm.compare(functors, *inputs)
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
+            pytest.skip("unsupported configuration")
         raise
 
 
@@ -126,5 +122,5 @@ def test_logsumexp_bench(shape: tuple, dtype: torch.dtype, op_params: dict) -> N
         )
     except ValueError as exc:
         if "No configurations to tune" in str(exc):
-            pytest.skip(f"Kernel does not support this shape: {exc}")
+            pytest.skip("unsupported configuration")
         raise
