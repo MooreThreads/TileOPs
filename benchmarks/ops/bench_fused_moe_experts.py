@@ -62,11 +62,16 @@ except ImportError:
 from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
+from tileops.utils import get_backend_name, synchronize
+from tileops.utils.skip_reasons import skip_missing_baseline
 from workloads.moe import MoeExpertsWorkload
+
+DEVICE = get_backend_name()
 
 # Workload
 
 
+@skip_missing_baseline
 @pytest.mark.parametrize(
     "num_tokens, num_experts, top_k, hidden_size, ffn_size, dtype",
     workload_params(
@@ -99,12 +104,12 @@ def test_moe_experts_bench(
         hidden_size=hidden_size,
         ffn_size=ffn_size,
     )
-    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
+    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device=DEVICE)
     ws1_shape, ws2_shape = experts.workspace_shapes(
         num_tokens, ffn_size, hidden_size, top_k, num_experts
     )
-    ws1 = torch.empty(ws1_shape, dtype=dtype, device="cuda")
-    ws2 = torch.empty(ws2_shape, dtype=dtype, device="cuda")
+    ws1 = torch.empty(ws1_shape, dtype=dtype, device=DEVICE)
+    ws2 = torch.empty(ws2_shape, dtype=dtype, device=DEVICE)
     bm = ManifestBenchmark(experts, test)
 
     def _experts_fn(hidden, w1, w2, topk_weights, topk_ids):
@@ -121,7 +126,7 @@ def test_moe_experts_bench(
         return output
 
     _experts_fn(hidden, w1, w2, topk_weights, topk_ids)
-    torch.cuda.synchronize()
+    synchronize()
 
     functors = {"tileops": _experts_fn}
 
@@ -132,7 +137,7 @@ def test_moe_experts_bench(
             return _vllm_fused_experts(hidden, w1, w2, topk_weights, topk_ids)
 
         _vllm_triton_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
-        torch.cuda.synchronize()
+        synchronize()
 
         functors["vllm-triton"] = _vllm_triton_fn
 
@@ -144,7 +149,7 @@ def test_moe_experts_bench(
                 return _vllm_cutlass_moe(hidden, w1, w2, topk_weights, topk_ids)
 
             _vllm_cutlass_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
-            torch.cuda.synchronize()
+            synchronize()
 
             functors["vllm-cutlass"] = _vllm_cutlass_fn
         except Exception as e:
@@ -173,7 +178,7 @@ def test_moe_experts_bench(
             return output_buf.to(hidden.dtype)
 
         _torch_fn(hidden, w1, w2, topk_weights, topk_ids)  # warmup
-        torch.cuda.synchronize()
+        synchronize()
 
         functors["torch-ref"] = _torch_fn
 
@@ -212,10 +217,10 @@ def test_indexed_expert_mlp_bench(
         hidden_size=hidden_size,
         ffn_size=ffn_size,
     )
-    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
+    output = torch.empty(num_tokens, hidden_size, dtype=dtype, device=DEVICE)
     ws1_shape, ws2_shape = indexed.workspace_shapes()
-    ws1 = torch.empty(ws1_shape, dtype=dtype, device="cuda")
-    ws2 = torch.empty(ws2_shape, dtype=dtype, device="cuda")
+    ws1 = torch.empty(ws1_shape, dtype=dtype, device=DEVICE)
+    ws2 = torch.empty(ws2_shape, dtype=dtype, device=DEVICE)
 
     def _indexed_fn(hidden, w1, w2, topk_weights, topk_ids):
         indexed.forward(output, hidden, w1, w2, topk_weights, topk_ids, ws1, ws2)
@@ -230,7 +235,7 @@ def test_indexed_expert_mlp_bench(
         hidden_size=hidden_size,
         ffn_size=ffn_size,
     )
-    staged_output = torch.empty(num_tokens, hidden_size, dtype=dtype, device="cuda")
+    staged_output = torch.empty(num_tokens, hidden_size, dtype=dtype, device=DEVICE)
 
     def _staged_fn(hidden, w1, w2, topk_weights, topk_ids):
         expert_input, physical_ends, inverse = staged._pre_permute(hidden, topk_ids)
@@ -241,6 +246,6 @@ def test_indexed_expert_mlp_bench(
     functors = {"tileops": _indexed_fn, "staged": _staged_fn}
     for fn in functors.values():
         fn(hidden, w1, w2, topk_weights, topk_ids)
-    torch.cuda.synchronize()
+    synchronize()
 
     ManifestBenchmark(indexed, test).compare(functors, hidden, w1, w2, topk_weights, topk_ids)

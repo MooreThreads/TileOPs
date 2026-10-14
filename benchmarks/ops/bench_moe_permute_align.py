@@ -24,6 +24,7 @@ except ImportError:
 from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.moe import MoePermuteAlignFwdOp
+from tileops.utils import synchronize
 from workloads.moe import MoePermuteAlignWorkload
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
@@ -157,7 +158,7 @@ def test_permute_align_bench(
     bm = ManifestBenchmark(op, test)
 
     op(*inputs)
-    torch.cuda.synchronize()
+    synchronize()
 
     functors = {"tileops": op}
 
@@ -178,7 +179,7 @@ def test_permute_align_bench(
         return sorted_ids, expert_ids, num_post_pad
 
     _triton_fn(*inputs)
-    torch.cuda.synchronize()
+    synchronize()
 
     functors["triton"] = _triton_fn
 
@@ -203,7 +204,7 @@ def test_permute_align_bench(
             return sorted_ids_sgl, expert_ids_sgl, num_post_pad_sgl
 
         _sgl_fn(*inputs)
-        torch.cuda.synchronize()
+        synchronize()
 
         functors["sgl-kernel"] = _sgl_fn
 

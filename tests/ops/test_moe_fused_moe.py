@@ -16,6 +16,10 @@ from tileops.ops.moe import (
     FusedMoeFwdOp,
     FusedTopKOp,
 )
+from tileops.utils import get_backend_name
+from tileops.utils.skip_reasons import skip_requires_vllm
+
+DEVICE = get_backend_name()
 
 # vLLM optional import
 
@@ -24,7 +28,7 @@ try:
         fused_experts as _vllm_fused_experts,
     )
 
-    _VLLM_AVAILABLE = True
+    _VLLM_AVAILABLE = hasattr(torch.ops.vllm, "outplace_fused_experts")
 except ImportError:
     _VLLM_AVAILABLE = False
 
@@ -40,6 +44,13 @@ def _ref_moe_ffn(
     topk_ids: torch.Tensor,  # [T, K] int64
 ) -> torch.Tensor:
     """PyTorch reference: per-expert GEMM (memory-efficient, no O(T*K*2F*H) alloc)."""
+    device = hidden_states.device
+    dtype = hidden_states.dtype
+    hidden_states = hidden_states.cpu()
+    w_gate_up = w_gate_up.cpu()
+    w_down = w_down.cpu()
+    topk_weights = topk_weights.cpu()
+    topk_ids = topk_ids.cpu()
     T, H = hidden_states.shape
     E = w_gate_up.shape[0]
     ffn_size = w_gate_up.shape[1] // 2
@@ -56,7 +67,7 @@ def _ref_moe_ffn(
         down = act @ w_down[e].float().t()
         weights = topk_weights[t_idx, k_idx].float().unsqueeze(-1)
         output.index_add_(0, t_idx, down * weights)
-    return output.to(hidden_states.dtype)
+    return output.to(device=device, dtype=dtype)
 
 
 def _ref_kimi_routing(
@@ -183,7 +194,7 @@ def test_fused_moe_qwen3(
     dtype,
 ) -> None:
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = DEVICE
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
     gating = torch.randn(num_tokens, num_experts, dtype=dtype, device=dev)
     w_gate_up = torch.randn(num_experts, ffn_size * 2, hidden_size, dtype=dtype, device=dev) * 0.02
@@ -258,7 +269,7 @@ def test_fused_moe_deterministic(case):
     qwen3-medium case trips within ~100 repeats; post-fix it is deterministic.
     """
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = DEVICE
     dtype = torch.bfloat16
     nt, ne, tk = case["num_tokens"], case["num_experts"], case["top_k"]
     hs, ff, reps = case["hidden_size"], case["ffn_size"], case["reps"]
@@ -400,7 +411,7 @@ def test_fused_moe_kimi(
     dtype,
 ) -> None:
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = DEVICE
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
     gating = torch.randn(num_tokens, num_experts, dtype=dtype, device=dev)
     correction_bias = (
@@ -450,7 +461,7 @@ def test_correction_bias_routing_precision() -> None:
     """
     torch.manual_seed(7)
     T, E, K = 4, 8, 2
-    dev = "cuda"
+    dev = DEVICE
 
     logits = torch.randn(T, E, dtype=torch.float32, device=dev)
     bias = torch.randn(E, dtype=torch.float32, device=dev)
@@ -526,6 +537,7 @@ class VllmFixture(FixtureBase):
 
 
 @VllmFixture
+@skip_requires_vllm
 def test_fused_moe_vs_vllm(
     num_tokens,
     num_experts,
@@ -536,10 +548,10 @@ def test_fused_moe_vs_vllm(
     dtype,
 ) -> None:
     if not _VLLM_AVAILABLE:
-        pytest.skip("vllm not installed")
+        pytest.skip("requires optional dependencies")
 
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = DEVICE
     hidden = torch.randn(num_tokens, hidden_size, dtype=dtype, device=dev)
     gating = torch.randn(num_tokens, num_experts, dtype=dtype, device=dev)
     correction_bias = torch.randn(num_experts, dtype=torch.float32, device=dev) * 0.1
@@ -580,7 +592,7 @@ def test_fused_moe_vs_vllm(
 def test_fused_moe_fwd_op_identity() -> None:
     """`FusedMoeFwdOp` (no correction bias) matches the `FusedMoe` reference output."""
     torch.manual_seed(42)
-    dev = "cuda"
+    dev = DEVICE
     T, E, K, H, F_ = 32, 8, 2, 64, 32
     dtype = torch.bfloat16
 
@@ -618,7 +630,7 @@ def test_fused_moe_fwd_op_identity() -> None:
 def test_fused_moe_fwd_correction_bias_identity() -> None:
     """A call passing correction_bias, end-to-end smoke."""
     torch.manual_seed(7)
-    dev = "cuda"
+    dev = DEVICE
     T, E, K, H, F_ = 32, 8, 2, 64, 32
     dtype = torch.bfloat16
 

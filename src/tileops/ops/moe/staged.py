@@ -18,7 +18,7 @@ from tileops.ops._output_dtype import output_dtype
 from tileops.ops.op_base import Op
 from tileops.perf.formulas import moe_expert_mlp_roofline, moe_grouped_gemm_roofline
 from tileops.perf.profile import tensor_core_roof
-from tileops.utils import get_sm_version, is_h200
+from tileops.utils import get_sm_version, is_backend_tensor, is_h200
 
 from .contracts import (
     ContiguousLayoutSpec,
@@ -53,7 +53,7 @@ def _same_device(named_tensors: Mapping[str, torch.Tensor]) -> torch.device:
 class _ContiguousPostPermuteKernel(Kernel):
     """Adapt contiguous staged indices to the shipped weighted unpermute kernel."""
 
-    supported_archs = [80, 86, 89, 90]
+    supported_archs = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: PostPermuteCall) -> bool:
@@ -177,7 +177,7 @@ class MoePrePermuteFwdOp(_StagedOpBase):
         device = _same_device(
             {"hidden_states": hidden_states, "local_expert_ids": local_expert_ids}
         )
-        if device.type != "cuda":
+        if not all(is_backend_tensor(tensor) for tensor in (hidden_states, local_expert_ids)):
             raise ValueError("staged pre-permute currently requires CUDA tensors")
         if hidden_states.ndim != 2:
             raise ValueError("hidden_states must have shape [tokens, hidden_size]")
@@ -340,7 +340,7 @@ class MoeGroupedGemmFwdOp(_StagedOpBase):
         if out is not None:
             tensors["out"] = out
         device = _same_device(tensors)
-        if device.type != "cuda":
+        if not all(is_backend_tensor(tensor) for tensor in tensors.values()):
             raise ValueError("staged grouped GEMM currently requires CUDA tensors")
         if a.dtype not in (torch.bfloat16, torch.float16):
             raise TypeError("the staged grouped-GEMM contract accepts BF16 or FP16 operands")
@@ -655,7 +655,7 @@ class MoePostPermuteFwdOp(_StagedOpBase):
         if out is not None:
             tensors["out"] = out
         device = _same_device(tensors)
-        if device.type != "cuda":
+        if not all(is_backend_tensor(tensor) for tensor in tensors.values()):
             raise ValueError("staged post-permute currently requires CUDA tensors")
         if not expert_output.is_contiguous():
             raise ValueError("expert_output must be contiguous")

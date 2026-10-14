@@ -33,7 +33,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, is_backend_tensor
 
 __all__ = ["FusedTopKKernel"]
 
@@ -335,7 +335,7 @@ class FusedTopKKernel(Kernel):
 
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -406,7 +406,7 @@ class FusedTopKKernel(Kernel):
             f"Expected gating_output shape ({self.num_tokens}, {self.num_experts}), "
             f"got {tuple(gating_output.shape)}"
         )
-        assert gating_output.is_cuda, "gating_output must be on CUDA"
+        assert is_backend_tensor(gating_output), "gating_output must be on the configured backend"
 
         if self.with_correction_bias:
             assert correction_bias is not None, (

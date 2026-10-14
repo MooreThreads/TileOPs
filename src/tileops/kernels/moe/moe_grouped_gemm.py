@@ -14,7 +14,7 @@ __all__ = ["MoeGroupedGemmKernel"]
 class MoeGroupedGemmKernel(Kernel):
     """Adapt staged MoE grouped-GEMM calls to the shared GEMM template."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     _TYPES: dict[tuple[str, Optional[str], Optional[str]], GemmType] = {
         ("contiguous", "tight", "physical_psum"): GemmType.M_GROUPED_TIGHT_PSUM,

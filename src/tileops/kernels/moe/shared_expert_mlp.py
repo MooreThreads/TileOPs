@@ -12,7 +12,7 @@ from tileops.kernels.gemm.heuristics import small_m_splitk_config
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count, get_sm_version
+from tileops.utils import get_device_name, get_sm_count, get_sm_version
 
 __all__ = ["SharedExpertMLPKernel"]
 
@@ -67,7 +67,7 @@ class SharedExpertMLPKernel(Kernel):
     above ``template_min_m``; other calls use the existing dense implementations.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -89,7 +89,7 @@ class SharedExpertMLPKernel(Kernel):
         self._fused_gate_up = None
         self._gate_up_is_activated = False
         if (
-            sm_version == 90
+            sm_version in (31, 90)
             and num_tokens >= self.config["template_min_m"]
             and ffn_size >= hidden_size
         ):
@@ -110,7 +110,7 @@ class SharedExpertMLPKernel(Kernel):
                 static_dims="mnk",
                 config=template_config,
             )
-        elif sm_version == 90:
+        elif sm_version in (31, 90):
             gemm_config = self.config if config is not None else None
             self._gemm_gate_up = GemmTmaKernel(
                 m=num_tokens,
@@ -126,7 +126,7 @@ class SharedExpertMLPKernel(Kernel):
                     hidden_size,
                     ffn_size,
                     get_sm_count(),
-                    torch.cuda.get_device_name(),
+                    get_device_name(),
                 )
                 if dtype is torch.bfloat16 and config is None
                 else None

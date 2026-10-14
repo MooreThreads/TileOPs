@@ -6,6 +6,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.fused_topk import FusedTopKKernel
+from tileops.utils import is_backend_tensor
 
 from ..op_base import Op
 
@@ -130,9 +131,9 @@ class FusedTopKOp(Op):
             topk_weights: [T, K] float32.
             topk_ids:     [T, K] int32.
         """
-        if not gating_output.is_cuda:
+        if not is_backend_tensor(gating_output):
             raise ValueError("gating_output must be a CUDA tensor")
-        if correction_bias is not None and not correction_bias.is_cuda:
+        if correction_bias is not None and not is_backend_tensor(correction_bias):
             raise ValueError("correction_bias must be a CUDA tensor")
         if correction_bias is not None and gating_output.device != correction_bias.device:
             raise ValueError(

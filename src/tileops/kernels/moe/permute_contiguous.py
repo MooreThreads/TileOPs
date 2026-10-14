@@ -8,6 +8,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.moe.call_spec import PrePermuteCall
+from tileops.utils import is_backend_tensor
 
 __all__ = ["MoePrePermuteContiguousKernel"]
 
@@ -333,7 +334,7 @@ def _make_gather(
 class MoePrePermuteContiguousKernel(Kernel):
     """Build one contiguous PrePermute specialization from ``call.layout``."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     _SUPPORTED_LAYOUT_KEYS = frozenset(("tight_physical_psum", "aligned_per_row"))
 
     @classmethod
@@ -423,7 +424,7 @@ class MoePrePermuteContiguousKernel(Kernel):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return expert input, layout metadata, and inverse indices."""
         assert local_expert_ids.dtype == torch.int32
-        assert hidden_states.is_cuda and local_expert_ids.is_cuda
+        assert is_backend_tensor(hidden_states) and is_backend_tensor(local_expert_ids)
         assert local_expert_ids.numel() == self.numel
 
         device = hidden_states.device

@@ -17,6 +17,7 @@ from tileops.ops.moe import (
     MoeExpertMLPFwdOp,
     MoeGroupedGemmFwdOp,
 )
+from tileops.utils import get_backend_name
 from workloads.moe import MoeExpertMLPStagedWorkload, MoeGroupedGemmStagedWorkload
 
 pytestmark = pytest.mark.sm90
@@ -141,7 +142,7 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     )
     a, b, metadata = workload.gen_inputs()
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum(), out_dtype=torch.float32)
-    out = torch.empty(600, 256, dtype=torch.float32, device="cuda")
+    out = torch.empty(600, 256, dtype=torch.float32, device=DEVICE)
     assert op(a, b, metadata, out=out) is out
     ref = workload.ref_program(a, b, metadata).float()
     torch.testing.assert_close(out, ref, rtol=1e-3, atol=1e-2)
@@ -151,23 +152,23 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
 def test_grouped_gemm_refuses_what_the_template_cannot_run_at_selection():
     """Calls outside the adapter's region are refused by selection, naming the reason."""
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
-    a = torch.randn(8, 60, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(2, 16, 60, dtype=torch.bfloat16, device="cuda")
-    ends = torch.tensor([4, 8], dtype=torch.int32, device="cuda")
+    a = torch.randn(8, 60, dtype=torch.bfloat16, device=DEVICE)
+    b = torch.randn(2, 16, 60, dtype=torch.bfloat16, device=DEVICE)
+    ends = torch.tensor([4, 8], dtype=torch.int32, device=DEVICE)
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(a, b, ends)  # K not a multiple of 8
     fused = MoeGroupedGemmFwdOp(
         ContiguousLayoutSpec.tight_physical_psum(), activation="silu_and_mul"
     )
-    a = torch.randn(8, 64, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(2, 24, 64, dtype=torch.bfloat16, device="cuda")
+    a = torch.randn(8, 64, dtype=torch.bfloat16, device=DEVICE)
+    b = torch.randn(2, 24, 64, dtype=torch.bfloat16, device=DEVICE)
     with pytest.raises(ValueError, match="no implementation serves this call"):
         fused(a, b, ends)  # fused N must be a multiple of 16
     # An aligned layout whose alignment is not a tile height has no instantiation either.
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.aligned_per_row(8))
-    a = torch.randn(16, 64, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(2, 16, 64, dtype=torch.bfloat16, device="cuda")
-    ids = torch.tensor([0] * 8 + [2] * 8, dtype=torch.int32, device="cuda")
+    a = torch.randn(16, 64, dtype=torch.bfloat16, device=DEVICE)
+    b = torch.randn(2, 16, 64, dtype=torch.bfloat16, device=DEVICE)
+    ids = torch.tensor([0] * 8 + [2] * 8, dtype=torch.int32, device=DEVICE)
     with pytest.raises(ValueError, match="no implementation serves this call"):
         op(a, b, ids)
 

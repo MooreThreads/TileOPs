@@ -2,7 +2,10 @@ import math
 
 import torch
 
+from tileops.utils import get_backend_name
 from workloads.workload_base import WorkloadBase
+
+DEVICE = get_backend_name()
 
 
 class FusedTopKWorkload(WorkloadBase):
@@ -25,13 +28,13 @@ class FusedTopKWorkload(WorkloadBase):
         self.with_correction_bias = with_correction_bias
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        g = self.rng(device="cuda")
+        g = self.rng(device=DEVICE)
         gating = torch.randn(
-            self.num_tokens, self.num_experts, dtype=self.dtype, device="cuda", generator=g
+            self.num_tokens, self.num_experts, dtype=self.dtype, device=DEVICE, generator=g
         )
         if not self.with_correction_bias:
             return (gating,)
-        bias = torch.randn(self.num_experts, dtype=torch.float32, device="cuda", generator=g) * 0.1
+        bias = torch.randn(self.num_experts, dtype=torch.float32, device=DEVICE, generator=g) * 0.1
         return gating, bias
 
 
@@ -45,14 +48,14 @@ class MoePermuteWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
         hidden_states = torch.randn(
-            self.total_tokens, self.hidden_size, dtype=self.dtype, device="cuda"
+            self.total_tokens, self.hidden_size, dtype=self.dtype, device=DEVICE
         )
         topk_ids = torch.randint(
             0,
             self.num_experts,
             (self.total_tokens, self.top_k),
             dtype=torch.int32,
-            device="cuda",
+            device=DEVICE,
         )
         return hidden_states, topk_ids
 
@@ -73,7 +76,7 @@ class MoePermuteAlignWorkload(WorkloadBase):
             self.num_experts,
             (self.total_tokens, self.top_k),
             dtype=torch.int32,
-            device="cuda",
+            device=DEVICE,
         )
         return (topk_ids,)
 
@@ -92,10 +95,10 @@ class MoeUnpermuteWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         numel = self.total_tokens * self.top_k
-        mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device="cuda")
+        mm2_pad = torch.randn(numel, self.hidden_size, dtype=self.dtype, device=DEVICE)
         # fwd_idx: simulate a valid mapping: random shuffle of [0, numel)
-        fwd_idx = torch.randperm(numel, dtype=torch.int32, device="cuda")
-        topk_weights = torch.rand(self.total_tokens, self.top_k, dtype=torch.float32, device="cuda")
+        fwd_idx = torch.randperm(numel, dtype=torch.int32, device=DEVICE)
+        topk_weights = torch.rand(self.total_tokens, self.top_k, dtype=torch.float32, device=DEVICE)
         return mm2_pad, fwd_idx, topk_weights
 
     def ref_program(self, mm2_pad, fwd_idx, topk_weights):
@@ -290,8 +293,8 @@ class MoeGroupedGemmStagedWorkload(WorkloadBase):
         return math.prod(self.a_shape[:-1])
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        g = self.rng(device="cuda")
-        dev = "cuda"
+        g = self.rng(device=DEVICE)
+        dev = DEVICE
         metadata, self.valid_rows = make_expert_layout_metadata(
             self.layout,
             self.rows,
@@ -349,9 +352,9 @@ class MoeExpertMLPStagedWorkload(MoeGroupedGemmStagedWorkload):
         x, w_gate_up, metadata = super().gen_inputs()
         # Its own tag: the base class drew from the untagged stream, and this
         # draw must not restart it.
-        g = self.rng("w_down", device="cuda")
+        g = self.rng("w_down", device=DEVICE)
         w_down = (
-            torch.randn(*self.w_down_shape, dtype=self.dtype, device="cuda", generator=g) * 0.02
+            torch.randn(*self.w_down_shape, dtype=self.dtype, device=DEVICE, generator=g) * 0.02
         )
         return x, w_gate_up, w_down, metadata
 
@@ -398,8 +401,8 @@ class FusedMoeWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
+        g = self.rng(device=DEVICE)
+        dev = DEVICE
         hidden = torch.randn(
             self.num_tokens,
             self.hidden_size,
@@ -472,8 +475,8 @@ class FusedMoeSharedExpertWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
+        g = self.rng(device=DEVICE)
+        dev = DEVICE
         hidden = torch.randn(
             self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
         )
@@ -547,8 +550,8 @@ class MoeExpertsWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self):
-        g = self.rng(device="cuda")
-        dev = "cuda"
+        g = self.rng(device=DEVICE)
+        dev = DEVICE
         hidden = torch.randn(
             self.num_tokens, self.hidden_size, dtype=self.dtype, device=dev, generator=g
         )

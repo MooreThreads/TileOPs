@@ -18,7 +18,7 @@ import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count
+from tileops.utils import get_sm_count, is_backend_tensor
 
 __all__ = ["MoeUnpermuteKernel"]
 
@@ -100,7 +100,7 @@ class MoeUnpermuteKernel(Kernel):
         ```
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -170,7 +170,7 @@ class MoeUnpermuteKernel(Kernel):
         """
         assert inverse_indices.dtype == torch.int32
         assert topk_weights.dtype == torch.float32
-        assert expert_output.is_cuda
+        assert is_backend_tensor(expert_output)
 
         dev = expert_output.device
         if out is None:

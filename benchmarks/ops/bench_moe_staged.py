@@ -18,6 +18,7 @@ from tileops.ops.moe import (
     MoePrePermuteFwdOp,
 )
 from tileops.ops.moe.contracts import layout_from_preset
+from tileops.utils.skip_reasons import skip_missing_baseline
 from workloads.moe import (
     MoeExpertMLPStagedWorkload,
     MoeGroupedGemmStagedWorkload,
@@ -33,6 +34,7 @@ def _pre_args(workload: dict, dtype: torch.dtype) -> tuple[int, int, int, int, t
     return tokens, top_k, workload["num_local_experts"], hidden, dtype
 
 
+@skip_missing_baseline
 @pytest.mark.parametrize(
     "tokens,top_k,num_local_experts,hidden,dtype",
     workload_params(load_workloads(MoePrePermuteFwdOp), _pre_args),
@@ -75,6 +77,7 @@ def _post_args(workload: dict, dtype: torch.dtype) -> tuple[int, int, int, torch
     return tokens, top_k, hidden, dtype
 
 
+@skip_missing_baseline
 @pytest.mark.parametrize(
     "tokens,top_k,hidden,dtype",
     workload_params(load_workloads(MoePostPermuteFwdOp), _post_args),
@@ -163,6 +166,7 @@ def _gemm_args(workload: dict, dtype: torch.dtype) -> tuple:
     )
 
 
+@skip_missing_baseline
 @pytest.mark.parametrize(
     "a_shape,b_shape,layout_args,activation,dtype",
     workload_params(load_workloads(MoeGroupedGemmFwdOp), _gemm_args),
@@ -198,6 +202,7 @@ def _mlp_args(workload: dict, dtype: torch.dtype) -> tuple:
     )
 
 
+@skip_missing_baseline
 @pytest.mark.parametrize(
     "x_shape,w_gate_up_shape,w_down_shape,layout_args,dtype",
     workload_params(load_workloads(MoeExpertMLPFwdOp), _mlp_args),

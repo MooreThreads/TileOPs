@@ -16,7 +16,9 @@ from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.moe import SharedExpertMLPKernel
 from tileops.ops.moe import FusedMoeSharedExpertFwdOp
 from tileops.ops.moe.fused_moe import FusedMoeFwdOp
-from tileops.utils import get_sm_version
+from tileops.utils import get_backend_name, get_sm_version
+
+DEVICE = get_backend_name()
 
 
 @pytest.mark.smoke
@@ -26,7 +28,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     torch.manual_seed(42)
     T, E, K, H, F, F_s = num_tokens, 8, 2, 64, 32, 16
     dtype = torch.bfloat16
-    dev = "cuda"
+    dev = DEVICE
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
@@ -96,7 +98,7 @@ def test_fused_moe_shared_expert_none():
     torch.manual_seed(42)
     T, E, K, H, F = 16, 4, 2, 32, 16
     dtype = torch.bfloat16
-    dev = "cuda"
+    dev = DEVICE
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
@@ -128,7 +130,7 @@ def test_fused_moe_shared_expert_tp():
     T, E, K, H, F, F_s = 32, 8, 2, 64, 32, 16
     tp_size = 2
     dtype = torch.bfloat16
-    dev = "cuda"
+    dev = DEVICE
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, dtype=dtype, device=dev)
@@ -214,7 +216,7 @@ def test_fused_moe_shared_expert_tp_rejects_local_shards():
     """
     T, E, K, H, F, F_s, tp_size = 32, 8, 2, 64, 32, 16, 2
     dtype = torch.bfloat16
-    dev = "cuda"
+    dev = DEVICE
 
     op = FusedMoeSharedExpertFwdOp(
         num_tokens=T,
@@ -285,7 +287,7 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
     )
     assert op.kernel_map["shared_expert_mlp"] is Replacement
 
-    dtype, dev = torch.bfloat16, "cuda"
+    dtype, dev = torch.bfloat16, DEVICE
     torch.manual_seed(7)
     op(
         torch.randn(T, H, dtype=dtype, device=dev),

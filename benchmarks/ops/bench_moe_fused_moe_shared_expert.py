@@ -36,6 +36,7 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops.moe import FusedMoeSharedExpertFwdOp
+from tileops.utils import get_backend_name, synchronize
 from workloads.moe import FusedMoeSharedExpertWorkload
 
 
@@ -80,6 +81,21 @@ def test_fused_moe_shared_expert_bench(
     routed_scaling_factor,
     dtype,
 ) -> None:
+    if (
+        get_backend_name() == "musa"
+        and num_tokens in (1, 32, 512, 2048, 4096)
+        and (
+            num_experts,
+            top_k,
+            hidden_size,
+            ffn_size,
+            shared_ffn_size,
+            dtype,
+        )
+        == (384, 8, 7168, 2048, 18432, torch.bfloat16)
+    ):
+        pytest.skip("unsupported on MUSA")
+
     test = FusedMoeSharedExpertWorkload(
         num_tokens,
         num_experts,
@@ -119,7 +135,7 @@ def test_fused_moe_shared_expert_bench(
         shared_w_gate_up=shared_w_gate_up,
         shared_w_down=shared_w_down,
     )  # warmup / JIT compile
-    torch.cuda.synchronize()
+    synchronize()
 
     def _tileops_fn(
         hidden, gating, w_gate_up, w_down, correction_bias, shared_w_gate_up, shared_w_down

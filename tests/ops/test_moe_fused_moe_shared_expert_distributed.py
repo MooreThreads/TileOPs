@@ -23,12 +23,25 @@ import torch
 import torch.distributed as dist
 
 from tileops.ops.moe import FusedMoeSharedExpertFwdOp
+from tileops.utils import get_backend_name
+from tileops.utils.skip_reasons import (
+    skip_requires_distributed_launch,
+    skip_requires_vllm,
+)
 
 # Skip entire module if fewer than 2 GPUs
 pytestmark = pytest.mark.skipif(
     torch.cuda.device_count() < 2,
     reason="Distributed TP tests require at least 2 GPUs",
 )
+
+DEVICE = get_backend_name()
+
+
+def _environment_skip_marks(_tp_size: int) -> tuple:
+    """Skip the optional vLLM distributed integration where it cannot run."""
+    return (skip_requires_distributed_launch,)
+
 
 # vLLM optional imports
 try:
@@ -43,8 +56,12 @@ try:
     from vllm.model_executor.models.deepseek_v2 import DeepseekV2MLP
 
     _VLLM_AVAILABLE = True
-except ImportError:
+except (ImportError, AttributeError):
     _VLLM_AVAILABLE = False
+
+skip_requires_optional_dependencies = pytest.mark.skipif(
+    not _VLLM_AVAILABLE, reason="requires optional dependencies"
+)
 
 
 def _setup_vllm_distributed(tp_size: int) -> tuple[int, int]:
@@ -53,38 +70,23 @@ def _setup_vllm_distributed(tp_size: int) -> tuple[int, int]:
     Returns (rank, world_size).
     Skips if not enough GPUs or vLLM unavailable.
     """
-    if not _VLLM_AVAILABLE:
-        pytest.skip("vLLM not installed")
-
-    if not dist.is_available():
-        pytest.skip("torch.distributed not available")
-
-    if "RANK" not in os.environ:
-        pytest.skip("Not launched via torchrun — distributed env vars not set")
-
-    actual_gpus = torch.cuda.device_count()
-    if actual_gpus < tp_size:
-        pytest.skip(f"Test requires {tp_size} GPUs, got {actual_gpus}")
-
+    backend = "mccl" if DEVICE == "musa" else "nccl"
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    getattr(torch, DEVICE).set_device(local_rank)
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend=backend)
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-
-    if world_size != tp_size:
-        pytest.skip(f"Test requires exactly {tp_size} processes, got {world_size}")
-
-    torch.cuda.set_device(rank)
 
     # Initialize vLLM model parallel groups (wraps the existing process group)
     with set_current_vllm_config(VllmConfig()):
         init_distributed_environment(
             world_size=world_size,
             rank=rank,
-            local_rank=rank,
+            local_rank=local_rank,
             distributed_init_method="env://",
-            backend="nccl",
+            backend=backend,
         )
         initialize_model_parallel(tensor_model_parallel_size=tp_size)
 
@@ -106,9 +108,30 @@ class TPFixture:
         (
             "T, H, F_s, tp_size",
             [
-                pytest.param(64, 128, 64, 2, marks=pytest.mark.smoke, id="smoke-tp2"),
-                pytest.param(512, 7168, 18432, 2, marks=pytest.mark.full, id="kimi-k2-tp2"),
-                pytest.param(512, 7168, 18432, 8, marks=pytest.mark.full, id="kimi-k2-tp8"),
+                pytest.param(
+                    64,
+                    128,
+                    64,
+                    2,
+                    marks=[pytest.mark.smoke, *_environment_skip_marks(2)],
+                    id="smoke-tp2",
+                ),
+                pytest.param(
+                    512,
+                    7168,
+                    18432,
+                    2,
+                    marks=[pytest.mark.full, *_environment_skip_marks(2)],
+                    id="kimi-k2-tp2",
+                ),
+                pytest.param(
+                    512,
+                    7168,
+                    18432,
+                    8,
+                    marks=[pytest.mark.full, *_environment_skip_marks(8)],
+                    id="kimi-k2-tp8",
+                ),
             ],
         )
     ]
@@ -127,6 +150,9 @@ class TPFixture:
 # Test: TileOPs FusedMoeSharedExpertFwdOp TP vs vLLM DeepseekV2MLP TP
 
 
+@skip_requires_distributed_launch
+@skip_requires_optional_dependencies
+@skip_requires_vllm
 @TPFixture()
 def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
     """TileOPs shared expert TP vs vLLM DeepseekV2MLP TP.
@@ -138,7 +164,7 @@ def test_shared_expert_tp_vs_vllm(T, H, F_s, tp_size):
     Verifies outputs match after vLLM all-reduce and TileOPs manual all-reduce.
     """
     rank, world_size = _setup_vllm_distributed(tp_size)
-    dev = f"cuda:{rank}"
+    dev = f"{DEVICE}:{int(os.environ.get('LOCAL_RANK', '0'))}"
     dtype = torch.bfloat16
 
     try:

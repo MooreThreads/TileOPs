@@ -26,8 +26,10 @@ from tileops.ops.moe.contracts import (
     layout_from_preset,
     layout_value_guard,
 )
+from tileops.utils import get_backend_name
 
 pytestmark = pytest.mark.smoke
+DEVICE = get_backend_name()
 
 _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
 
@@ -130,11 +132,10 @@ def test_physical_psum_guard_covers_empty_and_capacity_edges(
     assert metadata.device_value_guard(materialized_rows=materialized_rows).item() is expected
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="guard test requires CUDA")
 def test_device_value_validation_returns_a_device_guard_without_host_readback() -> None:
-    metadata = PhysicalPsumMetadata(torch.tensor([0, 2], dtype=torch.int32, device="cuda"))
+    metadata = PhysicalPsumMetadata(torch.tensor([0, 2], dtype=torch.int32, device=DEVICE))
     guard = metadata.device_value_guard(materialized_rows=2)
-    assert guard.device.type == "cuda"
+    assert guard.device.type == DEVICE
     assert guard.dtype is torch.bool
     assert guard.shape == ()
 
@@ -329,10 +330,9 @@ def test_grouped_gemm_ambiguous_and_incompatible_override_fail_explicitly() -> N
         overridden.select_kernel_key(("special", "general"), call)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
 def test_public_ops_build_complete_calls_before_selection() -> None:
-    hidden = torch.empty(2, 8, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.tensor([[0], [1]], dtype=torch.int32, device="cuda")
+    hidden = torch.empty(2, 8, dtype=torch.bfloat16, device=DEVICE)
+    topk_ids = torch.tensor([[0], [1]], dtype=torch.int32, device=DEVICE)
     pre_call = MoePrePermuteFwdOp(
         ContiguousLayoutSpec.tight_physical_psum(), num_local_experts=2
     ).make_call(hidden, topk_ids)
@@ -343,9 +343,9 @@ def test_public_ops_build_complete_calls_before_selection() -> None:
         pre_call.top_k,
     ) == (2, 2, 8, 1)
 
-    ends = torch.tensor([1, 2], dtype=torch.int32, device="cuda")
-    a = torch.empty(2, 8, dtype=torch.bfloat16, device="cuda")
-    b = torch.empty(2, 4, 8, dtype=torch.bfloat16, device="cuda")
+    ends = torch.tensor([1, 2], dtype=torch.int32, device=DEVICE)
+    a = torch.empty(2, 8, dtype=torch.bfloat16, device=DEVICE)
+    b = torch.empty(2, 4, 8, dtype=torch.bfloat16, device=DEVICE)
     gemm_call = MoeGroupedGemmFwdOp(_TIGHT).make_call(a, b, ends)
     assert (gemm_call.m, gemm_call.num_groups, gemm_call.n, gemm_call.k) == (2, 2, 4, 8)
     assert (gemm_call.kind, gemm_call.packing, gemm_call.metadata_kind) == (
@@ -357,9 +357,8 @@ def test_public_ops_build_complete_calls_before_selection() -> None:
     assert gemm_call.ab_dtype is gemm_call.cd_dtype is torch.bfloat16
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
 def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = torch.device(DEVICE, getattr(torch, DEVICE).current_device())
     observed_indices: list[int | None] = []
 
     def fake_sm_version(index: int | None = None) -> int:
@@ -376,9 +375,8 @@ def test_call_architecture_comes_from_the_input_device(monkeypatch: pytest.Monke
     assert observed_indices == [device.index]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
 def test_staged_wiring_builds_all_family_calls_without_an_executable_candidate() -> None:
-    device = torch.device("cuda")
+    device = torch.device(DEVICE)
     ends = torch.tensor([1, 2], dtype=torch.int32, device=device)
     expert_input = torch.empty(2, 8, dtype=torch.bfloat16, device=device)
     w_gate_up = torch.empty(2, 12, 8, dtype=torch.bfloat16, device=device)
@@ -412,9 +410,8 @@ def test_staged_wiring_builds_all_family_calls_without_an_executable_candidate()
     assert (post_call.num_tokens, post_call.top_k, post_call.hidden_size) == (2, 1, 8)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CallSpec records CUDA architecture")
 def test_post_permute_rejects_wrong_masked_geometry_with_same_row_count() -> None:
-    device = torch.device("cuda")
+    device = torch.device(DEVICE)
     layout = MaskedLayoutSpec(max_m=4)
     inverse_indices = torch.tensor([0], dtype=torch.int32, device=device)
     wrong_geometry = torch.empty(1, 8, 4, dtype=torch.bfloat16, device=device)
@@ -427,9 +424,8 @@ def test_post_permute_rejects_wrong_masked_geometry_with_same_row_count() -> Non
         )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
 def test_injected_candidate_uses_common_selection_and_call_spec_cache() -> None:
-    device = torch.device("cuda")
+    device = torch.device(DEVICE)
     ends = torch.tensor([1], dtype=torch.int32, device=device)
     a = torch.ones(1, 4, dtype=torch.bfloat16, device=device)
     b = torch.ones(1, 2, 4, dtype=torch.bfloat16, device=device)
@@ -462,7 +458,6 @@ def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
         MoeExpertMLPFwdOp(_TIGHT, "relu")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="candidate test uses CUDA calls")
 @pytest.mark.parametrize(
     "layout",
     [
@@ -473,21 +468,20 @@ def test_expert_mlp_forwards_caller_replacements_to_both_gemms() -> None:
 def test_pre_permute_ships_one_contiguous_candidate(
     layout: ContiguousLayoutSpec,
 ) -> None:
-    hidden = torch.empty(1, 4, dtype=torch.bfloat16, device="cuda")
-    topk_ids = torch.zeros(1, 1, dtype=torch.int32, device="cuda")
+    hidden = torch.empty(1, 4, dtype=torch.bfloat16, device=DEVICE)
+    topk_ids = torch.zeros(1, 1, dtype=torch.int32, device=DEVICE)
     op = MoePrePermuteFwdOp(layout, num_local_experts=1)
     call = op.make_call(hidden, topk_ids)
     assert op.select_kernel_key(tuple(op.kernel_map), call) == "contiguous"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     """The tensor-only staged boundary preserves every routed contribution."""
     tokens, top_k, experts, hidden = 4, 2, 4, 64
-    x = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
-    local_ids = torch.tensor([[0, 1], [2, 3], [0, 2], [1, 3]], dtype=torch.int32, device="cuda")
-    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    x = torch.randn(tokens, hidden, dtype=dtype, device=DEVICE)
+    local_ids = torch.tensor([[0, 1], [2, 3], [0, 2], [1, 3]], dtype=torch.int32, device=DEVICE)
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device=DEVICE)
     layout = ContiguousLayoutSpec.tight_physical_psum()
 
     pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
@@ -496,7 +490,7 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert metadata.shape == (experts,)
     assert inverse.shape == (tokens * top_k,)
 
-    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    token_rows = torch.arange(tokens * top_k, device=DEVICE) // top_k
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
 
     post = MoePostPermuteFwdOp(layout)
@@ -508,7 +502,6 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert post.eval_roofline() == (1024, 1600)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize(
     "tokens,top_k,experts,hidden",
     [(512, 8, 128, 128), (32, 8, 128, 7168)],
@@ -516,19 +509,19 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
 def test_staged_tight_optimized_shapes_round_trip(
     tokens: int, top_k: int, experts: int, hidden: int
 ) -> None:
-    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda")
+    x = torch.randn(tokens, hidden, dtype=torch.bfloat16, device=DEVICE)
     local_ids = (
-        torch.arange(tokens * top_k, dtype=torch.int32, device="cuda")
+        torch.arange(tokens * top_k, dtype=torch.int32, device=DEVICE)
         .remainder(experts)
         .reshape(tokens, top_k)
     )
-    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device=DEVICE)
     layout = ContiguousLayoutSpec.tight_physical_psum()
     pre = MoePrePermuteFwdOp(layout, num_local_experts=experts)
 
     expert_input, physical_ends, inverse = pre(x, local_ids)
 
-    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    token_rows = torch.arange(tokens * top_k, device=DEVICE) // top_k
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows], rtol=0, atol=0)
     counts = torch.bincount(local_ids.flatten().long(), minlength=experts)
     torch.testing.assert_close(physical_ends, counts.cumsum(0).int(), rtol=0, atol=0)
@@ -537,13 +530,12 @@ def test_staged_tight_optimized_shapes_round_trip(
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     tokens, top_k, experts, hidden, alignment = 4, 2, 4, 64, 4
-    x = torch.randn(tokens, hidden, dtype=dtype, device="cuda")
-    local_ids = torch.tensor([[0, 0], [0, 2], [2, 2], [2, 0]], dtype=torch.int32, device="cuda")
-    weights = torch.rand(tokens, top_k, dtype=torch.float32, device="cuda")
+    x = torch.randn(tokens, hidden, dtype=dtype, device=DEVICE)
+    local_ids = torch.tensor([[0, 0], [0, 2], [2, 2], [2, 0]], dtype=torch.int32, device=DEVICE)
+    weights = torch.rand(tokens, top_k, dtype=torch.float32, device=DEVICE)
     layout = ContiguousLayoutSpec.aligned_per_row(alignment)
     capacity = tokens * top_k + experts * (alignment - 1)
 
@@ -553,7 +545,7 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     assert row_expert_ids.shape == (capacity,)
     assert inverse.shape == (tokens * top_k,)
 
-    token_rows = torch.arange(tokens * top_k, device="cuda") // top_k
+    token_rows = torch.arange(tokens * top_k, device=DEVICE) // top_k
     torch.testing.assert_close(expert_input[inverse.long()], x[token_rows])
     assert row_expert_ids.tolist() == [0] * 4 + [2] * 4 + [experts] * (capacity - 8)
     torch.testing.assert_close(expert_input[8:], torch.zeros_like(expert_input[8:]))
@@ -564,10 +556,9 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     torch.testing.assert_close(output.float(), expected, rtol=2e-2, atol=2e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="make_call records CUDA architecture")
 def test_grouped_gemm_make_call_checks_geometry_against_the_layout() -> None:
     """Shapes are validated against the declared layout, never used to guess it."""
-    device = torch.device("cuda")
+    device = torch.device(DEVICE)
     b = torch.empty(2, 4, 8, dtype=torch.bfloat16, device=device)
     a = torch.empty(6, 8, dtype=torch.bfloat16, device=device)
     ends = torch.tensor([2, 6], dtype=torch.int32, device=device)
@@ -622,10 +613,9 @@ def test_grouped_gemm_make_call_checks_geometry_against_the_layout() -> None:
         fused_op.make_call(a, b, ends, out=torch.empty(6, 4, dtype=torch.bfloat16, device=device))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="selection records CUDA architecture")
 def test_grouped_gemm_call_no_candidate_serves_reports_no_implementation() -> None:
     """A call outside every shipped candidate's region says so, rather than crashing."""
-    device = torch.device("cuda")
+    device = torch.device(DEVICE)
     op = MoeGroupedGemmFwdOp(ContiguousLayoutSpec.tight_per_row())  # not claimed yet
     assert set(op.kernel_map) == {"grouped_gemm"}
     with pytest.raises(ValueError, match="no implementation serves this call"):

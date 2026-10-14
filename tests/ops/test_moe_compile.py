@@ -35,6 +35,9 @@ from tileops.ops.moe import (
     MoePrePermuteFwdOp,
 )
 from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 _NUM_EXPERTS = 4
 _TOP_K = 2
@@ -57,10 +60,10 @@ def _assert_same_layout(compiled: tuple, eager: tuple) -> None:
 
 def _grouped_gemm_inputs(numel: int, num_experts: int, n: int, k: int):
     """Tight rows split evenly across experts, plus the psum ends."""
-    a = torch.randn(numel, k, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(num_experts, n, k, dtype=torch.bfloat16, device="cuda")
+    a = torch.randn(numel, k, dtype=torch.bfloat16, device=DEVICE)
+    b = torch.randn(num_experts, n, k, dtype=torch.bfloat16, device=DEVICE)
     per_expert = numel // num_experts
-    ends = torch.arange(1, num_experts + 1, dtype=torch.int32, device="cuda") * per_expert
+    ends = torch.arange(1, num_experts + 1, dtype=torch.int32, device=DEVICE) * per_expert
     return a, b, ends
 
 
@@ -68,7 +71,7 @@ def _permute_align_case():
     def make():
         return MoePermuteAlignFwdOp(_TOKENS, _TOP_K, _NUM_EXPERTS, block_size=4)
 
-    topk_ids = torch.randint(0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda")
+    topk_ids = torch.randint(0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device=DEVICE)
     # Only the padded token count is reproducible: a slot inside an expert is claimed
     # by ``atomic_add``, so two runs order the same tokens differently.
     return make, (topk_ids,), (2,)
@@ -81,9 +84,9 @@ def _pre_permute_case(dtype: torch.dtype = torch.bfloat16):
             num_local_experts=_NUM_EXPERTS,
         )
 
-    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=dtype, device="cuda")
+    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=dtype, device=DEVICE)
     local_expert_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda"
+        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device=DEVICE
     )
     # Atomic slot assignment makes expert_input and inverse_indices non-deterministic.
     return make, (hidden_states, local_expert_ids), (1,)
@@ -96,9 +99,9 @@ def _aligned_pre_permute_case():
             num_local_experts=_NUM_EXPERTS,
         )
 
-    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device="cuda")
+    hidden_states = torch.randn(_TOKENS, _HIDDEN, dtype=torch.bfloat16, device=DEVICE)
     local_expert_ids = torch.randint(
-        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device="cuda"
+        0, _NUM_EXPERTS, (_TOKENS, _TOP_K), dtype=torch.int32, device=DEVICE
     )
     # Per-row metadata is reproducible; atomic slot assignment is not.
     return make, (hidden_states, local_expert_ids), (1,)
@@ -122,9 +125,9 @@ def _staged_grouped_gemm_masked_case():
     def make():
         return MoeGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
 
-    a = torch.randn(_NUM_EXPERTS, max_m, k, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(_NUM_EXPERTS, n, k, dtype=torch.bfloat16, device="cuda")
-    masked_m = torch.tensor([32, 0, 17, 32], dtype=torch.int32, device="cuda")
+    a = torch.randn(_NUM_EXPERTS, max_m, k, dtype=torch.bfloat16, device=DEVICE)
+    b = torch.randn(_NUM_EXPERTS, n, k, dtype=torch.bfloat16, device=DEVICE)
+    masked_m = torch.tensor([32, 0, 17, 32], dtype=torch.int32, device=DEVICE)
     # Rows past an expert's valid count hold unspecified values.
     return make, (a, b, masked_m), ()
 
@@ -164,10 +167,10 @@ def test_leaf_op_owns_its_graph_nodes(case) -> None:
 def test_post_permute_owns_its_graph_nodes(dtype: torch.dtype) -> None:
     """The staged allocating and in-place registrations own their graph nodes."""
     numel = _TOKENS * _TOP_K
-    expert_output = torch.randn(numel, _HIDDEN, dtype=dtype, device="cuda")
-    inverse_indices = torch.arange(numel, dtype=torch.int32, device="cuda")
-    topk_weights = torch.rand(_TOKENS, _TOP_K, dtype=torch.float32, device="cuda")
-    out = torch.empty(_TOKENS, _HIDDEN, dtype=dtype, device="cuda")
+    expert_output = torch.randn(numel, _HIDDEN, dtype=dtype, device=DEVICE)
+    inverse_indices = torch.arange(numel, dtype=torch.int32, device=DEVICE)
+    topk_weights = torch.rand(_TOKENS, _TOP_K, dtype=torch.float32, device=DEVICE)
+    out = torch.empty(_TOKENS, _HIDDEN, dtype=dtype, device=DEVICE)
 
     def make():
         return MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
@@ -202,14 +205,14 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     )
     assert experts.compile_op_names == ()
 
-    hidden_states = torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda")
+    hidden_states = torch.randn(tokens, hidden, dtype=torch.bfloat16, device=DEVICE)
     args = (
-        torch.empty(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
+        torch.empty(tokens, hidden, dtype=torch.bfloat16, device=DEVICE),
         hidden_states,
-        torch.randn(num_experts, 2 * ffn, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(num_experts, hidden, ffn, dtype=torch.bfloat16, device="cuda"),
-        torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
-        torch.randint(0, num_experts, (tokens, top_k), dtype=torch.int32, device="cuda"),
+        torch.randn(num_experts, 2 * ffn, hidden, dtype=torch.bfloat16, device=DEVICE),
+        torch.randn(num_experts, hidden, ffn, dtype=torch.bfloat16, device=DEVICE),
+        torch.rand(tokens, top_k, dtype=torch.float32, device=DEVICE),
+        torch.randint(0, num_experts, (tokens, top_k), dtype=torch.int32, device=DEVICE),
         hidden_states.new_empty(0),
         hidden_states.new_empty(0),
     )
@@ -239,14 +242,14 @@ def test_small_route_experts_compile_to_the_indexed_leaf() -> None:
     experts = FusedMoEExpertsFwdOp(tokens, experts_count, top_k, hidden, ffn)
     ws1_shape, ws2_shape = experts.workspace_shapes(tokens, ffn, hidden, top_k, experts_count)
     args = (
-        torch.empty(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(tokens, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(experts_count, 2 * ffn, hidden, dtype=torch.bfloat16, device="cuda"),
-        torch.randn(experts_count, hidden, ffn, dtype=torch.bfloat16, device="cuda"),
-        torch.rand(tokens, top_k, dtype=torch.float32, device="cuda"),
-        torch.randint(0, experts_count, (tokens, top_k), dtype=torch.int32, device="cuda"),
-        torch.empty(ws1_shape, dtype=torch.bfloat16, device="cuda"),
-        torch.empty(ws2_shape, dtype=torch.bfloat16, device="cuda"),
+        torch.empty(tokens, hidden, dtype=torch.bfloat16, device=DEVICE),
+        torch.randn(tokens, hidden, dtype=torch.bfloat16, device=DEVICE),
+        torch.randn(experts_count, 2 * ffn, hidden, dtype=torch.bfloat16, device=DEVICE),
+        torch.randn(experts_count, hidden, ffn, dtype=torch.bfloat16, device=DEVICE),
+        torch.rand(tokens, top_k, dtype=torch.float32, device=DEVICE),
+        torch.randint(0, experts_count, (tokens, top_k), dtype=torch.int32, device=DEVICE),
+        torch.empty(ws1_shape, dtype=torch.bfloat16, device=DEVICE),
+        torch.empty(ws2_shape, dtype=torch.bfloat16, device=DEVICE),
     )
 
     assert traced_call_targets(experts, *args) == {

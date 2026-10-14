@@ -13,6 +13,10 @@ from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPE
 from tileops.ops.moe.routed_expert.fused_routed_expert import (
     FusedMoEExpertsFwdOp,
 )
+from tileops.utils import get_backend_name
+from tileops.utils.skip_reasons import skip_requires_cuda_graph
+
+DEVICE = get_backend_name()
 
 
 def _torch_ref_moe(hidden, w1, w2, topk_weights, topk_ids):
@@ -76,22 +80,22 @@ def _torch_ref_moe_activation(hidden, w1, w2, topk_weights, topk_ids, activation
 
 def _small_route_case(ids, dtype=torch.bfloat16):
     T, E, K, H, F_dim = 4, 8, 2, 128, 256
-    hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
-    w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
-    w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
-    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), -1)
-    topk_ids = torch.tensor(ids, dtype=torch.int32, device="cuda")
+    hidden = torch.randn(T, H, dtype=dtype, device=DEVICE) * 0.1
+    w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device=DEVICE) * 0.02
+    w2 = torch.randn(E, H, F_dim, dtype=dtype, device=DEVICE) * 0.02
+    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device=DEVICE), -1)
+    topk_ids = torch.tensor(ids, dtype=torch.int32, device=DEVICE)
     experts = FusedMoEExpertsFwdOp(T, E, K, H, F_dim)
     ws1, ws2 = experts.workspace_shapes(T, F_dim, H, K, E)
     args = (
-        torch.empty(T, H, dtype=dtype, device="cuda"),
+        torch.empty(T, H, dtype=dtype, device=DEVICE),
         hidden,
         w1,
         w2,
         weights,
         topk_ids,
-        torch.empty(ws1, dtype=dtype, device="cuda"),
-        torch.empty(ws2, dtype=dtype, device="cuda"),
+        torch.empty(ws1, dtype=dtype, device=DEVICE),
+        torch.empty(ws2, dtype=dtype, device=DEVICE),
     )
     return experts, args
 
@@ -172,11 +176,11 @@ def moe_meta():
 def moe_tensors(request):
     T, H, F_dim, E, K = 128, 256, 128, 4, 2
     dtype = request.param
-    hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
-    w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
-    w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
-    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
-    ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+    hidden = torch.randn(T, H, dtype=dtype, device=DEVICE) * 0.1
+    w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device=DEVICE) * 0.02
+    w2 = torch.randn(E, H, F_dim, dtype=dtype, device=DEVICE) * 0.02
+    weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device=DEVICE), dim=-1)
+    ids = torch.randint(0, E, (T, K), dtype=torch.int32, device=DEVICE)
     return dict(
         T=T,
         H=H,
@@ -207,15 +211,15 @@ class TestFusedMoEExpertsFwdOp:
 
         torch.manual_seed(0)
         dtype = torch.bfloat16
-        hidden = torch.randn(T_count, H, dtype=dtype, device="cuda") * 0.1
-        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
-        w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
+        hidden = torch.randn(T_count, H, dtype=dtype, device=DEVICE) * 0.1
+        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device=DEVICE) * 0.02
+        w2 = torch.randn(E, H, F_dim, dtype=dtype, device=DEVICE) * 0.02
         weights = torch.softmax(
-            torch.randn(T_count, top_k, dtype=torch.float32, device="cuda"), dim=-1
+            torch.randn(T_count, top_k, dtype=torch.float32, device=DEVICE), dim=-1
         )
-        ids = torch.randint(0, E, (T_count, top_k), dtype=torch.int32, device="cuda")
-        out = torch.empty(T_count, H, dtype=dtype, device="cuda")
-        ws = torch.empty(0, dtype=dtype, device="cuda")
+        ids = torch.randint(0, E, (T_count, top_k), dtype=torch.int32, device=DEVICE)
+        out = torch.empty(T_count, H, dtype=dtype, device=DEVICE)
+        ws = torch.empty(0, dtype=dtype, device=DEVICE)
 
         experts.forward(out, hidden, w1, w2, weights, ids, ws, ws)
 
@@ -267,6 +271,7 @@ class TestFusedMoEExpertsFwdOp:
         torch.testing.assert_close(args[0].float(), expected.float(), rtol=2e-2, atol=1e-1)
 
     @pytest.mark.smoke
+    @skip_requires_cuda_graph
     def test_small_route_dispatch_replays_in_cuda_graph(self):
         experts, args = _small_route_case([[0, 1], [2, 3], [4, 5], [6, 7]])
         experts.forward(*args)
@@ -277,7 +282,7 @@ class TestFusedMoEExpertsFwdOp:
             experts.forward(*args)
 
         args[5].copy_(
-            torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device="cuda")
+            torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device=DEVICE)
         )
         graph.replay()
         torch.cuda.synchronize()
@@ -323,9 +328,9 @@ class TestFusedMoEExpertsFwdOp:
 
         ref_out = _torch_ref_moe(d["hidden"], d["w1"], d["w2"], d["weights"], d["ids"])
 
-        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
-        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device=DEVICE)
+        ws1 = torch.empty(0, dtype=d["dtype"], device=DEVICE)
+        ws2 = torch.empty(0, dtype=d["dtype"], device=DEVICE)
         experts.forward(
             output,
             d["hidden"],
@@ -344,11 +349,11 @@ class TestFusedMoEExpertsFwdOp:
         """Cover non-tile-aligned gate-up and down dimensions."""
         T, H, F_dim, E, K = 64, 128, 96, 4, 2
         dtype = torch.bfloat16
-        hidden = torch.randn(T, H, dtype=dtype, device="cuda") * 0.1
-        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device="cuda") * 0.02
-        w2 = torch.randn(E, H, F_dim, dtype=dtype, device="cuda") * 0.02
-        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device="cuda"), dim=-1)
-        ids = torch.randint(0, E, (T, K), dtype=torch.int32, device="cuda")
+        hidden = torch.randn(T, H, dtype=dtype, device=DEVICE) * 0.1
+        w1 = torch.randn(E, 2 * F_dim, H, dtype=dtype, device=DEVICE) * 0.02
+        w2 = torch.randn(E, H, F_dim, dtype=dtype, device=DEVICE) * 0.02
+        weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device=DEVICE), dim=-1)
+        ids = torch.randint(0, E, (T, K), dtype=torch.int32, device=DEVICE)
 
         experts = FusedMoEExpertsFwdOp(
             num_tokens=T,
@@ -359,9 +364,9 @@ class TestFusedMoEExpertsFwdOp:
         )
 
         ref_out = _torch_ref_moe(hidden, w1, w2, weights, ids)
-        output = torch.empty(T, H, dtype=dtype, device="cuda")
-        ws1 = torch.empty(0, dtype=dtype, device="cuda")
-        ws2 = torch.empty(0, dtype=dtype, device="cuda")
+        output = torch.empty(T, H, dtype=dtype, device=DEVICE)
+        ws1 = torch.empty(0, dtype=dtype, device=DEVICE)
+        ws2 = torch.empty(0, dtype=dtype, device=DEVICE)
         experts.forward(
             output,
             hidden,
@@ -396,9 +401,9 @@ class TestFusedMoEExpertsFwdOp:
             d["ids"],
             activation=activation,
         )
-        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device="cuda")
-        ws1 = torch.empty(0, dtype=d["dtype"], device="cuda")
-        ws2 = torch.empty(0, dtype=d["dtype"], device="cuda")
+        output = torch.empty(d["T"], d["H"], dtype=d["dtype"], device=DEVICE)
+        ws1 = torch.empty(0, dtype=d["dtype"], device=DEVICE)
+        ws2 = torch.empty(0, dtype=d["dtype"], device=DEVICE)
         experts.forward(
             output,
             d["hidden"],

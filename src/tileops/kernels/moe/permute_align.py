@@ -30,6 +30,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import is_backend_tensor
 
 __all__ = ["MoePermuteAlignKernel"]
 
@@ -319,7 +320,7 @@ class MoePermuteAlignKernel(Kernel):
         ```
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -364,7 +365,7 @@ class MoePermuteAlignKernel(Kernel):
             num_tokens_post_pad: [1] int32
         """
         assert topk_ids.dtype == torch.int32, "topk_ids must be int32"
-        assert topk_ids.is_cuda, "topk_ids must be on CUDA"
+        assert is_backend_tensor(topk_ids), "topk_ids must be on the configured backend"
         assert topk_ids.numel() == self.numel, (
             f"Expected numel={self.numel}, got {topk_ids.numel()}"
         )
