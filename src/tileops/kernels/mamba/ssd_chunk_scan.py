@@ -60,6 +60,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 __all__ = ["SSDChunkScanFwdKernel"]
 
@@ -74,6 +75,12 @@ def _ssd_chunk_scan_fwd_kernel(
     d_state: int,
     n_groups: int,
     dtype: str = "float16",
+    block_l: int = 64,
+    block_p: int = 64,
+    block_n: int = 64,
+    block_s: int = 64,
+    threads: int = 128,
+    num_stages: int = 3,
     diagonal_microtile_size: int = 32,  # 32=M32 (only for block_l=block_s=64)
 ) -> Callable:
     accum_dtype = "float"
@@ -89,14 +96,7 @@ def _ssd_chunk_scan_fwd_kernel(
     HEADS_PER_GROUP = H // G
 
     @tilelang.jit(out_idx=[-1])
-    def kernel_func(
-        block_l: int,
-        block_p: int,
-        block_n: int,
-        block_s: int,
-        threads: int,
-        num_stages: int,
-    ):
+    def kernel_func():
         # Official layouts
         x_shape = (B, S, H, P)  # [B, S, H, P]
         cb_shape = (B, C, G, Q, Q)  # [B, C, G, L, L]  group-owned
@@ -147,15 +147,20 @@ def _ssd_chunk_scan_fwd_kernel(
                 c_tile = T.alloc_shared((block_l, block_n), dtype)
                 state_tile = T.alloc_shared((block_n, block_p), dtype)
 
-                # Swizzled layouts eliminate bank conflicts and enable tensor-core GEMMs.
-                T.annotate_layout(
-                    {
-                        c_tile: tilelang.layout.make_swizzled_layout(c_tile),
-                        state_tile: tilelang.layout.make_swizzled_layout(state_tile),
-                    }
-                )
+                # MUSA's GEMM layout inference conflicts with these explicit CUDA layouts.
+                if get_backend_name() != "musa":
+                    T.annotate_layout(
+                        {
+                            c_tile: tilelang.layout.make_swizzled_layout(c_tile),
+                            state_tile: tilelang.layout.make_swizzled_layout(state_tile),
+                        }
+                    )
 
-                for n_blk in T.Pipelined(T.ceildiv(N, block_n), num_stages=num_stages):
+                for n_blk in (
+                    T.Serial(T.ceildiv(N, block_n))
+                    if get_backend_name() == "musa"
+                    else T.Pipelined(T.ceildiv(N, block_n), num_stages=num_stages)
+                ):
                     n0 = n_blk * block_n
 
                     # C_mat[b, chunk_start+l, g, n]  layout: [B, S, G, N]
@@ -250,15 +255,15 @@ def _ssd_chunk_scan_fwd_kernel(
                 # exp_s[ss]  = exp(anchor - dA_s[ss]) * dt[ss]
                 exp_l = T.alloc_shared((block_l,), accum_dtype)
                 exp_s = T.alloc_shared((block_s,), accum_dtype)
-                lcb_cast = T.alloc_fragment((block_l, block_s), dtype)
+                lcb_cast = T.alloc_shared((block_l, block_s), dtype)
 
-                # Swizzled layouts for causal GEMM operands.
-                T.annotate_layout(
-                    {
-                        cb_tile: tilelang.layout.make_swizzled_layout(cb_tile),
-                        x_tile: tilelang.layout.make_swizzled_layout(x_tile),
-                    }
-                )
+                if get_backend_name() != "musa":
+                    T.annotate_layout(
+                        {
+                            cb_tile: tilelang.layout.make_swizzled_layout(cb_tile),
+                            x_tile: tilelang.layout.make_swizzled_layout(x_tile),
+                        }
+                    )
 
                 # anchor = dA_smem at l0, the largest value in this l-tile.
                 safe_l0 = T.min(l0, Q - 1)
@@ -283,7 +288,11 @@ def _ssd_chunk_scan_fwd_kernel(
                 T.sync_threads()
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
-                for s_blk in T.Pipelined(T.ceildiv(l0 + block_l, block_s), num_stages=num_stages):
+                for s_blk in (
+                    T.Serial(T.ceildiv(l0 + block_l, block_s))
+                    if get_backend_name() == "musa"
+                    else T.Pipelined(T.ceildiv(l0 + block_l, block_s), num_stages=num_stages)
+                ):
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
@@ -454,7 +463,6 @@ def _ssd_chunk_scan_fwd_kernel(
                                     T.cast(T.float32(0.0), dtype),
                                 )
 
-                    # acc += lcb_cast @ x_tile
                     T.gemm(lcb_cast, x_tile, acc)
 
                 # write back: out[b, chunk_start+l, h, p]  layout: [B, S, H, P]
@@ -515,7 +523,7 @@ class SSDChunkScanFwdKernel(Kernel):
       out:         [B, S, H, P]        float32     seqlen-fused
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -539,6 +547,8 @@ class SSDChunkScanFwdKernel(Kernel):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
+        self.init_config(config, tune)
+        cfg = self.config
         self.kernel = _ssd_chunk_scan_fwd_kernel(
             batch,
             num_chunks,
@@ -548,19 +558,24 @@ class SSDChunkScanFwdKernel(Kernel):
             d_state,
             n_groups,
             self.dtype_str,
+            int(cfg["block_l"]),
+            int(cfg["block_p"]),
+            int(cfg["block_n"]),
+            int(cfg["block_s"]),
+            int(cfg["threads"]),
+            int(cfg["num_stages"]),
         )
-        self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
         # threads=128 (4 warps) balances parallelism with register pressure.
         # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
         return {
-            "block_l": 64,
+            "block_l": 128,
             "block_p": 64,
             "block_n": min(64, self.d_state),
             "block_s": 64,
-            "threads": 128,
+            "threads": 256,
             "num_stages": 3,
         }
 
@@ -635,14 +650,7 @@ class SSDChunkScanFwdKernel(Kernel):
         Returns:
             out: [B, S, H, P]  float32
         """
-        return self.kernel(
-            self.config["block_l"],
-            self.config["block_p"],
-            self.config["block_n"],
-            self.config["block_s"],
-            self.config["threads"],
-            self.config["num_stages"],
-        )(
+        return self.kernel()(
             x.contiguous(),
             cb.contiguous(),
             dA_cumsum.contiguous(),

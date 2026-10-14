@@ -306,7 +306,7 @@ class SSDChunkStateFwdKernel(Kernel):
 
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     # ``seq_idx`` masks contributions; the trip count comes from the chunk
     # length.

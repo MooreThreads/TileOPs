@@ -31,6 +31,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import is_backend_tensor
 
 from ..op_base import Op
 from .cb_producer import CBProducerFwdOp
@@ -211,7 +212,7 @@ class Mamba2FwdOp(Op):
             y:            (batch, seqlen, n_heads, d_head)   float32
             final_states: (batch, n_heads, d_head, d_state)  float32, or None
         """
-        if not x.is_cuda:
+        if not is_backend_tensor(x):
             raise ValueError("x must be a CUDA tensor")
         if x.ndim != 4:
             raise ValueError("x must have shape [batch, seqlen, n_heads, d_head]")

@@ -13,7 +13,6 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     then_dtype,
@@ -241,6 +240,6 @@ def test_mamba2_fwd_bench(
 
     reference_args = (x, dt, A, B, C)
     functors["torch-ref"] = (_torch_wrapper, reference_args)
-    functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
+    # functors[TORCH_COMPILE_TAG] = (compiled_reference(_torch_wrapper), reference_args)
 
     bm.compare(functors, x, dt, A, B, C, dt_bias, initial_states)

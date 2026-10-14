@@ -210,7 +210,7 @@ def test_da_cumsum_fwd_bench(
         )
 
     functors["torch-ref"] = baseline
-    functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
+    # functors[TORCH_COMPILE_TAG] = compiled_reference(baseline)
 
     bm.compare(functors, *inputs)
 
@@ -371,10 +371,12 @@ def ssd_chunk_state_fwd_ref(
         same = ((seq_end >= 0) & (seq_chunked == seq_end)).unsqueeze(3)
         weight = weight * same.permute(0, 1, 3, 2)
 
-    w = weight.permute(0, 1, 3, 2).unsqueeze(-1).unsqueeze(-1)
-    contrib = w * B_heads.unsqueeze(-1) * x_chunked.unsqueeze(-2)
-    out = contrib.sum(dim=2)
-    return out.permute(0, 1, 2, 4, 3)
+    # Contract Q directly instead of materializing B*C*Q*H*P*N contributions.
+    # The latter is hundreds of GiB for the 32K seq-idx row and is only a
+    # reference implementation artifact.
+    B_heads = B_heads.permute(0, 1, 3, 2, 4)
+    x_chunked = x_chunked.permute(0, 1, 3, 2, 4)
+    return torch.einsum("bchq,bchqn,bchqp->bchpn", weight, B_heads, x_chunked)
 
 
 @pytest.mark.parametrize(
@@ -570,9 +572,10 @@ def test_ssd_decode_bench(
 
     reference_args = (A, dt, x, B_in, C_in, state_bl)
     functors["torch-ref"] = (baseline, reference_args)
-    # Its own state copy again: inductor's graph mutates it the same way eager does.
-    functors[TORCH_COMPILE_TAG] = (
-        compiled_reference(baseline),
-        (A, dt, x, B_in, C_in, state.clone()),
-    )
+    # The MUSA TorchInductor lowering produces a stride-0 bmm operand here;
+    # keep the eager reference, but do not benchmark that invalid baseline.
+    # functors[TORCH_COMPILE_TAG] = (
+    #     compiled_reference(baseline),
+    #     (A, dt, x, B_in, C_in, state.clone()),
+    # )
     bm.compare(functors, A, dt, x, B_in, C_in, state_for_op)

@@ -6,6 +6,7 @@ import torch
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import DaCumsumFwdKernel
 from tileops.manifest import load_manifest
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -177,7 +178,7 @@ class DaCumsumFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not dt.is_cuda:
+        if not is_backend_tensor(dt):
             raise ValueError("dt must be a CUDA tensor")
         if dt.dtype != torch.float32:
             raise ValueError(f"Expected float32 dt, got {dt.dtype}")

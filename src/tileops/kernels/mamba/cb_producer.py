@@ -4,7 +4,7 @@ Mamba-2 CB (C@B) matrix producer kernel.
 Computes: cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
 with causal mask: cb[b,c,g,l,s] = 0 if s > l
 
-Replaces torch.compile(einsum) with specialized TileOps kernel that:
+Replaces torch.compile(einsum) with specialized TileOPs kernel that:
 1. Exploits causal structure (only compute lower triangle)
 2. Fuses mask application
 3. Uses optimal tile sizes for QxQxN GEMM
@@ -29,6 +29,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 __all__ = ["CBProducerKernel"]
 
@@ -41,6 +42,10 @@ def _cb_producer_kernel(
     chunk_len: int,
     d_state: int,
     dtype: str,
+    block_l: int,
+    block_s: int,
+    block_n: int,
+    threads: int,
 ) -> Callable:
     """
     Compute CB[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
@@ -59,12 +64,7 @@ def _cb_producer_kernel(
     S = C * Q  # Total sequence length
 
     @tilelang.jit(out_idx=[-1])
-    def kernel_func(
-        block_l: int,
-        block_s: int,
-        block_n: int,
-        threads: int,
-    ):
+    def kernel_func():
         C_shape = (B, S, G, N)  # Accept contiguous (B, S, G, N) shape
         B_shape = (B, S, G, N)  # Accept contiguous (B, S, G, N) shape
         cb_shape = (B, C, G, Q, Q)
@@ -97,12 +97,13 @@ def _cb_producer_kernel(
                     B_tile = T.alloc_shared((block_s, block_n), dtype)
 
                     # Swizzled layout for better memory coalescing
-                    T.annotate_layout(
-                        {
-                            C_tile: tilelang.layout.make_swizzled_layout(C_tile),
-                            B_tile: tilelang.layout.make_swizzled_layout(B_tile),
-                        }
-                    )
+                    if get_backend_name() != "musa":
+                        T.annotate_layout(
+                            {
+                                C_tile: tilelang.layout.make_swizzled_layout(C_tile),
+                                B_tile: tilelang.layout.make_swizzled_layout(B_tile),
+                            }
+                        )
 
                     acc = T.alloc_fragment((block_l, block_s), accum_dtype)
                     T.clear(acc)
@@ -205,7 +206,7 @@ class CBProducerKernel(Kernel):
         tune: Whether to autotune
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -226,19 +227,29 @@ class CBProducerKernel(Kernel):
         self.d_state = d_state
         self.dtype = dtype
 
-        self.kernel = _cb_producer_kernel(
-            batch, num_chunks, n_groups, chunk_len, d_state, self.dtype_str
-        )
         self.init_config(config, tune)
+        cfg = self.config
+        self.kernel = _cb_producer_kernel(
+            batch,
+            num_chunks,
+            n_groups,
+            chunk_len,
+            d_state,
+            self.dtype_str,
+            int(cfg["block_l"]),
+            int(cfg["block_s"]),
+            int(cfg["block_n"]),
+            int(cfg["threads"]),
+        )
 
     @property
     def default_config(self) -> dict:
         """Default tile configuration optimized for typical Mamba workloads."""
         return {
-            "block_l": 64,
+            "block_l": 128,
             "block_s": 64,
             "block_n": 64,
-            "threads": 128,
+            "threads": 256,
         }
 
     @property
@@ -275,12 +286,7 @@ class CBProducerKernel(Kernel):
         """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        return self.kernel(
-            self.config["block_l"],
-            self.config["block_s"],
-            self.config["block_n"],
-            self.config["threads"],
-        )(
+        return self.kernel()(
             C_mat,
             B_mat,
         )

@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba import SSDStatePassingFwdKernel
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -122,7 +123,7 @@ class SSDStatePassingFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not states.is_cuda:
+        if not is_backend_tensor(states):
             raise ValueError("states must be a CUDA tensor")
         if states.ndim != 4:
             raise ValueError("states must have shape [batch, num_chunks, n_heads, d_state]")
