@@ -11,6 +11,7 @@ from benchmarks.benchmark_base import (
 from benchmarks.ops.attention.workload_args import mha_qkv_args
 from tileops.manifest import load_workloads
 from tileops.ops import MultiHeadAttentionBwdOp
+from tileops.utils.skip_reasons import skip_missing_baseline
 from workloads.attention.mha import MhaBwdWorkload
 
 
@@ -52,10 +53,12 @@ def _torch_mha_bwd(test):
 
 
 _MHA_BWD_BENCH_PARAMS = workload_params(
-    load_workloads(MultiHeadAttentionBwdOp), then_dtype(mha_qkv_args, tune=True)
+    load_workloads(MultiHeadAttentionBwdOp),
+    then_dtype(mha_qkv_args, tune=True),
 )
 
 
+@skip_missing_baseline
 @pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype, tune", _MHA_BWD_BENCH_PARAMS)
 def test_mha_bwd_bench(
     batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype, tune: bool

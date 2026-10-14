@@ -2,10 +2,11 @@ import functools
 from typing import Any, Callable, Optional
 
 import tilelang
+import tilelang.language as T
 import torch
-from tilelang import language as T
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from .online_softmax import LOG2E
 
@@ -30,6 +31,10 @@ def _nsa_topk_varlen_kernel(
     # The shared-memory tiles span the whole head dimension: a narrower tile
     # would silently truncate the QK contraction.
     bk = dim
+    use_musa = get_backend_name() == "musa"
+    # MP31 SQMMA wants the N tile to be a multiple of 64. The manifest bc is 32,
+    # so the GEMM tile is padded and the ranking only reads the real columns.
+    gemm_bc = bc if not use_musa or bc % 64 == 0 else ((bc + 63) // 64) * 64
 
     @tilelang.jit(
         out_idx=[-1],
@@ -43,29 +48,79 @@ def _nsa_topk_varlen_kernel(
         @T.macro
         def odd_even_sort(indices, values, size):
             eps = 1e-5
-            for _ in T.serial(size):
-                for i in T.Parallel(size // 2):
-                    v1 = values[i * 2]
-                    v2 = values[i * 2 + 1]
-                    idx1 = indices[i * 2]
-                    idx2 = indices[i * 2 + 1]
-                    v_diff = T.abs(v1 - v2)
-                    is_equal = v_diff < eps
-                    if v1 < v2 or (is_equal and idx1 < idx2):
-                        values[i * 2], values[i * 2 + 1] = v2, v1
-                        indices[i * 2], indices[i * 2 + 1] = idx2, idx1
-                T.sync_threads()
-                for i in T.Parallel((size - 1) // 2):
-                    v1 = values[i * 2 + 1]
-                    v2 = values[i * 2 + 2]
-                    idx1 = indices[i * 2 + 1]
-                    idx2 = indices[i * 2 + 2]
-                    v_diff = T.abs(v1 - v2)
-                    is_equal = v_diff < eps
-                    if v1 < v2 or (is_equal and idx1 < idx2):
-                        values[i * 2 + 1], values[i * 2 + 2] = v2, v1
-                        indices[i * 2 + 1], indices[i * 2 + 2] = idx2, idx1
-                T.sync_threads()
+            if use_musa:
+                # The MUSA sync lowering moves a barrier that sits between a
+                # shared load and its store to before the load. Compute the
+                # swap into registers first, then barrier, then write.
+                tx = T.get_thread_binding()
+                ev1 = T.alloc_local([1], accum_dtype)
+                ev2 = T.alloc_local([1], accum_dtype)
+                ei1 = T.alloc_local([1], T.int32)
+                ei2 = T.alloc_local([1], T.int32)
+                eswap = T.alloc_local([1], T.bool)
+                ov1 = T.alloc_local([1], accum_dtype)
+                ov2 = T.alloc_local([1], accum_dtype)
+                oi1 = T.alloc_local([1], T.int32)
+                oi2 = T.alloc_local([1], T.int32)
+                oswap = T.alloc_local([1], T.bool)
+                for _ in T.serial(size):
+                    if tx < size // 2:
+                        ev1[0] = values[tx * 2]
+                        ev2[0] = values[tx * 2 + 1]
+                        ei1[0] = indices[tx * 2]
+                        ei2[0] = indices[tx * 2 + 1]
+                        # Quantize like the reference's round(score / eps) so a
+                        # score that only differs in the last fp16 bit does not
+                        # flip the order.
+                        q1 = T.cast(T.round(ev1[0] / eps), T.int32)
+                        q2 = T.cast(T.round(ev2[0] / eps), T.int32)
+                        eswap[0] = (q1 < q2) or (q1 == q2 and ei1[0] < ei2[0])
+                    T.sync_threads()
+                    if tx < size // 2 and eswap[0]:
+                        values[tx * 2] = ev2[0]
+                        values[tx * 2 + 1] = ev1[0]
+                        indices[tx * 2] = ei2[0]
+                        indices[tx * 2 + 1] = ei1[0]
+                    T.sync_threads()
+                    if tx < (size - 1) // 2:
+                        ov1[0] = values[tx * 2 + 1]
+                        ov2[0] = values[tx * 2 + 2]
+                        oi1[0] = indices[tx * 2 + 1]
+                        oi2[0] = indices[tx * 2 + 2]
+                        q1 = T.cast(T.round(ov1[0] / eps), T.int32)
+                        q2 = T.cast(T.round(ov2[0] / eps), T.int32)
+                        oswap[0] = (q1 < q2) or (q1 == q2 and oi1[0] < oi2[0])
+                    T.sync_threads()
+                    if tx < (size - 1) // 2 and oswap[0]:
+                        values[tx * 2 + 1] = ov2[0]
+                        values[tx * 2 + 2] = ov1[0]
+                        indices[tx * 2 + 1] = oi2[0]
+                        indices[tx * 2 + 2] = oi1[0]
+                    T.sync_threads()
+            else:
+                for _ in T.serial(size):
+                    for i in T.Parallel(size // 2):
+                        v1 = values[i * 2]
+                        v2 = values[i * 2 + 1]
+                        idx1 = indices[i * 2]
+                        idx2 = indices[i * 2 + 1]
+                        v_diff = T.abs(v1 - v2)
+                        is_equal = v_diff < eps
+                        if v1 < v2 or (is_equal and idx1 < idx2):
+                            values[i * 2], values[i * 2 + 1] = v2, v1
+                            indices[i * 2], indices[i * 2 + 1] = idx2, idx1
+                    T.sync_threads()
+                    for i in T.Parallel((size - 1) // 2):
+                        v1 = values[i * 2 + 1]
+                        v2 = values[i * 2 + 2]
+                        idx1 = indices[i * 2 + 1]
+                        idx2 = indices[i * 2 + 2]
+                        v_diff = T.abs(v1 - v2)
+                        is_equal = v_diff < eps
+                        if v1 < v2 or (is_equal and idx1 < idx2):
+                            values[i * 2 + 1], values[i * 2 + 2] = v2, v1
+                            indices[i * 2 + 1], indices[i * 2 + 2] = idx2, idx1
+                    T.sync_threads()
 
         @T.prim_func
         def _parallel_nsa_topk_varlen_main(
@@ -80,7 +135,7 @@ def _nsa_topk_varlen_kernel(
             _ = lse_in
             with T.Kernel(c_seq_len, head_kv, threads=threads) as (bx, by):
                 q_shared = T.alloc_shared([group, bk], dtype)
-                k_shared = T.alloc_shared([bc, bk], dtype)
+                k_shared = T.alloc_shared([gemm_bc, bk], dtype)
 
                 pool_scores_s = T.alloc_shared([bc * 2], accum_dtype)
                 pool_indices_s = T.alloc_shared([bc * 2], T.int32)
@@ -92,10 +147,14 @@ def _nsa_topk_varlen_kernel(
                 boc = chunk_offsets[i_n]
                 nc = (i_t + 1) // bs
 
-                T.copy(q[bos + i_t, i_h * group : (i_h + 1) * group, :bk], q_shared)
+                if use_musa:
+                    for i, j in T.Parallel(group, bk):
+                        q_shared[i, j] = q[bos + i_t, i_h * group + i, j]
+                else:
+                    T.copy(q[bos + i_t, i_h * group : (i_h + 1) * group, :bk], q_shared)
 
                 b_lse = T.alloc_fragment([group], accum_dtype)
-                acc_s = T.alloc_fragment([group, bc], accum_dtype)
+                acc_s = T.alloc_fragment([group, gemm_bc], accum_dtype)
                 scores_max = T.alloc_fragment([group], accum_dtype)
                 scores_max_prev = T.alloc_fragment([group], accum_dtype)
                 scores_scale = T.alloc_fragment([group], accum_dtype)
@@ -110,14 +169,22 @@ def _nsa_topk_varlen_kernel(
                     pool_indices_s[p] = 0
 
                 # step1: LSE calculation
-                for i_loop in T.Pipelined(T.ceildiv(nc, bc), num_stages=3):
+                for i_loop in T.serial(T.ceildiv(nc, bc)):
                     curr_bc = T.min(bc, nc - i_loop * bc)
-                    T.copy(
-                        k_cmp[boc + i_loop * bc : boc + i_loop * bc + curr_bc, i_h, :bk],
-                        k_shared[:curr_bc, :bk],
-                    )
+                    if use_musa:
+                        for i, j in T.Parallel(gemm_bc, bk):
+                            k_shared[i, j] = T.if_then_else(
+                                i < curr_bc,
+                                k_cmp[boc + i_loop * bc + i, i_h, j],
+                                T.cast(0, dtype),
+                            )
+                    else:
+                        T.copy(
+                            k_cmp[boc + i_loop * bc : boc + i_loop * bc + curr_bc, i_h, :bk],
+                            k_shared[:curr_bc, :bk],
+                        )
 
-                    for g_m, c_m in T.Parallel(group, bc):
+                    for g_m, c_m in T.Parallel(group, gemm_bc):
                         acc_s[g_m, c_m] = T.if_then_else(
                             c_m < curr_bc, 0.0, -T.infinity(accum_dtype)
                         )
@@ -137,7 +204,7 @@ def _nsa_topk_varlen_kernel(
                             0.0,
                         )
 
-                    for i, j in T.Parallel(group, bc):
+                    for i, j in T.Parallel(group, gemm_bc):
                         acc_s[i, j] = T.if_then_else(
                             acc_s[i, j] > -T.infinity(accum_dtype),
                             T.exp2(acc_s[i, j] * scale_log2 - scores_max[i] * scale_log2),
@@ -155,18 +222,27 @@ def _nsa_topk_varlen_kernel(
                         b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2E
 
                 # step2: Importance Scores alignment and streaming Top-K
-                T.sync_threads()
+                if not use_musa:
+                    T.sync_threads()
                 nc_topk = i_t // bs + 1
-                k_shared_topk = T.alloc_shared([bc, bk], dtype)
+                k_shared_topk = T.alloc_shared([gemm_bc, bk], dtype)
 
-                for i_tk in T.Pipelined(T.ceildiv(nc_topk, bc), num_stages=3):
+                for i_tk in T.serial(T.ceildiv(nc_topk, bc)):
                     curr_bc_tk = T.min(bc, nc_topk - i_tk * bc)
-                    T.copy(
-                        k_cmp[boc + i_tk * bc : boc + i_tk * bc + curr_bc_tk, i_h, :bk],
-                        k_shared_topk[:curr_bc_tk, :bk],
-                    )
+                    if use_musa:
+                        for i, j in T.Parallel(gemm_bc, bk):
+                            k_shared_topk[i, j] = T.if_then_else(
+                                i < curr_bc_tk,
+                                k_cmp[boc + i_tk * bc + i, i_h, j],
+                                T.cast(0, dtype),
+                            )
+                    else:
+                        T.copy(
+                            k_cmp[boc + i_tk * bc : boc + i_tk * bc + curr_bc_tk, i_h, :bk],
+                            k_shared_topk[:curr_bc_tk, :bk],
+                        )
 
-                    for g_m2, c_m2 in T.Parallel(group, bc):
+                    for g_m2, c_m2 in T.Parallel(group, gemm_bc):
                         acc_s[g_m2, c_m2] = T.if_then_else(
                             c_m2 < curr_bc_tk, 0.0, -T.infinity(accum_dtype)
                         )
@@ -179,7 +255,7 @@ def _nsa_topk_varlen_kernel(
                         policy=T.GemmWarpPolicy.FullRow,
                     )
 
-                    for g_idx, c_idx in T.Parallel(group, bc):
+                    for g_idx, c_idx in T.Parallel(group, gemm_bc):
                         curr_blk = i_tk * bc + c_idx
                         is_curr = curr_blk == i_t // bs
                         is_hist = curr_blk < i_t // bs
@@ -194,7 +270,7 @@ def _nsa_topk_varlen_kernel(
                         )
                         acc_s[g_idx, c_idx] = imp
 
-                    b_i_current = T.alloc_fragment([bc], accum_dtype)
+                    b_i_current = T.alloc_fragment([gemm_bc], accum_dtype)
                     T.reduce_sum(acc_s, b_i_current, dim=0)
 
                     for c_in in T.Parallel(bc):
@@ -280,7 +356,7 @@ def _(
 
 
 class NSATopkVarlenKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -318,7 +394,7 @@ class NSATopkVarlenKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "threads": 32,
+            "threads": 128 if get_backend_name() == "musa" else 32,
         }
 
     @property

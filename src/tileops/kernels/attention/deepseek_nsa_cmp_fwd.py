@@ -2,10 +2,11 @@ import functools
 from typing import Any, Callable, Optional, Tuple
 
 import tilelang
+import tilelang.language as T
 import torch
-from tilelang import language as T
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from .online_softmax import LOG2E
 
@@ -31,6 +32,10 @@ def _nsa_cmp_fwd_varlen_kernel(
     # would silently truncate the QK contraction and the O write-back.
     bk = dim_k
     bv = dim_v
+    use_musa = get_backend_name() == "musa"
+    # MP31 SQMMA wants the N tile to be a multiple of 64. The manifest bc is 32,
+    # so the GEMM tile is padded and the softmax only reads the real columns.
+    gemm_bc = bc if not use_musa or bc % 64 == 0 else ((bc + 63) // 64) * 64
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -54,8 +59,8 @@ def _nsa_cmp_fwd_varlen_kernel(
         ):
             with T.Kernel(c_seq_len, head_kv, threads=threads) as (bx, by):
                 q_shared = T.alloc_shared([group, bk], dtype)
-                k_shared = T.alloc_shared([bc, bk], dtype)
-                v_shared = T.alloc_shared([bc, bv], dtype)
+                k_shared = T.alloc_shared([gemm_bc, bk], dtype)
+                v_shared = T.alloc_shared([gemm_bc, bv], dtype)
 
                 i_c, i_h = bx, by
                 i_n, i_t = token_indices[i_c, 0], token_indices[i_c, 1]
@@ -64,12 +69,16 @@ def _nsa_cmp_fwd_varlen_kernel(
                 boc = chunk_offsets[i_n]
                 nc = (i_t + 1) // bs
 
-                T.copy(q[bos + i_t, i_h * group : (i_h + 1) * group, :bk], q_shared)
+                if use_musa:
+                    for i, j in T.Parallel(group, bk):
+                        q_shared[i, j] = q[bos + i_t, i_h * group + i, j]
+                else:
+                    T.copy(q[bos + i_t, i_h * group : (i_h + 1) * group, :bk], q_shared)
 
-                b_o = T.alloc_fragment([group, bv], dtype)
-                b_lse = T.alloc_fragment([group], dtype)
-                acc_s = T.alloc_fragment([group, bc], accum_dtype)
-                acc_s_cast = T.alloc_fragment([group, bc], dtype)
+                b_o = T.alloc_fragment([group, bv], accum_dtype)
+                b_lse = T.alloc_fragment([group], accum_dtype if use_musa else dtype)
+                acc_s = T.alloc_fragment([group, gemm_bc], accum_dtype)
+                acc_s_cast = T.alloc_shared([group, gemm_bc], dtype)
                 scores_max = T.alloc_fragment([group], accum_dtype)
                 scores_max_prev = T.alloc_fragment([group], accum_dtype)
                 scores_scale = T.alloc_fragment([group], accum_dtype)
@@ -85,22 +94,39 @@ def _nsa_cmp_fwd_varlen_kernel(
                     # Initialize shared memory in each iteration to avoid stale data
                     T.fill(k_shared, 0.0)
                     T.fill(v_shared, 0.0)
-                    T.copy(
-                        k_cmp[boc + i_loop * bc : boc + i_loop * bc + curr_bc, i_h, :bk],
-                        k_shared[:curr_bc, :bk],
-                    )
-                    T.copy(
-                        v_cmp[boc + i_loop * bc : boc + i_loop * bc + curr_bc, i_h, :bv],
-                        v_shared[:curr_bc, :bv],
-                    )
+                    if use_musa:
+                        for i, j in T.Parallel(gemm_bc, bk):
+                            k_shared[i, j] = T.if_then_else(
+                                i < curr_bc,
+                                k_cmp[boc + i_loop * bc + i, i_h, j],
+                                T.cast(0, dtype),
+                            )
+                        for i, j in T.Parallel(gemm_bc, bv):
+                            v_shared[i, j] = T.if_then_else(
+                                i < curr_bc,
+                                v_cmp[boc + i_loop * bc + i, i_h, j],
+                                T.cast(0, dtype),
+                            )
+                    else:
+                        T.copy(
+                            k_cmp[boc + i_loop * bc : boc + i_loop * bc + curr_bc, i_h, :bk],
+                            k_shared[:curr_bc, :bk],
+                        )
+                        T.copy(
+                            v_cmp[boc + i_loop * bc : boc + i_loop * bc + curr_bc, i_h, :bv],
+                            v_shared[:curr_bc, :bv],
+                        )
 
-                    for g_m, c_m in T.Parallel(group, bc):
+                    for g_m, c_m in T.Parallel(group, gemm_bc):
                         acc_s[g_m, c_m] = T.if_then_else(
                             c_m < curr_bc, 0.0, -T.infinity(accum_dtype)
                         )
-
                     T.gemm(
-                        q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+                        q_shared,
+                        k_shared,
+                        acc_s,
+                        transpose_B=True,
+                        policy=T.GemmWarpPolicy.FullRow,
                     )
 
                     T.copy(scores_max, scores_max_prev)
@@ -114,7 +140,7 @@ def _nsa_cmp_fwd_varlen_kernel(
                             0.0,
                         )
 
-                    for i, j in T.Parallel(group, bc):
+                    for i, j in T.Parallel(group, gemm_bc):
                         acc_s[i, j] = T.if_then_else(
                             acc_s[i, j] > -T.infinity(accum_dtype),
                             T.exp2(acc_s[i, j] * scale_log2 - scores_max[i] * scale_log2),
@@ -142,8 +168,14 @@ def _nsa_cmp_fwd_varlen_kernel(
                     else:
                         b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2E
 
-                T.copy(b_o, output[bos + i_t, i_h * group : (i_h + 1) * group, :dim_v])
-                T.copy(b_lse, temp_lse[bos + i_t, i_h * group : (i_h + 1) * group])
+                if use_musa:
+                    for i, j in T.Parallel(group, dim_v):
+                        output[bos + i_t, i_h * group + i, j] = T.cast(b_o[i, j], dtype)
+                    for i in T.Parallel(group):
+                        temp_lse[bos + i_t, i_h * group + i] = T.cast(b_lse[i], dtype)
+                else:
+                    T.copy(b_o, output[bos + i_t, i_h * group : (i_h + 1) * group, :dim_v])
+                    T.copy(b_lse, temp_lse[bos + i_t, i_h * group : (i_h + 1) * group])
 
         return _parallel_nsa_cmp_fwd_varlen_main
 
@@ -200,7 +232,7 @@ def _(
 
 
 class NSACmpFwdVarlenKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -238,7 +270,7 @@ class NSACmpFwdVarlenKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return {
-            "threads": 32,
+            "threads": 128,
         }
 
     @property

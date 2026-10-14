@@ -7,6 +7,9 @@ import torch
 from tilelang import language as T
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 __all__ = ["FP8LightningIndexerKernel"]
 
@@ -277,7 +280,7 @@ class FP8LightningIndexerKernel(Kernel):
         ValueError: If *dtype* is not ``torch.float8_e4m3fn``.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     def __init__(
         self,
@@ -325,6 +328,8 @@ class FP8LightningIndexerKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if DEVICE == "musa":
+            return [self.default_config]
         block_N = [32, 64, 128]
         num_stages = [0, 1, 2]
         threads = [128, 256]
@@ -399,20 +404,20 @@ class FP8LightningIndexerKernel(Kernel):
         fp8_dtype = torch.float8_e4m3fn  # IndexQ/IndexK are fp8 in the kernel signature
         # torch.randn does not support fp8 dtypes, so generate in fp16 then cast.
         IndexQ = torch.randn(
-            batch, seq_len * heads, index_dim, device="cuda", dtype=torch.float16
+            batch, seq_len * heads, index_dim, device=DEVICE, dtype=torch.float16
         ).to(fp8_dtype)
         IndexK = torch.randn(
-            batch, seq_len_kv, self.kv_group, index_dim, device="cuda", dtype=torch.float16
+            batch, seq_len_kv, self.kv_group, index_dim, device=DEVICE, dtype=torch.float16
         ).to(fp8_dtype)
         IndexKScale = torch.randn(
-            batch, seq_len_kv, self.kv_group, device="cuda", dtype=accum_dtype
+            batch, seq_len_kv, self.kv_group, device=DEVICE, dtype=accum_dtype
         )
         Logits = torch.empty(
-            batch, seq_len, seq_len_kv, self.kv_group, device="cuda", dtype=accum_dtype
+            batch, seq_len, seq_len_kv, self.kv_group, device=DEVICE, dtype=accum_dtype
         )
-        Weights = torch.randn(seq_len, heads, device="cuda", dtype=accum_dtype)
-        CuSeqLenKS = torch.zeros(seq_len, device="cuda", dtype=index_dtype)
-        CuSeqLenKE = torch.full((seq_len,), fill_value=seq_len_kv, device="cuda", dtype=index_dtype)
+        Weights = torch.randn(seq_len, heads, device=DEVICE, dtype=accum_dtype)
+        CuSeqLenKS = torch.zeros(seq_len, device=DEVICE, dtype=index_dtype)
+        CuSeqLenKE = torch.full((seq_len,), fill_value=seq_len_kv, device=DEVICE, dtype=index_dtype)
 
         return IndexQ, IndexK, IndexKScale, Logits, Weights, CuSeqLenKS, CuSeqLenKE
 

@@ -5,6 +5,7 @@ import torch
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.fp8_lightning_indexer import FP8LightningIndexerKernel
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import is_backend_tensor
 
 from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
@@ -116,7 +117,7 @@ class FP8LightningIndexerFwdOp(Op):
         cu_seqlen_ke: torch.Tensor,
         index_k_scale: Optional[torch.Tensor],
     ) -> None:
-        if not index_q.is_cuda or not index_k.is_cuda:
+        if not is_backend_tensor(index_q) or not is_backend_tensor(index_k):
             raise ValueError("FP8LightningIndexerFwdOp expects CUDA inputs")
         if index_q.ndim != 4 or index_k.ndim != 4:
             raise ValueError("FP8LightningIndexerFwdOp expects index_q/index_k to be 4D tensors")

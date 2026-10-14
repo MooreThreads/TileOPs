@@ -24,6 +24,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from .._output_dtype import output_dtype
@@ -1260,7 +1261,7 @@ class GroupedQueryAttentionPrefillVarlenFwdOp(Op):
             "cu_seqlens_kv": cu_seqlens_kv,
         }
         for name, tensor in tensors.items():
-            if not tensor.is_cuda:
+            if not is_backend_tensor(tensor):
                 raise ValueError(f"{name} must be a CUDA tensor")
             if not tensor.is_contiguous():
                 raise ValueError(f"{name} must be contiguous")
@@ -1579,8 +1580,8 @@ class GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(Op):
             "block_table": block_table,
         }
         for name, tensor in tensors.items():
-            if tensor.device.type != "cuda":
-                raise ValueError(f"{name} must be on a cuda device, got {tensor.device}")
+            if not is_backend_tensor(tensor):
+                raise ValueError(f"{name} must be on the configured backend, got {tensor.device}")
             if not tensor.is_contiguous():
                 raise ValueError(f"{name} must be contiguous")
 
@@ -2274,8 +2275,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
         Never traced: kernel construction enters a TileLang builder.
         """
         for t, name in [(q, "q"), (k, "k"), (v, "v")]:
-            if t.device.type != "cuda":
-                raise ValueError(f"{name} must be on a cuda device, got {t.device}")
+            if not is_backend_tensor(t):
+                raise ValueError(f"{name} must be on the configured backend, got {t.device}")
             if t.dtype != q.dtype:
                 raise ValueError(f"{name} dtype {t.dtype} does not match q dtype {q.dtype}")
             if not t.is_contiguous():
@@ -2304,8 +2305,8 @@ class GroupedQueryAttentionSlidingWindowVarlenFwdOp(Op):
                 f"batch+1 ({self.batch + 1})"
             )
         for cu, name in [(cu_seqlens_q, "cu_seqlens_q"), (cu_seqlens_k, "cu_seqlens_k")]:
-            if cu.device.type != "cuda":
-                raise ValueError(f"{name} must be on a cuda device, got {cu.device}")
+            if not is_backend_tensor(cu):
+                raise ValueError(f"{name} must be on the configured backend, got {cu.device}")
             if cu.dtype != torch.int32:
                 raise ValueError(f"{name} must have dtype int32, got {cu.dtype}")
             if not cu.is_contiguous():

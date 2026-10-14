@@ -8,13 +8,18 @@ import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_backend_name
 
 from .online_softmax import (
     LOG2E,
     make_apply_softcap,
     make_online_softmax,
+    make_online_softmax_with_shared_state,
     make_rescale,
 )
+
+DEVICE = get_backend_name()
+
 
 __all__ = ["GQADecodePagedKernel"]
 
@@ -50,11 +55,13 @@ def _gqa_decode_no_split_paged_kernel(
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
     accum_dtype = "float"
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: not use_musa,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -66,6 +73,9 @@ def _gqa_decode_no_split_paged_kernel(
         valid_block_H = min(block_H, kv_group_num)
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
+        online_softmax_musa = make_online_softmax_with_shared_state(
+            scale, accum_dtype, block_H, block_N
+        )
         apply_softcap = (
             make_apply_softcap(score_scale, softcap, accum_dtype, block_H, block_N)
             if use_softcap
@@ -89,22 +99,43 @@ def _gqa_decode_no_split_paged_kernel(
                 O_shared = T.alloc_shared([valid_block_H, dim], dtype)
                 acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
+                if use_musa:
+                    acc_s_shared = T.alloc_shared([block_H, block_N], accum_dtype)
+                    V_accum_shared = T.alloc_shared([block_N, dim], accum_dtype)
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
-                scores_scale = T.alloc_fragment([block_H], accum_dtype)
                 scores_sum = T.alloc_fragment([block_H], accum_dtype)
-                logsum = T.alloc_fragment([block_H], accum_dtype)
+                if use_musa:
+                    scores_max_shared = T.alloc_shared([block_H], accum_dtype)
+                    scores_max_prev_shared = T.alloc_shared([block_H], accum_dtype)
+                    scores_scale_shared = T.alloc_shared([block_H], accum_dtype)
+                    scores_sum_shared = T.alloc_shared([block_H], accum_dtype)
+                    logsum_shared = T.alloc_shared([block_H], accum_dtype)
+                else:
+                    scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
+                    scores_scale = T.alloc_fragment([block_H], accum_dtype)
+                    logsum = T.alloc_fragment([block_H], accum_dtype)
 
                 bid = bx
                 hid = by
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
                 seqlen_kv_b = real_seqlen_kv[bid]
 
-                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
+                if use_musa:
+                    for i, j in T.Parallel(block_H, dim):
+                        q_idx = hid * valid_block_H + i
+                        Q_shared[i, j] = T.if_then_else(
+                            q_idx < heads, Q[bid, q_idx, j], T.cast(0, dtype)
+                        )
+                else:
+                    T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
-                T.fill(logsum, 0)
-                T.fill(scores_max, -T.infinity(accum_dtype))
+                if use_musa:
+                    T.fill(logsum_shared, 0)
+                    T.fill(scores_max_shared, -T.infinity(accum_dtype))
+                else:
+                    T.fill(logsum, 0)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = T.ceildiv(seqlen_kv_b, block_N)
                 num_blockn_in_page = page_size // block_N
@@ -123,6 +154,7 @@ def _gqa_decode_no_split_paged_kernel(
                             :,
                         ],
                         K_shared,
+                        disable_tma=use_musa,
                     )
                     # Issue both K/V loads before QK so copies can overlap the GEMMs.
                     T.copy(
@@ -132,6 +164,7 @@ def _gqa_decode_no_split_paged_kernel(
                             :,
                         ],
                         V_shared,
+                        disable_tma=use_musa,
                     )
                     T.clear(acc_s)
                     T.gemm(
@@ -143,17 +176,42 @@ def _gqa_decode_no_split_paged_kernel(
                         )
                     if use_softcap:
                         apply_softcap(acc_s)
-                    online_softmax(
-                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
-                    )
-                    T.copy(acc_s, acc_s_cast)
-                    rescale(acc_o, scores_scale)
-                    T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                for i, j in T.Parallel(block_H, dim):
-                    acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
-                for i in T.Parallel(block_H):
-                    logsum_safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
-                    logsum[i] = T.log2(logsum_safe) + scores_max[i] * scale
+                    if use_musa:
+                        online_softmax_musa(
+                            acc_s,
+                            scores_max,
+                            scores_sum,
+                            scores_max_shared,
+                            scores_max_prev_shared,
+                            scores_scale_shared,
+                            scores_sum_shared,
+                            logsum_shared,
+                        )
+                        T.copy(acc_s, acc_s_shared, disable_tma=True)
+                        rescale(acc_o, scores_scale_shared)
+                        T.copy(V_shared, V_accum_shared, disable_tma=True)
+                        T.gemm(acc_s_shared, V_accum_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    else:
+                        online_softmax(
+                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                        )
+                        T.copy(acc_s, acc_s_cast)
+                        rescale(acc_o, scores_scale)
+                        T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                if use_musa:
+                    for i, j in T.Parallel(block_H, dim):
+                        acc_o[i, j] = T.if_then_else(
+                            logsum_shared[i] == 0, 0, acc_o[i, j] / logsum_shared[i]
+                        )
+                    for i in T.Parallel(block_H):
+                        logsum_safe = T.if_then_else(logsum_shared[i] == 0, 1, logsum_shared[i])
+                        logsum_shared[i] = T.log2(logsum_safe) + scores_max_shared[i] * scale
+                else:
+                    for i, j in T.Parallel(block_H, dim):
+                        acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
+                    for i in T.Parallel(block_H):
+                        logsum_safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
+                        logsum[i] = T.log2(logsum_safe) + scores_max[i] * scale
 
                 T.copy(acc_o[:valid_block_H, :], O_shared)
                 T.copy(O_shared, Output[bid, hid * valid_block_H : (hid + 1) * valid_block_H, :])
@@ -174,11 +232,13 @@ def _gqa_decode_split_paged_kernel(
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
     accum_dtype = "float"
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: not use_musa,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -192,6 +252,9 @@ def _gqa_decode_split_paged_kernel(
         valid_block_H = min(block_H, kv_group_num)
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_H, block_N)
+        online_softmax_musa = make_online_softmax_with_shared_state(
+            scale, accum_dtype, block_H, block_N
+        )
         apply_softcap = (
             make_apply_softcap(score_scale, softcap, accum_dtype, block_H, block_N)
             if use_softcap
@@ -221,12 +284,22 @@ def _gqa_decode_split_paged_kernel(
                 O_shared = T.alloc_shared([valid_block_H, dim], dtype)
                 acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
+                if use_musa:
+                    acc_s_shared = T.alloc_shared([block_H, block_N], accum_dtype)
+                    V_accum_shared = T.alloc_shared([block_N, dim], accum_dtype)
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
-                scores_scale = T.alloc_fragment([block_H], accum_dtype)
                 scores_sum = T.alloc_fragment([block_H], accum_dtype)
-                logsum = T.alloc_fragment([block_H], accum_dtype)
+                if use_musa:
+                    scores_max_shared = T.alloc_shared([block_H], accum_dtype)
+                    scores_max_prev_shared = T.alloc_shared([block_H], accum_dtype)
+                    scores_scale_shared = T.alloc_shared([block_H], accum_dtype)
+                    scores_sum_shared = T.alloc_shared([block_H], accum_dtype)
+                    logsum_shared = T.alloc_shared([block_H], accum_dtype)
+                else:
+                    scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
+                    scores_scale = T.alloc_fragment([block_H], accum_dtype)
+                    logsum = T.alloc_fragment([block_H], accum_dtype)
 
                 split_length_shared = T.alloc_shared([num_split], "int32")
                 bid = bx
@@ -236,10 +309,21 @@ def _gqa_decode_split_paged_kernel(
                 cur_kv_head = hid // (kv_group_num // valid_block_H)
                 seqlen_kv_b = real_seqlen_kv[bid]
 
-                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
+                if use_musa:
+                    for i, j in T.Parallel(block_H, dim):
+                        q_idx = hid * valid_block_H + i
+                        Q_shared[i, j] = T.if_then_else(
+                            q_idx < heads, Q[bid, q_idx, j], T.cast(0, dtype)
+                        )
+                else:
+                    T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
                 T.fill(acc_o, 0)
-                T.fill(logsum, 0)
-                T.fill(scores_max, -T.infinity(accum_dtype))
+                if use_musa:
+                    T.fill(logsum_shared, 0)
+                    T.fill(scores_max_shared, -T.infinity(accum_dtype))
+                else:
+                    T.fill(logsum, 0)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
 
                 # Per-batch loop_range: only iterate blocks that are within real_seqlen_kv[bid],
                 # so shorter batches (e.g. batch1 with 2048) don't run empty splits -> all -inf -> NaN
@@ -281,6 +365,7 @@ def _gqa_decode_split_paged_kernel(
                             :,
                         ],
                         K_shared,
+                        disable_tma=use_musa,
                     )
                     # Issue both K/V loads before QK so copies can overlap the GEMMs.
                     T.copy(
@@ -290,6 +375,7 @@ def _gqa_decode_split_paged_kernel(
                             :,
                         ],
                         V_shared,
+                        disable_tma=use_musa,
                     )
                     T.clear(acc_s)
                     T.gemm(
@@ -303,23 +389,49 @@ def _gqa_decode_split_paged_kernel(
                         )
                     if use_softcap:
                         apply_softcap(acc_s)
-                    online_softmax(
-                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
-                    )
-                    T.copy(acc_s, acc_s_cast)
-                    rescale(acc_o, scores_scale)
-                    T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
-                for i, j in T.Parallel(block_H, dim):
-                    # When loop_range was 0 (split entirely beyond real_seqlen_kv), logsum=0 -> avoid 0/0
-                    acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
-                for i in T.Parallel(block_H):
-                    # Avoid log2(0)=-inf when logsum=0; glse=-inf is ok in combine (weight 0)
-                    logsum_safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
-                    logsum[i] = T.log2(logsum_safe) + scores_max[i] * scale
+                    if use_musa:
+                        online_softmax_musa(
+                            acc_s,
+                            scores_max,
+                            scores_sum,
+                            scores_max_shared,
+                            scores_max_prev_shared,
+                            scores_scale_shared,
+                            scores_sum_shared,
+                            logsum_shared,
+                        )
+                        T.copy(acc_s, acc_s_shared, disable_tma=True)
+                        rescale(acc_o, scores_scale_shared)
+                        T.copy(V_shared, V_accum_shared, disable_tma=True)
+                        T.gemm(acc_s_shared, V_accum_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    else:
+                        online_softmax(
+                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                        )
+                        T.copy(acc_s, acc_s_cast)
+                        rescale(acc_o, scores_scale)
+                        T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                if use_musa:
+                    for i, j in T.Parallel(block_H, dim):
+                        acc_o[i, j] = T.if_then_else(
+                            logsum_shared[i] == 0, 0, acc_o[i, j] / logsum_shared[i]
+                        )
+                    for i in T.Parallel(block_H):
+                        logsum_safe = T.if_then_else(logsum_shared[i] == 0, 1, logsum_shared[i])
+                        logsum_shared[i] = T.log2(logsum_safe) + scores_max_shared[i] * scale
+                else:
+                    for i, j in T.Parallel(block_H, dim):
+                        acc_o[i, j] = T.if_then_else(logsum[i] == 0, 0, acc_o[i, j] / logsum[i])
+                    for i in T.Parallel(block_H):
+                        logsum_safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
+                        logsum[i] = T.log2(logsum_safe) + scores_max[i] * scale
 
                 for i in T.Parallel(block_H):
                     if i < valid_block_H:
-                        glse[bid, hid * valid_block_H + i, sid] = logsum[i]
+                        if use_musa:
+                            glse[bid, hid * valid_block_H + i, sid] = logsum_shared[i]
+                        else:
+                            glse[bid, hid * valid_block_H + i, sid] = logsum[i]
                 T.copy(acc_o[:valid_block_H, :], O_shared)
                 T.copy(
                     O_shared,
@@ -510,7 +622,7 @@ def paged_decode_entry(cls: type, call: AttentionCall) -> Entry:
 
 
 class GQADecodePagedKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
     # The implementation behind the specialised ones for this key.
     general: bool = True
 
@@ -612,12 +724,12 @@ class GQADecodePagedKernel(Kernel):
                     if len(shape) == 1 and shape[0] == batch:
                         # real_seqlen_kv: [batch]
                         inputs.append(
-                            torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
+                            torch.full((batch,), seqlen_kv, dtype=torch.int32, device=DEVICE)
                         )
                     elif len(shape) == 2 and shape[1] == num_pages:
                         # block_table: [batch, num_pages] — sequential page indices
                         t = (
-                            torch.arange(num_pages, dtype=torch.int32, device="cuda")
+                            torch.arange(num_pages, dtype=torch.int32, device=DEVICE)
                             .unsqueeze(0)
                             .expand(batch, -1)
                             .contiguous()
@@ -627,7 +739,7 @@ class GQADecodePagedKernel(Kernel):
                         # acc_split_length (cumulative): [batch, num_split]
                         num_split = shape[1]
                         base = seqlen_kv // num_split
-                        t = torch.full(shape, base, dtype=torch.int32, device="cuda")
+                        t = torch.full(shape, base, dtype=torch.int32, device=DEVICE)
                         t[:, -1] += seqlen_kv % num_split
                         t = torch.cumsum(t, dim=1).to(torch.int32)
                         inputs.append(t)
@@ -646,15 +758,28 @@ class GQADecodePagedKernel(Kernel):
     @property
     def default_config(self) -> dict:
         block_N = gqa_decode_paged_block_n(self.page_size)
-        return {"block_H": 64, "block_N": block_N, "num_split": 16, "num_stages": 2, "threads": 128}
+        group_rows = self.heads // self.groups
+        block_H = (
+            min(64, max(8, ((group_rows + 7) // 8) * 8)) if get_backend_name() == "musa" else 64
+        )
+        return {
+            "block_H": block_H,
+            "block_N": block_N,
+            "num_split": 16,
+            "num_stages": 1 if get_backend_name() == "musa" else 2,
+            "threads": 32 if get_backend_name() == "musa" else 128,
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
         block_N = self._supported_block_ns
-        block_H = [64]
+        group_rows = self.heads // self.groups
+        block_H = [
+            min(64, max(8, ((group_rows + 7) // 8) * 8)) if get_backend_name() == "musa" else 64
+        ]
         num_split = [2, 4, 8]
-        num_stages = [1, 2, 3]
-        threads = [128]
+        num_stages = [1] if get_backend_name() == "musa" else [1, 2, 3]
+        threads = [32] if get_backend_name() == "musa" else [128]
         _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
 
         configs = [

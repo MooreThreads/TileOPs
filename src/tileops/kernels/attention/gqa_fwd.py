@@ -7,6 +7,7 @@ import torch
 
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ._config import tile_stage_thread_configs
 from .call_spec import dense_prefill_region, fp8_dtype
@@ -16,6 +17,7 @@ from .online_softmax import (
     make_log2e_scale,
     make_online_softmax,
     make_online_softmax_with_mask_guard,
+    make_online_softmax_with_shared_state,
     make_rescale,
 )
 from .packed_prefill import PackedPrefillKernel
@@ -42,6 +44,8 @@ _FAST_COMPILE_FLAGS = [
     "--expt-extended-lambda",
     "-DENABLE_BF16",
 ]
+if get_backend_name() == "musa":
+    _FAST_COMPILE_FLAGS = ["-O3", "-DENABLE_BF16"]
 
 
 def _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_rows, block_cols):
@@ -70,6 +74,7 @@ def _gqa_fwd_wgmma_pipelined_kernel(
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[3, 4],
@@ -105,18 +110,37 @@ def _gqa_fwd_wgmma_pipelined_kernel(
                 T.clear(acc_s)
             T.gemm(q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
-        @T.macro
-        def mma1(
-            v: T.Tensor(kv_shape, dtype),
-            v_shared: T.SharedBuffer([block_n, dim], dtype),
-            acc_s_cast: T.FragmentBuffer([block_m, block_n], dtype),
-            acc_o: T.FragmentBuffer([block_m, dim], accum_dtype),
-            k_idx: T.int32,
-            by: T.int32,
-            bz: T.int32,
-        ) -> None:
-            T.copy(v[bz, k_idx * block_n : (k_idx + 1) * block_n, by // groups, :], v_shared)
-            T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+        if use_musa:
+
+            @T.macro
+            def mma1(
+                v: T.Tensor(kv_shape, dtype),
+                v_shared: T.SharedBuffer([block_n, dim], dtype),
+                v_accum_shared: T.SharedBuffer([block_n, dim], accum_dtype),
+                acc_s_shared: T.SharedBuffer([block_m, block_n], accum_dtype),
+                acc_o: T.FragmentBuffer([block_m, dim], accum_dtype),
+                k_idx: T.int32,
+                by: T.int32,
+                bz: T.int32,
+            ) -> None:
+                T.copy(v[bz, k_idx * block_n : (k_idx + 1) * block_n, by // groups, :], v_shared)
+                T.copy(v_shared, v_accum_shared, disable_tma=True)
+                T.gemm(acc_s_shared, v_accum_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+        else:
+
+            @T.macro
+            def mma1(
+                v: T.Tensor(kv_shape, dtype),
+                v_shared: T.SharedBuffer([block_n, dim], dtype),
+                acc_s_cast: T.FragmentBuffer([block_m, block_n], dtype),
+                acc_o: T.FragmentBuffer([block_m, dim], accum_dtype),
+                k_idx: T.int32,
+                by: T.int32,
+                bz: T.int32,
+            ) -> None:
+                T.copy(v[bz, k_idx * block_n : (k_idx + 1) * block_n, by // groups, :], v_shared)
+                T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
         online_softmax = make_online_softmax(scale, accum_dtype, block_m, block_n)
         rescale = make_rescale(block_m, dim)
@@ -140,6 +164,9 @@ def _gqa_fwd_wgmma_pipelined_kernel(
                 o_shared = T.alloc_shared([block_m, dim], dtype)
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                if use_musa:
+                    acc_s_shared = T.alloc_shared([block_m, block_n], accum_dtype)
+                    v_accum_shared = T.alloc_shared([block_n, dim], accum_dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_m], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
@@ -170,9 +197,24 @@ def _gqa_fwd_wgmma_pipelined_kernel(
                     online_softmax(
                         acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
                     )
-                    T.copy(acc_s, acc_s_cast)
+                    if use_musa:
+                        T.copy(acc_s, acc_s_shared, disable_tma=True)
+                    else:
+                        T.copy(acc_s, acc_s_cast)
                     rescale(acc_o, scores_scale)
-                    mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, bz)
+                    if use_musa:
+                        mma1(
+                            v,
+                            v_shared,
+                            v_accum_shared,
+                            acc_s_shared,
+                            acc_o,
+                            k_idx,
+                            by,
+                            bz,
+                        )
+                    else:
+                        mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, bz)
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] /= logsum[i]
                 # Guard the swizzled o_shared round-trip against a shared-memory
@@ -233,7 +275,7 @@ def _(
 
 
 class GQAFwdWgmmaPipelinedKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     def __init__(
         self,
@@ -325,6 +367,7 @@ def _gqa_prefill_fwd_kernel(
     groups = heads // heads_kv
     causal_offset = seq_len_kv - seq_len_q
     accum_dtype = "float"
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[3, 4],
@@ -340,6 +383,9 @@ def _gqa_prefill_fwd_kernel(
         kv_shape = (batch, seq_len_kv, heads_kv, dim)
         o_shape = (batch, seq_len_q, heads, dim)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
+        online_softmax_musa = make_online_softmax_with_shared_state(
+            scale, accum_dtype, block_m, block_n, mask_guard=True
+        )
         apply_softcap = (
             make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
             if use_softcap
@@ -365,12 +411,22 @@ def _gqa_prefill_fwd_kernel(
                 v_shared = T.alloc_shared([block_n, dim], dtype)
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                if use_musa:
+                    acc_s_shared = T.alloc_shared([block_m, block_n], accum_dtype)
+                    v_accum_shared = T.alloc_shared([block_n, dim], accum_dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_m], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
-                scores_scale = T.alloc_fragment([block_m], accum_dtype)
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
-                logsum = T.alloc_fragment([block_m], accum_dtype)
+                if use_musa:
+                    scores_max_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_max_prev_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_scale_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_sum_shared = T.alloc_shared([block_m], accum_dtype)
+                    logsum_shared = T.alloc_shared([block_m], accum_dtype)
+                else:
+                    scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
+                    scores_scale = T.alloc_fragment([block_m], accum_dtype)
+                    logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 if (bx + 1) * block_m <= seq_len_q:
                     T.copy(
@@ -384,8 +440,12 @@ def _gqa_prefill_fwd_kernel(
                         else:
                             q_shared[i, d] = T.cast(0, dtype)
                 T.clear(acc_o)
-                T.clear(logsum)
-                T.fill(scores_max, -T.infinity(accum_dtype))
+                if use_musa:
+                    T.fill(logsum_shared, 0)
+                    T.fill(scores_max_shared, -T.infinity(accum_dtype))
+                else:
+                    T.clear(logsum)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = (
                     T.ceildiv((bx + 1) * block_m + causal_offset, block_n)
@@ -432,32 +492,76 @@ def _gqa_prefill_fwd_kernel(
                     )
                     if use_softcap:
                         apply_softcap(acc_s)
-                    online_softmax(
-                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
-                    )
-                    T.copy(acc_s, acc_s_cast)
-                    rescale(acc_o, scores_scale)
-                    T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    if use_musa:
+                        online_softmax_musa(
+                            acc_s,
+                            scores_max,
+                            scores_sum,
+                            scores_max_shared,
+                            scores_max_prev_shared,
+                            scores_scale_shared,
+                            scores_sum_shared,
+                            logsum_shared,
+                        )
+                    else:
+                        online_softmax(
+                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                        )
+                    if use_musa:
+                        T.copy(acc_s, acc_s_shared, disable_tma=True)
+                    else:
+                        T.copy(acc_s, acc_s_cast)
+                    if use_musa:
+                        rescale(acc_o, scores_scale_shared)
+                    else:
+                        rescale(acc_o, scores_scale)
+                    if use_musa:
+                        T.copy(v_shared, v_accum_shared, disable_tma=True)
+                        T.gemm(acc_s_shared, v_accum_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    else:
+                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 if (bx + 1) * block_m <= seq_len_q:
-                    for i, j in T.Parallel(block_m, dim):
-                        acc_o[i, j] /= logsum[i]
+                    if use_musa:
+                        for i, j in T.Parallel(block_m, dim):
+                            acc_o[i, j] /= logsum_shared[i]
+                    else:
+                        for i, j in T.Parallel(block_m, dim):
+                            acc_o[i, j] /= logsum[i]
                     T.copy(
                         acc_o,
                         output[bz, bx * block_m : (bx + 1) * block_m, by, :],
                         disable_tma=True,
                     )
-                    for i in T.Parallel(block_m):
-                        logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
-                    T.copy(logsum, lse[bz, by, bx * block_m : (bx + 1) * block_m], disable_tma=True)
+                    if use_musa:
+                        for i in T.Parallel(block_m):
+                            logsum_shared[i] = (
+                                T.log2(logsum_shared[i]) + scores_max_shared[i] * scale
+                            )
+                        T.copy(
+                            logsum_shared,
+                            lse[bz, by, bx * block_m : (bx + 1) * block_m],
+                            disable_tma=True,
+                        )
+                    else:
+                        for i in T.Parallel(block_m):
+                            logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+                        T.copy(
+                            logsum, lse[bz, by, bx * block_m : (bx + 1) * block_m], disable_tma=True
+                        )
                 else:
                     for i, j in T.Parallel(block_m, dim):
                         q_pos = bx * block_m + i
                         if q_pos < seq_len_q:
-                            output[bz, q_pos, by, j] = acc_o[i, j] / logsum[i]
+                            output[bz, q_pos, by, j] = acc_o[i, j] / (
+                                logsum_shared[i] if use_musa else logsum[i]
+                            )
                     for i in T.Parallel(block_m):
                         q_pos = bx * block_m + i
                         if q_pos < seq_len_q:
-                            lse[bz, by, q_pos] = T.log2(logsum[i]) + scores_max[i] * scale
+                            lse[bz, by, q_pos] = (
+                                T.log2(logsum_shared[i] if use_musa else logsum[i])
+                                + (scores_max_shared[i] if use_musa else scores_max[i]) * scale
+                            )
 
         return _gqa_prefill_fwd_main
 
@@ -517,7 +621,7 @@ class GQAPrefillFwdKernel(PackedPrefillKernel):
     specialised implementation of this key also applies, that one runs instead.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
     # The implementation behind the specialised ones for this key.
     general: bool = True
 
@@ -615,6 +719,7 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
         raise ValueError("page_size must be a positive power of two")
     groups = heads // heads_kv
     accum_dtype = "float"
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[8],
@@ -634,6 +739,9 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
         block_table_shape = (batch, max_pages_per_req)
         o_shape = (total_q, heads, dim)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
+        online_softmax_musa = make_online_softmax_with_shared_state(
+            scale, accum_dtype, block_m, block_n, mask_guard=True
+        )
         apply_softcap = (
             _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_m, block_n)
             if use_softcap
@@ -665,13 +773,23 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
                 v_shared = T.alloc_shared([block_n, dim], dtype)
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                if use_musa:
+                    acc_s_shared = T.alloc_shared([block_m, block_n], accum_dtype)
+                    v_accum_shared = T.alloc_shared([block_n, dim], accum_dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_m], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
-                scores_scale = T.alloc_fragment([block_m], accum_dtype)
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
-                logsum = T.alloc_fragment([block_m], accum_dtype)
                 inv_logsum = T.alloc_fragment([block_m], accum_dtype)
+                if use_musa:
+                    scores_max_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_max_prev_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_scale_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_sum_shared = T.alloc_shared([block_m], accum_dtype)
+                    logsum_shared = T.alloc_shared([block_m], accum_dtype)
+                else:
+                    scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
+                    scores_scale = T.alloc_fragment([block_m], accum_dtype)
+                    logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 q_start = cu_seqlens_q[bz]
                 q_len = cu_seqlens_q[bz + 1] - q_start
@@ -679,7 +797,14 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
                 total_len = old_len + q_len
                 cur_kv_head = by // groups
 
-                if bx * block_m + block_m <= q_len:
+                if use_musa:
+                    for i, d in T.Parallel(block_m, dim):
+                        new_pos = bx * block_m + i
+                        if new_pos < q_len:
+                            q_shared[i, d] = q[q_start + new_pos, by, d]
+                        else:
+                            q_shared[i, d] = T.cast(0, dtype)
+                elif bx * block_m + block_m <= q_len:
                     T.copy(
                         q[q_start + bx * block_m : q_start + (bx + 1) * block_m, by, :],
                         q_shared,
@@ -732,8 +857,12 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
                                 v_pages[physical_pos, by, d] = v_new[q_start + new_pos, by, d]
 
                 T.clear(acc_o)
-                T.clear(logsum)
-                T.fill(scores_max, -T.infinity(accum_dtype))
+                if use_musa:
+                    T.fill(logsum_shared, 0)
+                    T.fill(scores_max_shared, -T.infinity(accum_dtype))
+                else:
+                    T.clear(logsum)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = (
                     T.ceildiv(old_len + (bx + 1) * block_m, block_n)
@@ -837,15 +966,39 @@ def _gqa_prefill_paged_with_kv_cache_fwd_kernel(
                                 acc_s[i, j] = T.if_then_else(
                                     valid, acc_s[i, j], -T.infinity(acc_s.dtype)
                                 )
-                    online_softmax(
-                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
-                    )
-                    T.copy(acc_s, acc_s_cast)
-                    rescale(acc_o, scores_scale)
-                    T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    if use_musa:
+                        online_softmax_musa(
+                            acc_s,
+                            scores_max,
+                            scores_sum,
+                            scores_max_shared,
+                            scores_max_prev_shared,
+                            scores_scale_shared,
+                            scores_sum_shared,
+                            logsum_shared,
+                        )
+                    else:
+                        online_softmax(
+                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                        )
+                    if use_musa:
+                        T.copy(acc_s, acc_s_shared, disable_tma=True)
+                    else:
+                        T.copy(acc_s, acc_s_cast)
+                    if use_musa:
+                        rescale(acc_o, scores_scale_shared)
+                    else:
+                        rescale(acc_o, scores_scale)
+                    if use_musa:
+                        T.copy(v_shared, v_accum_shared, disable_tma=True)
+                        T.gemm(acc_s_shared, v_accum_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    else:
+                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i in T.Parallel(block_m):
                     if bx * block_m + i < q_len:
-                        inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
+                        inv_logsum[i] = T.cast(1, accum_dtype) / (
+                            logsum_shared[i] if use_musa else logsum[i]
+                        )
                 for i, j in T.Parallel(block_m, dim):
                     if bx * block_m + i < q_len:
                         output[q_start + bx * block_m + i, by, j] = acc_o[i, j] * inv_logsum[i]
@@ -927,7 +1080,7 @@ def _(
 class GQAPrefillPagedWithKVCacheFwdKernel(PagedPrefillKernel):
     """Paged prefill against a cache whose element type matches the attention type."""
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -1015,6 +1168,7 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
         raise ValueError("page_size must be a positive power of two")
     groups = heads // heads_kv
     accum_dtype = "float"
+    use_musa = get_backend_name() == "musa"
     cache_dtype = T.float8_e4m3fn
 
     @tilelang.jit(
@@ -1035,6 +1189,9 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
         block_table_shape = (batch, max_pages_per_req)
         o_shape = (total_q, heads, dim)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
+        online_softmax_musa = make_online_softmax_with_shared_state(
+            scale, accum_dtype, block_m, block_n, mask_guard=True
+        )
         apply_softcap = (
             _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_m, block_n)
             if use_softcap
@@ -1078,13 +1235,23 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
                 v_shared = T.alloc_shared([block_n, dim], dtype)
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                if use_musa:
+                    acc_s_shared = T.alloc_shared([block_m, block_n], accum_dtype)
+                    v_accum_shared = T.alloc_shared([block_n, dim], accum_dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_m], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
-                scores_scale = T.alloc_fragment([block_m], accum_dtype)
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
-                logsum = T.alloc_fragment([block_m], accum_dtype)
                 inv_logsum = T.alloc_fragment([block_m], accum_dtype)
+                if use_musa:
+                    scores_max_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_max_prev_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_scale_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_sum_shared = T.alloc_shared([block_m], accum_dtype)
+                    logsum_shared = T.alloc_shared([block_m], accum_dtype)
+                else:
+                    scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
+                    scores_scale = T.alloc_fragment([block_m], accum_dtype)
+                    logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 q_start = cu_seqlens_q[bz]
                 q_len = cu_seqlens_q[bz + 1] - q_start
@@ -1096,7 +1263,14 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
                 local_k_scale = k_scale[0]
                 local_v_scale = v_scale[0]
 
-                if bx * block_m + block_m <= q_len:
+                if use_musa:
+                    for i, d in T.Parallel(block_m, dim):
+                        new_pos = bx * block_m + i
+                        if new_pos < q_len:
+                            q_shared[i, d] = q[q_start + new_pos, by, d]
+                        else:
+                            q_shared[i, d] = T.cast(0, dtype)
+                elif bx * block_m + block_m <= q_len:
                     T.copy(
                         q[q_start + bx * block_m : q_start + (bx + 1) * block_m, by, :],
                         q_shared,
@@ -1157,8 +1331,12 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
                                 )
 
                 T.clear(acc_o)
-                T.clear(logsum)
-                T.fill(scores_max, -T.infinity(accum_dtype))
+                if use_musa:
+                    T.fill(logsum_shared, 0)
+                    T.fill(scores_max_shared, -T.infinity(accum_dtype))
+                else:
+                    T.clear(logsum)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = (
                     T.ceildiv(old_len + (bx + 1) * block_m, block_n)
@@ -1276,15 +1454,39 @@ def _gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel(
                                 acc_s[i, j] = T.if_then_else(
                                     valid, acc_s[i, j], -T.infinity(acc_s.dtype)
                                 )
-                    online_softmax(
-                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
-                    )
-                    T.copy(acc_s, acc_s_cast)
-                    rescale(acc_o, scores_scale)
-                    T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    if use_musa:
+                        online_softmax_musa(
+                            acc_s,
+                            scores_max,
+                            scores_sum,
+                            scores_max_shared,
+                            scores_max_prev_shared,
+                            scores_scale_shared,
+                            scores_sum_shared,
+                            logsum_shared,
+                        )
+                    else:
+                        online_softmax(
+                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                        )
+                    if use_musa:
+                        T.copy(acc_s, acc_s_shared, disable_tma=True)
+                    else:
+                        T.copy(acc_s, acc_s_cast)
+                    if use_musa:
+                        rescale(acc_o, scores_scale_shared)
+                    else:
+                        rescale(acc_o, scores_scale)
+                    if use_musa:
+                        T.copy(v_shared, v_accum_shared, disable_tma=True)
+                        T.gemm(acc_s_shared, v_accum_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    else:
+                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i in T.Parallel(block_m):
                     if bx * block_m + i < q_len:
-                        inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
+                        inv_logsum[i] = T.cast(1, accum_dtype) / (
+                            logsum_shared[i] if use_musa else logsum[i]
+                        )
                 for i, j in T.Parallel(block_m, dim):
                     if bx * block_m + i < q_len:
                         output[q_start + bx * block_m + i, by, j] = acc_o[i, j] * inv_logsum[i]
@@ -1378,7 +1580,7 @@ def _(
 class GQAPrefillPagedWithFP8KVCacheFwdKernel(PagedPrefillKernel):
     """Paged prefill against an FP8 cache, dequantized by the stored descales."""
 
-    supported_archs: list[int] = [89, 90]
+    supported_archs: list[int] = [31, 89, 90]
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -1463,6 +1665,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
         raise ValueError("rotary_dim must be positive, even, and <= dim")
     half = rotary_dim // 2
     page_size_log2 = page_size.bit_length() - 1
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(out_idx=[], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gqa_prefill_paged_with_kv_cache_rope_append_func(block_m: int, threads: int) -> Callable:
@@ -1495,7 +1698,31 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
                 append_start = old_len + bx * block_m
                 append_end = append_start + block_m
 
-                if bx * block_m + block_m <= q_len:
+                if use_musa:
+                    if T.get_thread_binding() == 0:
+                        for linear in T.serial(block_m * dim):
+                            i = linear // dim
+                            d = linear - i * dim
+                            new_pos = bx * block_m + i
+                            if new_pos < q_len:
+                                logical_pos = old_len + new_pos
+                                page_idx = logical_pos >> T.int32(page_size_log2)
+                                page_offset = logical_pos - page_idx * page_size
+                                physical_pos = block_table[bz, page_idx] * page_size + page_offset
+                                freq_idx = d % half
+                                paired_d = T.if_then_else(
+                                    d < half, d + half, T.if_then_else(d < rotary_dim, d - half, d)
+                                )
+                                c = cos_table[logical_pos, freq_idx]
+                                s = sin_table[logical_pos, freq_idx]
+                                val = k_new[q_start + new_pos, by, d]
+                                paired_val = k_new[q_start + new_pos, by, paired_d]
+                                rotated = T.if_then_else(d < half, -paired_val, paired_val)
+                                k_pages[physical_pos, by, d] = T.if_then_else(
+                                    d < rotary_dim, val * c + rotated * s, val
+                                )
+                                v_pages[physical_pos, by, d] = v_new[q_start + new_pos, by, d]
+                elif bx * block_m + block_m <= q_len:
                     if append_start >> T.int32(page_size_log2) == (append_end - 1) >> T.int32(
                         page_size_log2
                     ):
@@ -1573,7 +1800,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_append_kernel(
 
 
 class GQAPrefillPagedWithKVCacheRopeAppendKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,
@@ -1675,6 +1902,7 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
     groups = heads // heads_kv
     half = rotary_dim // 2
     accum_dtype = "float"
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[10],
@@ -1695,6 +1923,9 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
         rope_shape = (max_position, half)
         o_shape = (total_q, heads, dim)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
+        online_softmax_musa = make_online_softmax_with_shared_state(
+            scale, accum_dtype, block_m, block_n, mask_guard=True
+        )
         apply_softcap = (
             _make_apply_softcap_no_mask_guard(score_scale, softcap, accum_dtype, block_m, block_n)
             if use_softcap
@@ -1728,13 +1959,23 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
                 v_shared = T.alloc_shared([block_n, dim], dtype)
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
                 acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                if use_musa:
+                    acc_s_shared = T.alloc_shared([block_m, block_n], accum_dtype)
+                    v_accum_shared = T.alloc_shared([block_n, dim], accum_dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_m], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
-                scores_scale = T.alloc_fragment([block_m], accum_dtype)
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
-                logsum = T.alloc_fragment([block_m], accum_dtype)
                 inv_logsum = T.alloc_fragment([block_m], accum_dtype)
+                if use_musa:
+                    scores_max_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_max_prev_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_scale_shared = T.alloc_shared([block_m], accum_dtype)
+                    scores_sum_shared = T.alloc_shared([block_m], accum_dtype)
+                    logsum_shared = T.alloc_shared([block_m], accum_dtype)
+                else:
+                    scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
+                    scores_scale = T.alloc_fragment([block_m], accum_dtype)
+                    logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 q_start = cu_seqlens_q[bz]
                 q_len = cu_seqlens_q[bz + 1] - q_start
@@ -1764,8 +2005,12 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
                         q_shared[i, d] = T.cast(0, dtype)
 
                 T.clear(acc_o)
-                T.clear(logsum)
-                T.fill(scores_max, -T.infinity(accum_dtype))
+                if use_musa:
+                    T.fill(logsum_shared, 0)
+                    T.fill(scores_max_shared, -T.infinity(accum_dtype))
+                else:
+                    T.clear(logsum)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
 
                 loop_range = (
                     T.ceildiv(old_len + (bx + 1) * block_m, block_n)
@@ -1901,15 +2146,39 @@ def _gqa_prefill_paged_with_kv_cache_rope_fwd_kernel(
                                 acc_s[i, j] = T.if_then_else(
                                     valid, acc_s[i, j], -T.infinity(acc_s.dtype)
                                 )
-                    online_softmax(
-                        acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
-                    )
-                    T.copy(acc_s, acc_s_cast)
-                    rescale(acc_o, scores_scale)
-                    T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    if use_musa:
+                        online_softmax_musa(
+                            acc_s,
+                            scores_max,
+                            scores_sum,
+                            scores_max_shared,
+                            scores_max_prev_shared,
+                            scores_scale_shared,
+                            scores_sum_shared,
+                            logsum_shared,
+                        )
+                    else:
+                        online_softmax(
+                            acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
+                        )
+                    if use_musa:
+                        T.copy(acc_s, acc_s_shared, disable_tma=True)
+                    else:
+                        T.copy(acc_s, acc_s_cast)
+                    if use_musa:
+                        rescale(acc_o, scores_scale_shared)
+                    else:
+                        rescale(acc_o, scores_scale)
+                    if use_musa:
+                        T.copy(v_shared, v_accum_shared, disable_tma=True)
+                        T.gemm(acc_s_shared, v_accum_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                    else:
+                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
                 for i in T.Parallel(block_m):
                     if bx * block_m + i < q_len:
-                        inv_logsum[i] = T.cast(1, accum_dtype) / logsum[i]
+                        inv_logsum[i] = T.cast(1, accum_dtype) / (
+                            logsum_shared[i] if use_musa else logsum[i]
+                        )
                 for i, j in T.Parallel(block_m, dim):
                     if bx * block_m + i < q_len:
                         output[q_start + bx * block_m + i, by, j] = acc_o[i, j] * inv_logsum[i]
@@ -2014,7 +2283,7 @@ class GQAPrefillPagedWithKVCacheRopeFwdKernel(PagedPrefillKernel):
     a second kernel behind a feature flag.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     @classmethod
     def applies(cls, call) -> bool:

@@ -18,6 +18,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.utils import get_backend_name
+
 from .call_spec import uses_sliding_window
 from .online_softmax import (
     make_log2e_scale,
@@ -171,6 +173,7 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     has_window = window_size_left >= 0 or window_size_right >= 0
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[6, 7],
@@ -227,7 +230,12 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                 v[kv_start + k_idx * block_n : kv_start + (k_idx + 1) * block_n, by // groups, :],
                 v_shared,
             )
-            T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+            if use_musa:
+                p_shared = T.alloc_shared([block_m, block_n], dtype)
+                T.copy(acc_s_cast, p_shared)
+                T.gemm(p_shared, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+            else:
+                T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
         @T.prim_func
         def _gqa_sw_fwd_varlen_wgmma_pipelined_main(
@@ -258,7 +266,8 @@ def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
-                T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
+                if not use_musa:
+                    T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
 
                 q_start = cu_seqlens_q[bz]
                 kv_start = cu_seqlens_k[bz]
@@ -386,10 +395,17 @@ def _(
 class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKernelBase):
     """Variable-length GQA sliding window forward kernel, WGMMA pipelined (sm90)."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     @property
     def default_config(self) -> dict:
+        if get_backend_name() == "musa":
+            return {
+                "block_m": 64,
+                "block_n": 64,
+                "num_stages": 1,
+                "threads": 128,
+            }
         return {
             "block_m": 128,
             "block_n": 128,
@@ -399,7 +415,10 @@ class GQASlidingWindowVarlenFwdWgmmaPipelinedKernel(_GQASlidingWindowVarlenFwdKe
 
     @property
     def autotune_configs(self) -> list[dict]:
-        configs = list(itertools.product([64, 128], [64, 128], [2, 3], [128, 256]))
+        if get_backend_name() == "musa":
+            configs = list(itertools.product([64], [64], [1], [128]))
+        else:
+            configs = list(itertools.product([64, 128], [64, 128], [2, 3], [128, 256]))
         return [
             {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]} for c in configs
         ]

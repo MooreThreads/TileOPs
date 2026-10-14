@@ -14,6 +14,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
 from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import FP8LightningIndexerFwdOp
+from tileops.utils.skip_reasons import skip_missing_baseline
 from workloads.fp8_lightning_indexer import FP8LightningIndexerWorkload
 
 # Autotuning and the kernel-config override are bench-run policy, not
@@ -49,6 +50,7 @@ def _one_row_per_shape(workloads: list[dict]) -> list[dict]:
     return rows
 
 
+@skip_missing_baseline
 @pytest.mark.parametrize(
     "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits",
     workload_params(

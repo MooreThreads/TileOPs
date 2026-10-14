@@ -3,8 +3,10 @@ from typing import ClassVar, Dict, Optional
 import torch
 
 from tileops.kernels.attention import MLADecodeWsKernel
+from tileops.kernels.attention.deepseek_mla_decode import MLADecodeKernel
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import get_backend_name
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -63,7 +65,11 @@ class MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(Op):
 
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
-        return {"mla_decode_kernel": MLADecodeWsKernel}
+        return {
+            "mla_decode_kernel": MLADecodeKernel
+            if get_backend_name() == "musa"
+            else MLADecodeWsKernel
+        }
 
     def _infer_output_shapes(
         self,

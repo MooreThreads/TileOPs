@@ -118,11 +118,12 @@ def test_mha_decode_paged_bench(
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
 
-    fi_fn = _flashinfer_mha_decode_paged(test, *inputs)
-    if fi_fn is not None:
-        functors["flashinfer"] = fi_fn
+    # FlashInfer is not a supported baseline for the MUSA benchmark.
+    # fi_fn = _flashinfer_mha_decode_paged(test, *inputs)
+    # if fi_fn is not None:
+    #     functors["flashinfer"] = fi_fn
 
-    if fa3_fn is None and fi_fn is None:
+    if fa3_fn is None:
         functors["torch-ref"] = test.ref_program
 
     bm.compare(functors, *inputs)

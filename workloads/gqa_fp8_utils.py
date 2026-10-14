@@ -5,7 +5,7 @@ def quantize_kv_fa3_descale(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor
     """Quantize K/V and return FA3-interface descales with shape ``[B, H_kv]``.
 
     The current FA3 FP8 GQA Python API accepts one scale per batch/KV-head pair.
-    TileOps broadcasts this public 2D contract to its internal per-128-token-block
+    TileOPs broadcasts this public 2D contract to its internal per-128-token-block
     scale layout before launch.
     """
     descale = x.abs().amax(dim=(1, 3)).clamp(min=1e-4) / 448.0

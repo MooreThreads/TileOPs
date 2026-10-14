@@ -14,6 +14,7 @@ from benchmarks.ops.attention.workload_args import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionSlidingWindowVarlenFwdOp
+from tileops.utils import get_backend_name, synchronize
 from workloads.attention.gqa import (
     GroupedQueryAttentionSlidingWindowVarlenFwdWorkload,
 )
@@ -158,6 +159,9 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if get_backend_name() == "musa" and dtype == torch.bfloat16:
+        pytest.skip("unsupported on MUSA")
+
     test = GroupedQueryAttentionSlidingWindowVarlenFwdWorkload(
         batch, seqlens_q, seqlens_k, heads, heads_kv, dim, is_causal, wl, wr, dtype
     )
@@ -183,7 +187,7 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     bm = ManifestBenchmark(op, test)
 
     op(*inputs)
-    torch.cuda.synchronize()
+    synchronize()
 
     functors = {"tileops": op}
 
@@ -193,12 +197,12 @@ def test_gqa_sliding_window_varlen_fwd_bench(
     if fa3_fn is not None:
         functors["fa3"] = fa3_fn
 
-    # FlashInfer baseline
-    fi_fn = _flashinfer_varlen_sliding_window_fwd(test, *inputs)
-    if fi_fn is not None:
-        functors["flashinfer"] = fi_fn
+    # FlashInfer is not a supported baseline for the MUSA benchmark.
+    # fi_fn = _flashinfer_varlen_sliding_window_fwd(test, *inputs)
+    # if fi_fn is not None:
+    #     functors["flashinfer"] = fi_fn
 
-    if fa3_fn is None and fi_fn is None:
+    if fa3_fn is None:
         functors["torch"] = _torch_sliding_window_varlen_fwd(test)
 
     bm.compare(functors, *inputs)

@@ -3,6 +3,7 @@ import torch
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadLatentAttentionDecodeWithKVCacheFwdOp
+from tileops.utils import get_sm_version
 from workloads.attention.deepseek import MlaDecodeWorkload
 
 
@@ -34,6 +35,8 @@ def test_mla_decode(
     dtype: torch.dtype,
     tune: bool,
 ):
+    if get_sm_version() not in (31, 90):
+        pytest.skip("requires Hopper")
     test = MlaDecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
     op = MultiHeadLatentAttentionDecodeWithKVCacheFwdOp(
         batch, heads, heads_kv, seq_len_kv, dim, dim_pe, tune=tune

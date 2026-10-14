@@ -1,15 +1,22 @@
 import pytest
 import torch
 
+from tileops.utils import get_backend_name, get_sm_version
+
+DEVICE = get_backend_name()
+
 from tileops.ops import GroupedQueryAttentionDenseFwdOp
+from tileops.utils import get_backend_name, get_sm_version
 from workloads.gqa_fp8_utils import (
     quantize_kv_fa3_descale,
     quantize_q_fa3_gqa_descale,
 )
 
+DEVICE = get_backend_name()
+
 
 def _has_sm90() -> bool:
-    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
+    return get_sm_version() == 31 or get_sm_version() >= 90
 
 
 def _run_fp8_prefill_kernel(
@@ -58,9 +65,9 @@ def test_gqa_prefill_fp8_kernel_accepts_fa3_descale_contract(
     input_scale: float,
 ) -> None:
     batch, heads, heads_kv, dim = 1, 8, 2, 128
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * input_scale
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * input_scale
-    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * input_scale
+    q = torch.randn(batch, seq_len, heads, dim, device=DEVICE, dtype=torch.float16) * input_scale
+    k = torch.randn(batch, seq_len, heads_kv, dim, device=DEVICE, dtype=torch.float16) * input_scale
+    v = torch.randn(batch, seq_len, heads_kv, dim, device=DEVICE, dtype=torch.float16) * input_scale
 
     q_fp8, q_descale = quantize_q_fa3_gqa_descale(q, heads_kv)
     k_fp8, k_descale = quantize_kv_fa3_descale(k)
@@ -93,10 +100,10 @@ def test_gqa_prefill_fp8_kernel_accepts_fa3_descale_contract(
 def test_gqa_prefill_fp8_tensor_core_handles_tail_tiles(seq_len: int) -> None:
     batch, heads, heads_kv, dim = 1, 8, 2, 128
     fp8 = torch.float8_e4m3fn
-    q = torch.zeros((batch, seq_len, heads, dim), device="cuda", dtype=fp8)
-    k = torch.zeros((batch, seq_len, heads_kv, dim), device="cuda", dtype=fp8)
+    q = torch.zeros((batch, seq_len, heads, dim), device=DEVICE, dtype=fp8)
+    k = torch.zeros((batch, seq_len, heads_kv, dim), device=DEVICE, dtype=fp8)
     v = torch.ones_like(k)
-    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    scale = torch.ones((batch, heads_kv), device=DEVICE, dtype=torch.float32)
 
     out = _run_fp8_prefill_kernel(
         batch=batch,
@@ -123,9 +130,9 @@ def test_gqa_prefill_fp8_tensor_core_matches_dequantized_reference() -> None:
     batch, seq_len, heads, heads_kv, dim = 1, 897, 8, 2, 128
     group_size = heads // heads_kv
     torch.manual_seed(123)
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16) * 0.25
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
-    v = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16) * 0.25
+    q = torch.randn(batch, seq_len, heads, dim, device=DEVICE, dtype=torch.float16) * 0.25
+    k = torch.randn(batch, seq_len, heads_kv, dim, device=DEVICE, dtype=torch.float16) * 0.25
+    v = torch.randn(batch, seq_len, heads_kv, dim, device=DEVICE, dtype=torch.float16) * 0.25
 
     q_fp8, q_descale = quantize_q_fa3_gqa_descale(q, heads_kv)
     k_fp8, k_descale = quantize_kv_fa3_descale(k)

@@ -14,7 +14,6 @@ import pytest
 import torch
 
 from benchmarks.baselines import (
-    FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     compiled_reference,
     flashinfer_op,
@@ -103,9 +102,10 @@ def test_topk_selector_bench(
         "torch": test.ref_program,
         TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
     }
-    flashinfer_fn = _flashinfer_topk(test, inputs[1], inputs[2])
-    if flashinfer_fn is not None:
-        _assert_selects_same_scores(flashinfer_fn, test.ref_program, *inputs)
-        functors[FLASHINFER_TAG] = flashinfer_fn
+    # FlashInfer is not a supported baseline for the MUSA benchmark.
+    # flashinfer_fn = _flashinfer_topk(test, inputs[1], inputs[2])
+    # if flashinfer_fn is not None:
+    #     _assert_selects_same_scores(flashinfer_fn, test.ref_program, *inputs)
+    #     functors[FLASHINFER_TAG] = flashinfer_fn
 
     bm.compare(functors, *inputs)

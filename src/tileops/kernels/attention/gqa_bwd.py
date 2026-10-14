@@ -7,10 +7,13 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from .online_softmax import LOG2E
 
 __all__ = ["FlashAttnBwdPreprocessKernel", "GQABwdWgmmaPipelinedKernel"]
+
+_bwd_gemm = T.gemm if get_backend_name() == "musa" else T.wgmma_gemm
 
 # preprocess for gqa bwd
 
@@ -22,7 +25,7 @@ def _flashattn_bwd_preprocess_kernel(
 ) -> Callable:
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
-    blk = 256
+    blk = min(256, tilelang.math.next_power_of_2(dim)) if get_backend_name() == "musa" else 256
 
     @T.prim_func
     def flash_bwd_prep(
@@ -50,7 +53,7 @@ def _flashattn_bwd_preprocess_kernel(
 class FlashAttnBwdPreprocessKernel(Kernel):
     """Row-wise ``delta = rowsum(o * do)`` preprocessing for the GQA/MHA backward pass.
 
-    The launch geometry is fixed (``blk = 256``), so ``default_config`` is empty
+    The launch geometry is derived from the head dimension, so ``default_config`` is empty
     and ``autotune_configs`` is undefined: ``tune=True`` degrades to the default
     config with a warning from ``Kernel.init_config``. Both parameters are still
     accepted so the constructor tail matches every other kernel.
@@ -65,7 +68,7 @@ class FlashAttnBwdPreprocessKernel(Kernel):
         tune: Whether to autotune. No-op for this kernel; see above.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,
@@ -109,10 +112,13 @@ def _gqa_bwd_wgmma_pipelined_kernel(
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
     accum_dtype = "float"
+    musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: not musa,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: musa,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -145,8 +151,16 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                 v_shared = T.alloc_shared([block_m, dim], dtype)
                 qkt = T.alloc_fragment([block_m, block_n], accum_dtype)
                 dst = T.alloc_fragment([block_m, block_n], accum_dtype)
-                qkt_cast = T.alloc_fragment([block_m, block_n], dtype)
-                dst_cast = T.alloc_fragment([block_m, block_n], dtype)
+                qkt_cast = (
+                    T.alloc_shared([block_m, block_n], dtype)
+                    if musa
+                    else T.alloc_fragment([block_m, block_n], dtype)
+                )
+                dst_cast = (
+                    T.alloc_shared([block_m, block_n], dtype)
+                    if musa
+                    else T.alloc_fragment([block_m, block_n], dtype)
+                )
                 lse_shared = T.alloc_shared([block_n], accum_dtype)
                 delta_shared = T.alloc_shared([block_n], accum_dtype)
                 do_shared = T.alloc_shared([block_n, dim], dtype)
@@ -156,14 +170,18 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                 dq_shared = T.alloc_shared([block_n, dim], accum_dtype)
                 dv_shared = T.alloc_shared([block_m, dim], accum_dtype)
                 dk_shared = T.alloc_shared([block_m, dim], accum_dtype)
+                do_gemm_shared = T.alloc_shared([block_n, dim], dtype)
+                q_gemm_shared = T.alloc_shared([block_n, dim], dtype)
+                k_gemm_shared = T.alloc_shared([block_m, dim], dtype)
 
-                T.annotate_layout(
-                    {
-                        dq_shared: tilelang.layout.make_swizzled_layout(dq_shared),
-                        dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
-                        dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
-                    }
-                )
+                if not musa:
+                    T.annotate_layout(
+                        {
+                            dq_shared: tilelang.layout.make_swizzled_layout(dq_shared),
+                            dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
+                            dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
+                        }
+                    )
 
                 T.copy(k[bz, by * block_m : (by + 1) * block_m, bx // groups, :], k_shared)
                 T.copy(v[bz, by * block_m : (by + 1) * block_m, bx // groups, :], v_shared)
@@ -176,7 +194,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                 for k_idx in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                     T.copy(q[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :], q_frag)
                     T.clear(qkt)
-                    T.wgmma_gemm(
+                    _bwd_gemm(
                         k_shared, q_frag, qkt, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
                     )
                     T.copy(lse[bz, bx, k_idx * block_n : (k_idx + 1) * block_n], lse_shared)
@@ -189,26 +207,45 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                             )
                     T.copy(do[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :], do_shared)
                     T.clear(dst)
-                    T.wgmma_gemm(
+                    _bwd_gemm(
                         v_shared, do_shared, dst, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
                     )
-                    T.wait_wgmma(1)
+                    if not musa:
+                        T.wait_wgmma(1)
                     T.copy(qkt, qkt_cast)
-                    T.wgmma_gemm(qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow)
+                    if musa:
+                        T.copy(do_shared, do_gemm_shared)
+                        _bwd_gemm(
+                            qkt_cast, do_gemm_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow
+                        )
+                    else:
+                        _bwd_gemm(qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow)
 
                     T.copy(delta[bz, bx, k_idx * block_n : (k_idx + 1) * block_n], delta_shared)
 
                     for i, j in T.Parallel(block_m, block_n):
                         dst_cast[i, j] = qkt[i, j] * (dst[i, j] - delta_shared[j]) * sm_scale
-                    T.wait_wgmma(0)
-                    T.wgmma_gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow)
-                    T.wait_wgmma(1)
+                    if not musa:
+                        T.wait_wgmma(0)
+                    if musa:
+                        T.copy(q_frag, q_gemm_shared)
+                        _bwd_gemm(dst_cast, q_gemm_shared, dk_frag, policy=T.GemmWarpPolicy.FullRow)
+                    else:
+                        _bwd_gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow)
+                    if not musa:
+                        T.wait_wgmma(1)
 
                     T.copy(dst_cast, dst_shared)
                     T.clear(dq_frag)
-                    T.wgmma_gemm(dst_shared, k_shared, dq_frag, transpose_A=True)
-                    T.wait_wgmma(1)
-                    T.wait_wgmma(0)
+                    if musa:
+                        T.copy(k_shared, k_gemm_shared)
+                        _bwd_gemm(dst_shared, k_gemm_shared, dq_frag, transpose_A=True)
+                    else:
+                        _bwd_gemm(dst_shared, k_shared, dq_frag, transpose_A=True)
+                    if not musa:
+                        T.wait_wgmma(1)
+                    if not musa:
+                        T.wait_wgmma(0)
                     T.copy(dq_frag, dq_shared)
                     T.atomic_add(dq[bz, k_idx * block_n : (k_idx + 1) * block_n, bx, :], dq_shared)
                 T.copy(dv_frag, dv_shared)
@@ -222,7 +259,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
 
 
 class GQABwdWgmmaPipelinedKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     def __init__(
         self,
@@ -259,10 +296,14 @@ class GQABwdWgmmaPipelinedKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if get_backend_name() == "musa":
+            return {"block_m": 64, "block_n": 32, "num_stages": 1, "threads": 128}
         return {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 256}
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if get_backend_name() == "musa":
+            return [self.default_config]
         block_m = [64, 128]
         block_n = [64, 128]
         num_stages = [1, 2, 3]

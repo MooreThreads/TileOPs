@@ -16,6 +16,7 @@ __all__ = [
     "make_apply_softcap",
     "make_log2e_scale",
     "make_online_softmax",
+    "make_online_softmax_with_shared_state",
     "make_online_softmax_with_mask_guard",
     "make_online_softmax_with_score_scale",
     "make_rescale",
@@ -72,6 +73,43 @@ def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
         T.reduce_sum(acc_s, scores_sum, dim=1)
         for i in T.Parallel(block_rows):
             logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+
+    return online_softmax
+
+
+def make_online_softmax_with_shared_state(
+    scale, accum_dtype, block_rows, block_cols, mask_guard=False
+):
+    @T.macro
+    def online_softmax(
+        acc_s,
+        scores_max,
+        scores_sum,
+        scores_max_shared,
+        scores_max_prev_shared,
+        scores_scale_shared,
+        scores_sum_shared,
+        logsum_shared,
+    ):
+        T.copy(scores_max_shared, scores_max_prev_shared)
+        T.fill(scores_max, -T.infinity(accum_dtype))
+        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+        T.copy(scores_max, scores_max_shared)
+        if mask_guard:
+            for i in T.Parallel(block_rows):
+                scores_max_shared[i] = T.max(scores_max_shared[i], scores_max_prev_shared[i])
+            for i in T.Parallel(block_rows):
+                scores_max_shared[i] = T.max(scores_max_shared[i], T.cast(-1e38, accum_dtype))
+        for i in T.Parallel(block_rows):
+            scores_scale_shared[i] = T.exp2(
+                scores_max_prev_shared[i] * scale - scores_max_shared[i] * scale
+            )
+        for i, j in T.Parallel(block_rows, block_cols):
+            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max_shared[i] * scale)
+        T.reduce_sum(acc_s, scores_sum, dim=1)
+        T.copy(scores_sum, scores_sum_shared)
+        for i in T.Parallel(block_rows):
+            logsum_shared[i] = logsum_shared[i] * scores_scale_shared[i] + scores_sum_shared[i]
 
     return online_softmax
 

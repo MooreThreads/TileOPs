@@ -10,6 +10,7 @@ import torch
 from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.constants import LOG2E
+from tileops.utils import get_backend_name
 
 from ..kernel_base import Entry, Kernel
 from .call_spec import WS_ARCH, dense_sliding_window_region, dense_ws_region
@@ -39,6 +40,8 @@ _COMPILE_FLAGS = [
     "--expt-extended-lambda",
     "-DNDEBUG",
 ]
+if get_backend_name() == "musa":
+    _COMPILE_FLAGS = ["-O3", "-DENABLE_BF16"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -225,6 +228,13 @@ _cf = [
     "--expt-extended-lambda",
     "-DNDEBUG",
 ]
+if get_backend_name() == "musa":
+    _cf = ["-O3", "-DENABLE_BF16"]
+    _pc = {
+        **_pc,
+        tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: False,
+        tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: False,
+    }
 
 
 @functools.lru_cache(maxsize=32)
@@ -255,6 +265,68 @@ def _gqa_dense_ws_kernel(
     seq_len_q = T.dynamic("seq_len_q")
     seq_len_kv = T.dynamic("seq_len_kv")
 
+    is_musa = get_backend_name() == "musa"
+    bm, bn = 32, 64
+
+    @T.macro
+    def main_musa(
+        Q: T.Tensor([B, seq_len_q, H, D], dtype),
+        K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        O: T.Tensor([B, seq_len_q, H, D], dtype),
+    ):
+        with T.Kernel(T.ceildiv(seq_len_q, bm), H, B, threads=128) as (bx, h, b):
+            q = T.alloc_shared((bm, D), dtype)
+            k = T.alloc_shared((bn, D), dtype)
+            v = T.alloc_shared((bn, D), dtype)
+            p = T.alloc_shared((bm, bn), dtype)
+            s = T.alloc_fragment((bm, bn), accum)
+            o = T.alloc_fragment((bm, D), accum)
+            mx = T.alloc_fragment((bm,), accum)
+            prev = T.alloc_fragment((bm,), accum)
+            alpha = T.alloc_fragment((bm,), accum)
+            denom = T.alloc_fragment((bm,), accum)
+            rowsum = T.alloc_fragment((bm,), accum)
+            T.fill(mx, -T.infinity(accum))
+            T.clear(denom)
+            T.clear(o)
+            for i, j in T.Parallel(bm, D):
+                q[i, j] = T.if_then_else(bx * bm + i < seq_len_q, Q[b, bx * bm + i, h, j], 0)
+            for tile in T.serial(T.ceildiv(seq_len_kv, bn)):
+                for i, j in T.Parallel(bn, D):
+                    k[i, j] = T.if_then_else(
+                        tile * bn + i < seq_len_kv, K[b, tile * bn + i, h // groups, j], 0
+                    )
+                    v[i, j] = T.if_then_else(
+                        tile * bn + i < seq_len_kv, V[b, tile * bn + i, h // groups, j], 0
+                    )
+                T.clear(s)
+                T.gemm(q, k, s, transpose_B=True)
+                for i, j in T.Parallel(bm, bn):
+                    s[i, j] *= score_scale
+                    if use_softcap:
+                        s[i, j] = softcap * T.tanh(s[i, j] / softcap)
+                    if tile * bn + j >= seq_len_kv:
+                        s[i, j] = -T.infinity(accum)
+                    if is_causal and tile * bn + j > bx * bm + i + seq_len_kv - seq_len_q:
+                        s[i, j] = -T.infinity(accum)
+                T.copy(mx, prev)
+                T.reduce_max(s, mx, dim=1, clear=False)
+                for i in T.Parallel(bm):
+                    alpha[i] = T.exp2((prev[i] - mx[i]) * LOG2E)
+                for i, j in T.Parallel(bm, bn):
+                    s[i, j] = T.exp2((s[i, j] - mx[i]) * LOG2E)
+                    p[i, j] = s[i, j]
+                T.reduce_sum(s, rowsum, dim=1)
+                for i in T.Parallel(bm):
+                    denom[i] = denom[i] * alpha[i] + rowsum[i]
+                for i, j in T.Parallel(bm, D):
+                    o[i, j] *= alpha[i]
+                T.gemm(p, v, o)
+            for i, j in T.Parallel(bm, D):
+                if bx * bm + i < seq_len_q:
+                    O[b, bx * bm + i, h, j] = o[i, j] / denom[i]
+
     @T.macro
     def apply_softcap(acc_s, rows, cols):
         for i, j in T.Parallel(rows, cols):
@@ -265,8 +337,8 @@ def _gqa_dense_ws_kernel(
                 acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
             )
 
-    @T.prim_func
-    def main(
+    @T.macro
+    def main_cuda(
         Q: T.Tensor([B, seq_len_q, H, D], dtype),
         K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
         V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
@@ -648,13 +720,25 @@ def _gqa_dense_ws_kernel(
                 T.copy(acc_o, Os[1, :, :])
                 T.copy(Os[1, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
 
+    @T.prim_func
+    def main(
+        Q: T.Tensor([B, seq_len_q, H, D], dtype),
+        K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        O: T.Tensor([B, seq_len_q, H, D], dtype),
+    ):
+        if is_musa:
+            main_musa(Q, K, V, O)
+        else:
+            main_cuda(Q, K, V, O)
+
     return main
 
 
 class GQADenseWsKernel(Kernel):
     """Dense attention using the FA3 two-consumer pipeline."""
 
-    supported_archs: list[int] = [WS_ARCH]
+    supported_archs: list[int] = [31, WS_ARCH]
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -757,7 +841,10 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
 
     @tilelang.jit(
         out_idx=[3, 4],
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: get_backend_name() != "musa",
+        },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _gqa_sw_fwd_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
@@ -824,7 +911,12 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
             bz: T.int32,
         ) -> None:
             T.copy(v[bz, k_idx * block_n : (k_idx + 1) * block_n, by // groups, :], v_shared)
-            T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+            if get_backend_name() == "musa":
+                p_shared = T.alloc_shared([block_m, block_n], dtype)
+                T.copy(acc_s_cast, p_shared)
+                T.gemm(p_shared, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+            else:
+                T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
         @T.prim_func
         def _gqa_sw_fwd_wgmma_pipelined_main(
@@ -852,7 +944,8 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                 scores_sum = T.alloc_fragment([block_m], accum_dtype)
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
-                T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
+                if get_backend_name() != "musa":
+                    T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
                 T.copy(q[bz, bx * block_m : (bx + 1) * block_m, by, :], q_shared)
                 T.clear(acc_o)
                 T.clear(logsum)
@@ -982,7 +1075,7 @@ def _(
 class GQADenseSlidingWindowKernel(Kernel):
     """SM90 Dense sliding-window kernel with a native BSHD ABI."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -1058,6 +1151,8 @@ class GQADenseSlidingWindowKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
+        if get_backend_name() == "musa":
+            return {"block_m": 32, "block_n": 64, "num_stages": 0, "threads": 128}
         return {
             "block_m": 128,
             "block_n": 128,
@@ -1067,6 +1162,11 @@ class GQADenseSlidingWindowKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if get_backend_name() == "musa":
+            return [
+                {"block_m": bm, "block_n": bn, "num_stages": 0, "threads": 128}
+                for bm, bn in itertools.product([32, 64], [32, 64])
+            ]
         configs = list(itertools.product([64, 128], [64, 128], [2, 3], [128, 256]))
         return [
             {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]} for c in configs

@@ -6,6 +6,7 @@ import torch
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp
 from tileops.perf.formulas import gqa_prefill_paged_with_kv_cache_fwd_roofline
+from tileops.utils import get_backend_name
 from workloads.attention.gqa import GQAPrefillPagedWithKVCacheFwdWorkload, make_cu_seqlens
 from workloads.attention.paged import (
     fill_paged_cache_from_logical,
@@ -14,6 +15,8 @@ from workloads.attention.paged import (
     make_unit_cache_scales,
     paged_cache_row,
 )
+
+DEVICE = get_backend_name()
 
 _PREFILL_PAGED_TOLERANCE = {
     torch.float16: (5e-3, 1e-5),
@@ -196,20 +199,20 @@ def test_gqa_prefill_paged_with_kv_cache_fwd(
     total_q = sum(q_lens)
     block_table = make_interleaved_block_table(batch, max_pages_per_req)
     cu_seqlens_q = make_cu_seqlens(q_lens)
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
-    q = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
-    k_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
-    v_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
+    q = torch.randn(total_q, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+    k_new = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
+    v_new = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
     k_pages = torch.zeros(
-        num_pages * page_size, heads_kv, dim, device="cuda", dtype=dtype
+        num_pages * page_size, heads_kv, dim, device=DEVICE, dtype=dtype
     ).contiguous()
     v_pages = torch.zeros_like(k_pages)
     k_old = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     v_old = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
@@ -296,23 +299,23 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_fwd(
     total_q = sum(q_lens)
     block_table = make_interleaved_block_table(batch, max_pages_per_req)
     cu_seqlens_q = make_cu_seqlens(q_lens)
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
-    k_scale = torch.tensor([0.02], device="cuda", dtype=torch.float32)
-    v_scale = torch.tensor([0.02], device="cuda", dtype=torch.float32)
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
+    k_scale = torch.tensor([0.02], device=DEVICE, dtype=torch.float32)
+    v_scale = torch.tensor([0.02], device=DEVICE, dtype=torch.float32)
 
-    q = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
-    k_new = (torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype) * 0.5).contiguous()
-    v_new = (torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype) * 0.5).contiguous()
+    q = torch.randn(total_q, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+    k_new = (torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype) * 0.5).contiguous()
+    v_new = (torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype) * 0.5).contiguous()
     k_pages = torch.zeros(
-        num_pages * page_size, heads_kv, dim, device="cuda", dtype=cache_dtype
+        num_pages * page_size, heads_kv, dim, device=DEVICE, dtype=cache_dtype
     ).contiguous()
     v_pages = torch.zeros_like(k_pages)
     k_old = [
-        (torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype) * 0.5).contiguous()
+        (torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype) * 0.5).contiguous()
         for old_len in old_lens
     ]
     v_old = [
-        (torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype) * 0.5).contiguous()
+        (torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype) * 0.5).contiguous()
         for old_len in old_lens
     ]
     k_old_quant = [(k_b.float() / k_scale[0]).to(cache_dtype).contiguous() for k_b in k_old]
@@ -398,20 +401,20 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
     batch, heads, heads_kv, dim = 1, 8, 2, 64
     q_lens = [1]
     page_size, max_pages_per_req = 64, 1
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k_new = torch.randn(sum(q_lens), heads_kv, dim, device="cuda", dtype=torch.float16).contiguous()
+    q = torch.randn(sum(q_lens), heads, dim, device=DEVICE, dtype=torch.float16).contiguous()
+    k_new = torch.randn(sum(q_lens), heads_kv, dim, device=DEVICE, dtype=torch.float16).contiguous()
     v_new = torch.randn_like(k_new)
     k_pages = torch.zeros(
-        max_pages_per_req * page_size, heads_kv, dim, device="cuda", dtype=torch.float8_e4m3fn
+        max_pages_per_req * page_size, heads_kv, dim, device=DEVICE, dtype=torch.float8_e4m3fn
     ).contiguous()
     v_pages = torch.zeros_like(k_pages)
-    k_scale = torch.tensor([0.02], device="cuda", dtype=torch.float32)
-    v_scale = torch.tensor([0.02], device="cuda", dtype=torch.float32)
+    k_scale = torch.tensor([0.02], device=DEVICE, dtype=torch.float32)
+    v_scale = torch.tensor([0.02], device=DEVICE, dtype=torch.float32)
     if scale_name == "k_scale":
-        k_scale = torch.tensor([bad_value], device="cuda", dtype=torch.float32)
+        k_scale = torch.tensor([bad_value], device=DEVICE, dtype=torch.float32)
     else:
-        v_scale = torch.tensor([bad_value], device="cuda", dtype=torch.float32)
-    block_table = torch.tensor([[0]], device="cuda", dtype=torch.int32)
+        v_scale = torch.tensor([bad_value], device=DEVICE, dtype=torch.float32)
+    block_table = torch.tensor([[0]], device=DEVICE, dtype=torch.int32)
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=batch,
         heads=heads,
@@ -433,7 +436,7 @@ def test_gqa_prefill_paged_with_fp8_kv_cache_rejects_invalid_scales(
             k_scale,
             v_scale,
             make_cu_seqlens(q_lens),
-            torch.tensor([0], device="cuda", dtype=torch.int32),
+            torch.tensor([0], device=DEVICE, dtype=torch.int32),
             block_table,
         )
 
@@ -464,35 +467,35 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
     max_position = max(old + new for old, new in zip(old_lens, q_lens, strict=True)) + 1
     block_table = make_interleaved_block_table(batch, max_pages_per_req)
     cu_seqlens_q = make_cu_seqlens(q_lens)
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
 
-    q_raw = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
-    k_new_raw = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
-    v_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    q_raw = torch.randn(total_q, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+    k_new_raw = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
+    v_new = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
     k_pages = torch.zeros(
-        num_pages * page_size, heads_kv, dim, device="cuda", dtype=dtype
+        num_pages * page_size, heads_kv, dim, device=DEVICE, dtype=dtype
     ).contiguous()
     v_pages = torch.zeros_like(k_pages)
 
     new_positions = torch.cat(
         [
-            torch.arange(old_len, old_len + q_len, device="cuda", dtype=torch.int32)
+            torch.arange(old_len, old_len + q_len, device=DEVICE, dtype=torch.int32)
             for old_len, q_len in zip(old_lens, q_lens, strict=True)
         ]
     )
     old_positions = torch.cat(
-        [torch.arange(old_len, device="cuda", dtype=torch.int32) for old_len in old_lens]
+        [torch.arange(old_len, device=DEVICE, dtype=torch.int32) for old_len in old_lens]
     )
     q_rot = _apply_neox_rope_position_ids(q_raw, new_positions, max_position, rotary_dim=rotary_dim)
     k_new_rot = _apply_neox_rope_position_ids(
         k_new_raw, new_positions, max_position, rotary_dim=rotary_dim
     )
     k_old_raw = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     v_old = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     k_old = list(
@@ -571,14 +574,14 @@ def test_gqa_prefill_paged_with_kv_cache_validates_capacity() -> None:
     page_size, max_pages_per_req = 64, 2
     q_lens = [65]
     old_lens = [64]
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k_new = torch.randn(sum(q_lens), heads_kv, dim, device="cuda", dtype=torch.float16).contiguous()
+    q = torch.randn(sum(q_lens), heads, dim, device=DEVICE, dtype=torch.float16).contiguous()
+    k_new = torch.randn(sum(q_lens), heads_kv, dim, device=DEVICE, dtype=torch.float16).contiguous()
     v_new = torch.randn_like(k_new)
     k_pages = torch.zeros(
-        max_pages_per_req * page_size, heads_kv, dim, device="cuda", dtype=torch.float16
+        max_pages_per_req * page_size, heads_kv, dim, device=DEVICE, dtype=torch.float16
     ).contiguous()
     v_pages = torch.zeros_like(k_pages)
-    block_table = torch.tensor([[0, 1]], device="cuda", dtype=torch.int32)
+    block_table = torch.tensor([[0, 1]], device=DEVICE, dtype=torch.int32)
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=batch,
         heads=heads,
@@ -600,7 +603,7 @@ def test_gqa_prefill_paged_with_kv_cache_validates_capacity() -> None:
             k_scale,
             v_scale,
             make_cu_seqlens(q_lens),
-            torch.tensor(old_lens, device="cuda", dtype=torch.int32),
+            torch.tensor(old_lens, device=DEVICE, dtype=torch.int32),
             block_table,
         )
 
@@ -637,20 +640,20 @@ def test_gqa_prefill_paged_with_kv_cache_page_sizes(page_size: int) -> None:
     total_q = sum(q_lens)
     block_table = make_interleaved_block_table(batch, max_pages_per_req)
     cu_seqlens_q = make_cu_seqlens(q_lens)
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
-    q = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
-    k_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
-    v_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
+    q = torch.randn(total_q, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+    k_new = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
+    v_new = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
     k_pages = torch.zeros(
-        num_pages * page_size, heads_kv, dim, device="cuda", dtype=dtype
+        num_pages * page_size, heads_kv, dim, device=DEVICE, dtype=dtype
     ).contiguous()
     v_pages = torch.zeros_like(k_pages)
     k_old = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     v_old = [
-        torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         for old_len in old_lens
     ]
     fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
@@ -703,7 +706,7 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
     total_q = sum(q_lens)
     block_table = make_interleaved_block_table(batch, max_pages_per_req)
     cu_seqlens_q = make_cu_seqlens(q_lens)
-    cache_seqlens = torch.tensor(old_lens, device="cuda", dtype=torch.int32)
+    cache_seqlens = torch.tensor(old_lens, device=DEVICE, dtype=torch.int32)
     k_scale, v_scale = make_unit_cache_scales()
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=batch,
@@ -716,19 +719,19 @@ def test_gqa_prefill_paged_serves_two_dtypes_from_one_instance() -> None:
     )
 
     for dtype in (torch.float16, torch.bfloat16):
-        q = torch.randn(total_q, heads, dim, device="cuda", dtype=dtype).contiguous()
-        k_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
-        v_new = torch.randn(total_q, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+        q = torch.randn(total_q, heads, dim, device=DEVICE, dtype=dtype).contiguous()
+        k_new = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
+        v_new = torch.randn(total_q, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
         k_pages = torch.zeros(
-            num_pages * page_size, heads_kv, dim, device="cuda", dtype=dtype
+            num_pages * page_size, heads_kv, dim, device=DEVICE, dtype=dtype
         ).contiguous()
         v_pages = torch.zeros_like(k_pages)
         k_old = [
-            torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+            torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
             for old_len in old_lens
         ]
         v_old = [
-            torch.randn(old_len, heads_kv, dim, device="cuda", dtype=dtype).contiguous()
+            torch.randn(old_len, heads_kv, dim, device=DEVICE, dtype=dtype).contiguous()
             for old_len in old_lens
         ]
         fill_paged_cache_from_logical(k_pages, v_pages, k_old, v_old, block_table, page_size)
@@ -811,7 +814,7 @@ def test_paged_workloads_hand_out_a_fragmented_block_table() -> None:
     assert disjoint.shape == (batch, pages_per_req)
     assert sorted(disjoint.flatten().tolist()) == list(range(pool_pages))
     assert not torch.equal(
-        disjoint, torch.arange(pool_pages, dtype=torch.int32, device="cuda").reshape(batch, -1)
+        disjoint, torch.arange(pool_pages, dtype=torch.int32, device=DEVICE).reshape(batch, -1)
     )
 
     shared = make_fragmented_block_table(batch, pages_per_req, pages_per_req)

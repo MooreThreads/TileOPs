@@ -17,10 +17,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.attention.gqa_decode import (
+    GQADecodeKernel,
     _gqa_decode_no_split_rope_run,
     _gqa_decode_no_split_run,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_backend_name
 
 from .call_spec import decode_bs1_region, dense_decode_region, dense_long_context_decode_region
 from .dense_entry import dense_decode_entry
@@ -539,7 +541,7 @@ class GQADecodeBs1Kernel(Kernel):
     below 640 and partial-RoPE calls below 1024 retain the generic single-kernel path.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
     _MIN_CTX = 1024
     _PLAIN_CTX_MIN = 640
     _TARGET_PARTIAL_CTAS = 128
@@ -642,10 +644,39 @@ class GQADecodeBs1Kernel(Kernel):
             raise ValueError("heads must be divisible by heads_kv")
         if self.seqlen_kv <= 0:
             raise ValueError("seq_len_kv must be positive")
+        if get_backend_name() == "musa":
+            delegate_config = (
+                None
+                if config is None
+                else {
+                    "block_H" if key == "block_M" else key: value for key, value in config.items()
+                }
+            )
+            self._musa_kernel = GQADecodeKernel(
+                self.batch,
+                self.heads,
+                self.groups,
+                self.seqlen_kv,
+                self.dim,
+                self.dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                config=delegate_config,
+                fuse_rope=self.fuse_rope,
+                max_position=self.max_position,
+                rotary_dim=self.rotary_dim,
+                rope_layout=self.rope_layout,
+                device_index=device_index,
+            )
+            self.init_config(delegate_config, tune)
+            self._musa_kernel.config = self.config
+            return
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
+        if get_backend_name() == "musa":
+            return self._musa_kernel.default_config
         return {"block_M": 64, "block_N": 128, "threads": 160}
 
     def forward(
@@ -660,6 +691,8 @@ class GQADecodeBs1Kernel(Kernel):
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_cuda(q=q, k=k, v=v)
+        if get_backend_name() == "musa":
+            return self._musa_kernel(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
         del q_scale, k_scale, v_scale
         if self.fuse_rope and (rope_cos is None or rope_sin is None):
             raise ValueError("fused RoPE requires rope_cos and rope_sin")

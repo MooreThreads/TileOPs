@@ -2,10 +2,13 @@
 
 import torch
 import torch.nn.functional as F
-from einops import einsum, rearrange, repeat
+from einops import einsum, rearrange
 
+from tileops.utils import get_backend_name
 from workloads.nsa_utils import prepare_chunk_offsets, prepare_token_indices
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import WorkloadBase, benchmark_compare_active
+
+DEVICE = get_backend_name()
 
 
 def _packed_offsets(
@@ -23,20 +26,17 @@ def _packed_offsets(
                 f"got {len(seq_lens)} summing to {sum(seq_lens)}"
             )
         bounds = torch.tensor([0, *seq_lens], dtype=torch.long).cumsum(0)
-        return bounds.cuda()
+        return bounds.to(DEVICE)
     splits = torch.arange(min_split, c_seq_len)
-    return (
-        torch.cat(
-            [
-                torch.tensor([0], dtype=torch.long),
-                splits[torch.randperm(len(splits))[: seq_num - 1]],
-                torch.tensor([c_seq_len], dtype=torch.long),
-            ],
-            0,
-        )
-        .cuda()
-        .sort()[0]
-    )
+    bounds = torch.cat(
+        [
+            torch.tensor([0], dtype=torch.long),
+            splits[torch.randperm(len(splits))[: seq_num - 1]],
+            torch.tensor([c_seq_len], dtype=torch.long),
+        ],
+        0,
+    ).sort()[0]
+    return bounds.to(DEVICE)
 
 
 class NsaFwdWorkload(WorkloadBase):
@@ -74,9 +74,9 @@ class NsaFwdWorkload(WorkloadBase):
         offsets = _packed_offsets(self.seq_lens, self.batch, self.c_seq_len, 16)
 
         def _shuffled(n_head: int) -> torch.Tensor:
-            perm = torch.randperm(self.c_seq_len, device="cuda")
+            perm = torch.randperm(self.c_seq_len, device=DEVICE)
             return (
-                torch.linspace(0, 1, steps=self.c_seq_len, dtype=self.dtype, device="cuda")[perm]
+                torch.linspace(0, 1, steps=self.c_seq_len, dtype=self.dtype, device=DEVICE)[perm]
                 .view(self.c_seq_len, 1, 1)
                 .expand(self.c_seq_len, n_head, self.dim)
                 .clone()
@@ -85,7 +85,7 @@ class NsaFwdWorkload(WorkloadBase):
 
         q, k, v = _shuffled(self.heads), _shuffled(self.head_kv), _shuffled(self.head_kv)
         self.g_slc = torch.ones(
-            (self.batch, self.c_seq_len, self.heads), dtype=self.dtype, device="cuda"
+            (self.batch, self.c_seq_len, self.heads), dtype=self.dtype, device=DEVICE
         ).requires_grad_(True)
 
         token_indices = prepare_token_indices(offsets)
@@ -96,8 +96,8 @@ class NsaFwdWorkload(WorkloadBase):
         # one random key per candidate is a batched randperm; the ineligible tail sorts
         # last under +inf, and a pick that reaches there becomes a c_seq_len slot, which
         # the kernel and the reference both read as "attends to nothing".
-        keys = torch.rand((self.c_seq_len, self.head_kv, n_cand), device="cuda").masked_fill(
-            torch.arange(n_cand, device="cuda") >= chunks[:, None, None], float("inf")
+        keys = torch.rand((self.c_seq_len, self.head_kv, n_cand), device=DEVICE).masked_fill(
+            torch.arange(n_cand, device=DEVICE) >= chunks[:, None, None], float("inf")
         )
         picked = keys.argsort(-1)[..., : self.selected_blocks]
         block_indices = (
@@ -110,8 +110,7 @@ class NsaFwdWorkload(WorkloadBase):
             self.selected_blocks + 1,
             (self.c_seq_len, self.head_kv),
             dtype=torch.int32,
-            device="cuda",
-        )
+        ).to(DEVICE)
         return (
             q,
             k,
@@ -133,48 +132,12 @@ class NsaFwdWorkload(WorkloadBase):
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
         _ = token_indices
-        dtype, device = q.dtype, q.device
-        bs = self.block_size
-        scale = self.scale if self.scale is not None else k.shape[-1] ** -0.5
-        group = q.shape[1] // k.shape[1]
-        n_slot = block_indices.shape[-1] * bs
-
-        k, v, block_indices = (
-            repeat(x, "t h d -> t (h g) d", g=group) for x in (k, v, block_indices)
-        )
-        block_counts = repeat(block_counts, "t h -> t (h g)", g=group)
-        q, k, v = (x.float() for x in (q, k, v))
-        heads = q.shape[1]
-        # Which selected block each gathered position came from, for the count mask.
-        slot_block = (torch.arange(n_slot, device=device) // bs).view(1, n_slot, 1)
-        head = torch.arange(heads, device=device)
-
-        o_slc = torch.zeros_like(v)
-        for i in range(len(offsets) - 1):
-            bos, eos = offsets[i].item(), offsets[i + 1].item()
-            n_token = eos - bos
-            q_b, k_b, v_b = q[bos:eos], k[bos:eos], v[bos:eos]
-
-            # [t, s*bs, hq]: the token each selected block contributes, per head.
-            pos = block_indices[bos:eos].unsqueeze(-1) * bs + torch.arange(bs, device=device)
-            pos = pos.view(n_token, heads, n_slot).transpose(1, 2)
-            # Out-of-range positions are masked below; clamping only keeps the gather legal.
-            k_slc, v_slc = (x[pos.clamp(0, n_token - 1), head] for x in (k_b, v_b))
-
-            i_q = torch.arange(n_token, device=device).view(n_token, 1, 1)
-            attn = (
-                einsum(q_b * scale, k_slc, "t h d, t n h d -> t n h")
-                .masked_fill(
-                    (pos < 0) | (pos > i_q) | (slot_block >= block_counts[bos:eos].unsqueeze(1)),
-                    float("-inf"),
-                )
-                .softmax(1)
-            )
-            o_slc[bos:eos] = einsum(attn, v_slc, "t n h, t n h v -> t h v") * self.g_slc[
-                0, bos:eos
-            ].unsqueeze(-1)
-
-        return o_slc.to(dtype)
+        device = q.device
+        if benchmark_compare_active():
+            return _nsa_sparse_fwd_cpu(self, q, k, v, block_indices, block_counts, offsets)
+        return _nsa_sparse_fwd_cpu(
+            self, q.cpu(), k.cpu(), v.cpu(), block_indices.cpu(), block_counts.cpu(), offsets.cpu()
+        ).to(device)
 
 
 class NsaCmpFwdWorkload(WorkloadBase):
@@ -215,14 +178,15 @@ class NsaCmpFwdWorkload(WorkloadBase):
             torch.int32
         )
 
-        chunk_offsets = prepare_chunk_offsets(offsets, self.bs).to(torch.int32)
-        token_indices = prepare_token_indices(offsets).to(torch.int32)
+        offsets_cpu = offsets.cpu()
+        chunk_offsets = prepare_chunk_offsets(offsets_cpu, self.bs).to(DEVICE, dtype=torch.int32)
+        token_indices = prepare_token_indices(offsets_cpu).to(DEVICE, dtype=torch.int32)
         chunk_num = chunk_offsets[-1].item()
 
         # float16, data Tie-breaking
-        q = torch.randn((self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device="cuda")
-        k = torch.randn((chunk_num, self.head_kv, self.dim_k), dtype=self.dtype, device="cuda")
-        v = torch.randn((chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device="cuda")
+        q = torch.randn((self.c_seq_len, self.heads, self.dim_k), dtype=self.dtype, device=DEVICE)
+        k = torch.randn((chunk_num, self.head_kv, self.dim_k), dtype=self.dtype, device=DEVICE)
+        v = torch.randn((chunk_num, self.head_kv, self.dim_v), dtype=self.dtype, device=DEVICE)
 
         self.chunk_num = chunk_offsets[-1].item()
         return (
@@ -244,9 +208,16 @@ class NsaCmpFwdWorkload(WorkloadBase):
         token_indices: torch.LongTensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _ = chunk_offsets, token_indices
-        return _parallel_nsa_compression_fwd_pytorch(
-            self, q, k_cmp, v_cmp, self.bs, self.scale, offsets
+        device = q.device
+        if benchmark_compare_active():
+            output = _parallel_nsa_compression_fwd_pytorch(
+                self, q, k_cmp, v_cmp, self.bs, self.scale, offsets
+            )
+            return tuple(value.to(device) for value in output)
+        output = _parallel_nsa_compression_fwd_pytorch(
+            self, q.cpu(), k_cmp.cpu(), v_cmp.cpu(), self.bs, self.scale, offsets.cpu()
         )
+        return tuple(value.to(device) for value in output)
 
 
 class NsaTopkWorkload(WorkloadBase):
@@ -285,21 +256,22 @@ class NsaTopkWorkload(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         offsets = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, 16)
 
-        chunk_offsets = prepare_chunk_offsets(offsets, self.bs)
-        token_indices = prepare_token_indices(offsets)
+        offsets_cpu = offsets.cpu()
+        chunk_offsets = prepare_chunk_offsets(offsets_cpu, self.bs).to(DEVICE)
+        token_indices = prepare_token_indices(offsets_cpu).to(DEVICE)
         chunk_num = chunk_offsets[-1].item()
 
         # float16, data Tie-breaking
         q = (
-            torch.randn((self.c_seq_len, self.heads, self.dim), dtype=self.dtype, device="cuda")
+            torch.randn((self.c_seq_len, self.heads, self.dim), dtype=self.dtype, device=DEVICE)
             * 0.1
         )
-        k = torch.randn((chunk_num, self.head_kv, self.dim), dtype=self.dtype, device="cuda") * 0.1
+        k = torch.randn((chunk_num, self.head_kv, self.dim), dtype=self.dtype, device=DEVICE) * 0.1
 
         q.requires_grad_(True)
         k.requires_grad_(True)
 
-        lse = torch.zeros((self.c_seq_len, self.heads), dtype=self.dtype, device="cuda")
+        lse = torch.zeros((self.c_seq_len, self.heads), dtype=self.dtype, device=DEVICE)
 
         self.chunk_num = chunk_offsets[-1].item()
         return (
@@ -320,18 +292,34 @@ class NsaTopkWorkload(WorkloadBase):
         chunk_offsets: torch.LongTensor,
         token_indices: torch.LongTensor,
     ) -> torch.Tensor:
-        return _nsa_topk_torch(
+        device = q.device
+        if benchmark_compare_active():
+            output = _nsa_topk_torch(
+                self,
+                q,
+                k_cmp,
+                lse,
+                self.selected_block_num,
+                self.bs,
+                self.scale,
+                offsets,
+                token_indices,
+                chunk_offsets,
+            )
+            return output.to(device)
+        output = _nsa_topk_torch(
             self,
-            q,
-            k_cmp,
-            lse,
+            q.cpu(),
+            k_cmp.cpu(),
+            lse.cpu(),
             self.selected_block_num,
             self.bs,
             self.scale,
-            offsets,
-            token_indices,
-            chunk_offsets,
+            offsets.cpu(),
+            token_indices.cpu(),
+            chunk_offsets.cpu(),
         )
+        return output.to(device)
 
 
 class MlaDecodeWorkload(WorkloadBase):
@@ -354,13 +342,13 @@ class MlaDecodeWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        Q = torch.randn(self.batch, self.heads, self.dim, device="cuda", dtype=self.dtype)
-        Q_pe = torch.randn(self.batch, self.heads, self.dim_pe, device="cuda", dtype=self.dtype)
+        Q = torch.randn(self.batch, self.heads, self.dim, device=DEVICE, dtype=self.dtype)
+        Q_pe = torch.randn(self.batch, self.heads, self.dim_pe, device=DEVICE, dtype=self.dtype)
         K = torch.randn(
-            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device="cuda", dtype=self.dtype
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim, device=DEVICE, dtype=self.dtype
         )
         K_pe = torch.randn(
-            self.batch, self.seq_len_kv, self.heads_kv, self.dim_pe, device="cuda", dtype=self.dtype
+            self.batch, self.seq_len_kv, self.heads_kv, self.dim_pe, device=DEVICE, dtype=self.dtype
         )
         return Q, Q_pe, K, K_pe
 
@@ -449,7 +437,7 @@ class DsaDecodeWorkload(WorkloadBase):
             self.seq_len,
             self.heads,
             self.dim + self.dim_tail,
-            device="cuda",
+            device=DEVICE,
             dtype=self.dtype,
         )
         kv = torch.randn(
@@ -457,14 +445,14 @@ class DsaDecodeWorkload(WorkloadBase):
             self.seq_len_kv,
             self.heads_kv,
             self.dim + self.dim_tail,
-            device="cuda",
+            device=DEVICE,
             dtype=self.dtype,
         )
         indices = torch.full(
             (self.batch, self.seq_len, self.heads_kv, self.topk),
             self.seq_len_kv,
             dtype=torch.int32,
-            device="cuda",
+            device=DEVICE,
         )
         for b in range(self.batch):
             for t in range(self.seq_len):
@@ -510,6 +498,9 @@ class DsaDecodeWorkload(WorkloadBase):
         return mask
 
     def ref_program(self, q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        device = q.device
+        if device.type == "musa" and not benchmark_compare_active():
+            q, kv, indices = q.cpu(), kv.cpu(), indices.cpu()
         q = q.float()
         kv = kv.float()
         b, sq, h, dim_q = q.shape
@@ -534,19 +525,19 @@ class DsaDecodeWorkload(WorkloadBase):
         p = p.view(b, g, -1, sq, sk)
         o = torch.einsum("bghmn,bngd->bmghd", p.type(v.dtype), v)
         o = o.reshape(b, sq, h, dim_v)
-        return o.to(torch.float16)
+        return o.to(device=device, dtype=torch.float16)
 
 
 def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, offsets):
-    """PyTorch reference implementation on GPU."""
+    """Vectorized CPU reference for NSA compression."""
     seq_len, heads, dim_k = q.shape
     _, head_kv, _ = k_cmp.shape
     dim_v = v_cmp.shape[-1]
     group = heads // head_kv
-    device = q.device
     num_seq = len(offsets) - 1
 
     # A token before the first block closed attends to nothing; both outputs stay zero.
+    device = q.device
     o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
     lse = torch.zeros((seq_len, heads), dtype=torch.float32, device=device)
 
@@ -585,6 +576,41 @@ def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, sca
         )
 
     return o.to(test.dtype), lse.to(test.dtype)
+
+
+def _nsa_sparse_fwd_cpu(test, q, k, v, block_indices, block_counts, offsets):
+    """Vectorized CPU reference for sparse NSA forward."""
+    total_tokens, heads, dim = q.shape
+    head_kv = k.shape[1]
+    group = heads // head_kv
+    selected = block_indices.shape[-1]
+    block_size = test.block_size
+    device = q.device
+    g_slc = test.g_slc.to(device)
+    output = torch.zeros((total_tokens, heads, v.shape[-1]), dtype=torch.float32, device=device)
+    for i_n in range(len(offsets) - 1):
+        bos, eos = int(offsets[i_n]), int(offsets[i_n + 1])
+        q_seq = q[bos:eos].float()
+        k_seq = k[bos:eos].float().repeat_interleave(group, dim=1)
+        v_seq = v[bos:eos].float().repeat_interleave(group, dim=1)
+        block_ids = block_indices[bos:eos].repeat_interleave(group, dim=1)
+        counts = block_counts[bos:eos].repeat_interleave(group, dim=1)
+        positions = block_ids.unsqueeze(-1) * block_size + torch.arange(block_size, device=device)
+        positions = positions.reshape(eos - bos, heads, selected * block_size)
+        head_ids = torch.arange(heads, device=device).view(1, heads, 1)
+        safe_positions = positions.clamp(0, eos - bos - 1)
+        k_selected = k_seq[safe_positions, head_ids]
+        v_selected = v_seq[safe_positions, head_ids]
+        scores = torch.einsum("thd,thnd->thn", q_seq, k_selected) * test.scale
+        causal = torch.arange(eos - bos, device=device).view(-1, 1, 1)
+        offsets_selected = torch.arange(selected * block_size, device=device).view(1, 1, -1)
+        block_slots = offsets_selected // block_size
+        valid = (positions >= 0) & (positions <= causal) & (block_slots < counts.unsqueeze(-1))
+        probs = torch.softmax(scores.masked_fill(~valid, float("-inf")), dim=-1)
+        probs = torch.where(valid.any(dim=-1, keepdim=True), probs, torch.zeros_like(probs))
+        output[bos:eos] = torch.einsum("thn,thnd->thd", probs, v_selected)
+        output[bos:eos] *= g_slc[i_n, : eos - bos].float().unsqueeze(-1)
+    return output.to(test.dtype)
 
 
 def _nsa_topk_torch(
@@ -655,6 +681,22 @@ def _nsa_topk_torch(
         # Quantizing the score and adding the block ordinal makes the ranking total, so
         # equal scores break the same way here and in the kernel.
         eps, score_scale = 1e-5, 1e12
+        if device.type == "musa":
+            # Reverse block order before stable sorting so ties prefer larger ordinals.
+            scores = (importance / eps).round()
+            scores = scores.masked_fill(o_c > curr.squeeze(-1), float("-inf"))
+            n_pick = min(selected_block_num, n_chunk)
+            indices = (
+                n_chunk
+                - 1
+                - torch.argsort(scores.flip([-1]), dim=-1, descending=True, stable=True)[
+                    ..., :n_pick
+                ]
+            )
+            block_indices[bos:eos, :, :n_pick] = torch.where(
+                scores.gather(-1, indices) > float("-inf"), indices.to(torch.int32), -1
+            )
+            continue
         sort_key = (importance / eps).round().to(torch.float64) * eps * score_scale + o_c
         sort_key = sort_key.masked_fill(o_c > curr.squeeze(-1), float("-inf"))
 

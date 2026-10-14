@@ -6,7 +6,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.utils import get_backend_name
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_backend_name
 
 from .call_spec import dense_decode_region, dense_long_context_decode_region
 from .dense_entry import dense_decode_entry
@@ -16,6 +18,9 @@ from .online_softmax import (
     make_online_softmax,
     make_rescale,
 )
+
+DEVICE = get_backend_name()
+
 
 __all__ = ["GQADecodeKernel"]
 
@@ -98,7 +103,9 @@ def _gqa_decode_no_split_kernel(
                 V_shared = T.alloc_shared([block_N, dim], dtype)
                 O_shared = T.alloc_shared([valid_block_H, dim], dtype)
                 acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
+                acc_s_cast = (T.alloc_shared([block_H, block_N], dtype)
+                              if get_backend_name() == "musa"
+                              else T.alloc_fragment([block_H, block_N], dtype))
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -141,10 +148,12 @@ def _gqa_decode_no_split_kernel(
                             Q_shared[i, j] = 0
                     T.sync_threads(3, threads)
                 else:
-                    T.copy(
-                        Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :],
-                        Q_shared,
-                    )
+                    for i, j in T.Parallel(block_H, dim):
+                        Q_shared[i, j] = T.if_then_else(
+                            i < valid_block_H,
+                            Q[bid, hid * valid_block_H + i, j],
+                            T.cast(0, dtype),
+                        )
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -298,7 +307,9 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                 V_shared = T.alloc_shared([valid_block_N, dim], dtype)
                 O_shared = T.alloc_shared([valid_block_H, dim], dtype)
                 acc_s = T.alloc_fragment([block_H, valid_block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_H, valid_block_N], dtype)
+                acc_s_cast = (T.alloc_shared([block_H, valid_block_N], dtype)
+                              if get_backend_name() == "musa"
+                              else T.alloc_fragment([block_H, valid_block_N], dtype))
                 acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_H], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -323,7 +334,12 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                 base = tile_begin * block_N
                 this_len = T.max(T.min(seqlen_kv - base, tiles_this_split * block_N), 0)
 
-                T.copy(Q[bid, hid * valid_block_H : hid * valid_block_H + block_H, :], Q_shared)
+                for i, j in T.Parallel(block_H, dim):
+                    Q_shared[i, j] = T.if_then_else(
+                        i < valid_block_H,
+                        Q[bid, hid * valid_block_H + i, j],
+                        T.cast(0, dtype),
+                    )
                 T.fill(acc_o, 0)
                 T.fill(logsum, 0)
                 T.fill(scores_max, -T.infinity(accum_dtype))
@@ -586,7 +602,7 @@ def _(
 
 
 class GQADecodeKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
     # The implementation behind the specialised ones for this key.
     general: bool = True
 
@@ -640,9 +656,26 @@ class GQADecodeKernel(Kernel):
 
         arch = get_sm_version(device_index)
         self._is_sm90 = arch == 90
-        if fuse_rope and arch != 90:
-            raise ValueError("fused RoPE decode currently requires SM90")
-        self.use_ws_rope = fuse_rope
+        if fuse_rope and arch not in (31, 90):
+            raise ValueError("fused RoPE decode requires MP31 or SM90")
+        self.use_ws_rope = fuse_rope and arch == 90
+        self._mp31_rope = None
+        if fuse_rope and arch == 31:
+            from .gqa_dense import make_dense_qk_rope_preprocessor
+
+            self._mp31_rope = make_dense_qk_rope_preprocessor(
+                fuse_rope=True,
+                batch=batch,
+                heads=heads,
+                heads_kv=heads_kv,
+                seq_len_q=1,
+                seq_len_kv=seq_len_kv,
+                dim=dim,
+                max_position=max_position,
+                rotary_dim=rotary_dim,
+                rope_layout=rope_layout,
+                dtype=self.dtype_str,
+            )
         if self.groups <= 0:
             raise ValueError("heads_kv must be positive")
         if self.heads % self.groups != 0:
@@ -771,12 +804,31 @@ class GQADecodeKernel(Kernel):
         block_N = self.config["block_N"]
         num_stages = self.config["num_stages"]
         threads = self.config["threads"]
+        if self._mp31_rope is not None:
+            q_rot, k_rot = self._mp31_rope(q, k, rope_cos, rope_sin)
+            output = _gqa_decode_no_split_run(
+                self.batch,
+                self.heads,
+                self.groups,
+                self.dim,
+                self.sm_scale,
+                self.softcap,
+                self.dtype_str,
+                block_H,
+                block_N,
+                num_stages,
+                threads,
+                q_rot.squeeze(1),
+                k_rot,
+                V,
+            )
+            return output.unsqueeze(1)
         # The tuned num_split is a ceiling: shrink it until every split keeps
         # one full KV tile. 1 means the sequence is too short to split.
         num_split = _effective_dense_num_split(self.config["num_split"], block_N, real_seqlen_kv)
 
         # Dispatch: no-split for sequences too short to give each split a tile
-        if num_split == 1:
+        if num_split == 1 or (self.fuse_rope and not self.use_ws_rope):
             if self.fuse_rope:
                 output = _gqa_decode_no_split_rope_run(
                     self.batch,

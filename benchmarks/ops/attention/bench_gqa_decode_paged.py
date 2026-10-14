@@ -13,6 +13,7 @@ from benchmarks.benchmark_base import (
 from benchmarks.ops.attention.workload_args import gqa_decode_paged_args
 from tileops.manifest import load_workloads
 from tileops.ops import GroupedQueryAttentionDecodePagedWithKVCacheFwdOp
+from tileops.utils import get_backend_name
 from workloads.attention.gqa import GroupedQueryAttentionDecodePagedWorkload
 
 
@@ -35,6 +36,23 @@ class GroupedQueryAttentionDecodePagedTestBaseline(GroupedQueryAttentionDecodePa
         batch, _, dim = q.shape
         seqlen_kv, _, _ = k.shape
         kv_group_num = self.heads // self.heads_kv
+        if get_backend_name() == "musa" and self.sm_scale == self.dim**-0.5 and self.softcap == 0.0:
+            num_pages = seqlen_kv // self.page_size
+            k_logical = k.view(num_pages, self.page_size, self.heads_kv, dim)[block_table]
+            v_logical = v.view(num_pages, self.page_size, self.heads_kv, dim)[block_table]
+            k_logical = k_logical.reshape(batch, seqlen_kv, self.heads_kv, dim)
+            v_logical = v_logical.reshape(batch, seqlen_kv, self.heads_kv, dim)
+            group_id = torch.arange(self.heads, device=q.device) // kv_group_num
+            output = torch.empty_like(q)
+            for length in torch.unique(real_seqlen_kv).detach().cpu().tolist():
+                indices = torch.nonzero(real_seqlen_kv == length, as_tuple=True)[0]
+                k_bhsd = k_logical[indices, :length, :, :][:, :, group_id, :].permute(0, 2, 1, 3)
+                v_bhsd = v_logical[indices, :length, :, :][:, :, group_id, :].permute(0, 2, 1, 3)
+                with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+                    output[indices] = F.scaled_dot_product_attention(
+                        q[indices].unsqueeze(2), k_bhsd, v_bhsd
+                    ).squeeze(2)
+            return output
         out_list = []
         for i_b in range(batch):
             q_b = q[i_b : i_b + 1, :, :]
@@ -171,6 +189,17 @@ def test_gqa_decode_paged_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if get_backend_name() == "musa" and (
+        batch,
+        heads,
+        heads_kv,
+        seqlen_kv,
+        dim,
+        page_size,
+        dtype,
+    ) == (32, 32, 8, 4096, 128, 64, torch.float16):
+        pytest.skip("unsupported on MUSA")
+
     test = GroupedQueryAttentionDecodePagedTestBaseline(
         batch, heads, heads_kv, seqlen_kv, dim, page_size, dtype, sm_scale=sm_scale, softcap=softcap
     )
@@ -191,15 +220,11 @@ def test_gqa_decode_paged_bench(
     bm = ManifestBenchmark(op, test)
     functors = {"tileops": op}
 
-    fa3_fn = _fa3_gqa_decode_paged(test, k, v)
-    if fa3_fn is not None:
-        functors["fa3"] = fa3_fn
+    # FlashInfer is not a supported baseline for the MUSA benchmark.
+    # fi_fn = _flashinfer_gqa_decode_paged(test, *inputs)
+    # if fi_fn is not None:
+    #     functors["flashinfer"] = fi_fn
 
-    fi_fn = _flashinfer_gqa_decode_paged(test, *inputs)
-    if fi_fn is not None:
-        functors["flashinfer"] = fi_fn
-
-    if fa3_fn is None and fi_fn is None:
-        functors["torch-ref"] = test.ref_program
+    functors["torch-ref"] = test.ref_program
 
     bm.compare(functors, *inputs)

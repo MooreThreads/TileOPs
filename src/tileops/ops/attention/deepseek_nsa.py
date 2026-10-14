@@ -9,6 +9,7 @@ from tileops.kernels.attention import (
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
@@ -23,8 +24,8 @@ __all__ = [
 
 def _packed_query_dims(q: torch.Tensor) -> tuple[int, int, int]:
     """``(c_seq_len, heads, dim)`` off a packed query. Every other input is sized from it."""
-    if not q.is_cuda:
-        raise ValueError("q must be a CUDA tensor")
+    if not is_backend_tensor(q):
+        raise ValueError("q must be a backend tensor")
     if q.ndim != 3:
         raise ValueError(f"q must have shape [c_seq_len, heads, dim]; got {tuple(q.shape)}")
     return q.shape[0], q.shape[1], q.shape[2]
@@ -32,8 +33,8 @@ def _packed_query_dims(q: torch.Tensor) -> tuple[int, int, int]:
 
 def _packed_request_count(offsets: torch.Tensor) -> int:
     """Requests in the packed batch. ``offsets`` sizes every other metadata tensor."""
-    if not offsets.is_cuda:
-        raise ValueError("offsets must be a CUDA tensor")
+    if not is_backend_tensor(offsets):
+        raise ValueError("offsets must be a backend tensor")
     if offsets.ndim != 1 or offsets.shape[0] < 2:
         raise ValueError(
             f"offsets must be a 1D tensor of at least two bounds; got {tuple(offsets.shape)}"

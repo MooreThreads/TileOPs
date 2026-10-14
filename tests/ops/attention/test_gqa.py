@@ -26,12 +26,14 @@ from tileops.ops import (
     GroupedQueryAttentionDenseFwdOp,
     GroupedQueryAttentionPrefillVarlenFwdOp,
 )
-from tileops.utils import get_sm_version
+from tileops.utils import get_backend_name, get_sm_version
 from workloads.attention.gqa import (
     GroupedQueryAttentionBwdWorkload,
     apply_dense_rope,
     dense_gqa_ref,
 )
+
+DEVICE = get_backend_name()
 
 
 class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
@@ -44,6 +46,10 @@ class GroupedQueryAttentionBwdTest(GroupedQueryAttentionBwdWorkload, TestBase):
         grad_output: torch.Tensor,
         lse: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if q.device.type == "musa":
+            from workloads.attention.mha import MhaBwdWorkload
+
+            return MhaBwdWorkload.ref_program(self, q, k, v, o, grad_output, lse)
         q_bhsd = q.transpose(1, 2)  # [B, H, S, D]
         k_bhsd = k.transpose(1, 2)
         v_bhsd = v.transpose(1, 2)
@@ -75,11 +81,11 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
     rotary_dim: Optional[int],
     dtype: torch.dtype,
 ) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense warp-specialized prefill requires SM90")
+    if get_sm_version() not in (31, 90):
+        pytest.skip("Dense prefill requires a supported architecture")
     batch, seq_len_q, seq_len_kv, heads, heads_kv, dim = 1, 160, 270, 8, 2, 128
-    q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=dtype)
-    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    q = torch.randn(batch, seq_len_q, heads, dim, device=DEVICE, dtype=dtype)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=dtype)
     v = torch.randn_like(k)
 
     if rope_layout is None:
@@ -88,7 +94,7 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
         q_ref, k_ref = q, k
     else:
         resolved_rotary_dim = dim if rotary_dim is None else rotary_dim
-        angles = torch.randn(seq_len_kv, resolved_rotary_dim // 2, device="cuda") * 0.1
+        angles = torch.randn(seq_len_kv, resolved_rotary_dim // 2, device=DEVICE) * 0.1
         rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
         op = GroupedQueryAttentionDenseFwdOp(
             is_causal=is_causal,
@@ -97,8 +103,8 @@ def test_gqa_dense_sm90_main_kernel_matches_reference(
             rope_layout=rope_layout,
         )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
-        q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
-        k_positions = torch.arange(seq_len_kv, device="cuda")
+        q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device=DEVICE)
+        k_positions = torch.arange(seq_len_kv, device=DEVICE)
         q_ref = apply_dense_rope(
             q,
             q_positions,
@@ -161,18 +167,18 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     out_dtype: torch.dtype,
 ) -> None:
     fp8 = getattr(torch, "float8_e4m3fn", None)
-    if fp8 is None or not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("native FP8 Dense GQA requires SM90 and float8_e4m3fn")
+    if fp8 is None or get_sm_version() not in (31, 90):
+        pytest.skip("native FP8 Dense GQA requires supported FP8 hardware")
     batch = 1
     heads, heads_kv, dim = 8, 2, 128
-    q = (torch.randn(batch, seq_len_q, heads, dim, device="cuda") * 0.2).to(fp8)
-    k = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
-    v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
-    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
+    q = (torch.randn(batch, seq_len_q, heads, dim, device=DEVICE) * 0.2).to(fp8)
+    k = (torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE) * 0.2).to(fp8)
+    v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE) * 0.2).to(fp8)
+    scale = torch.ones((batch, heads_kv), device=DEVICE, dtype=torch.float32)
     rope_cos = rope_sin = None
     if rope_layout is not None:
         assert rotary_dim is not None
-        angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
+        angles = torch.randn(seq_len_kv, rotary_dim // 2, device=DEVICE) * 0.1
         rope_cos, rope_sin = angles.cos().to(out_dtype), angles.sin().to(out_dtype)
 
     op = GroupedQueryAttentionDenseFwdOp(
@@ -198,8 +204,8 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     k_ref = k.to(out_dtype)
     if rope_layout is not None:
         assert rope_cos is not None and rope_sin is not None and rotary_dim is not None
-        q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
-        k_positions = torch.arange(seq_len_kv, device="cuda")
+        q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device=DEVICE)
+        k_positions = torch.arange(seq_len_kv, device=DEVICE)
         q_ref = apply_dense_rope(
             q_ref,
             q_positions,
@@ -227,15 +233,16 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         softcap=softcap,
     )
     torch.testing.assert_close(output, reference, atol=8e-2, rtol=2e-2)
-    expected_kernel = GQADenseFP8DecodeKernel if seq_len_q == 1 else GQADenseFP8Kernel
+    uses_fp8_decode = seq_len_q == 1 and get_backend_name() != "musa"
+    expected_kernel = GQADenseFP8DecodeKernel if uses_fp8_decode else GQADenseFP8Kernel
     assert isinstance(next(iter(op.iter_kernels())), expected_kernel)
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense warp-specialized prefill requires SM90")
+    if get_sm_version() not in (31, 90):
+        pytest.skip("Dense prefill requires a supported architecture")
     heads, heads_kv, dim = 8, 2, 128
     op = GroupedQueryAttentionDenseFwdOp()
 
@@ -246,8 +253,8 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         (896, 896),
         (2, 270),
     ):
-        q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.float16)
-        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+        q = torch.randn(batch, seq_len_q, heads, dim, device=DEVICE, dtype=torch.float16)
+        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=torch.float16)
         v = torch.randn_like(k)
         output = op(q, k, v)
         torch.testing.assert_close(
@@ -355,8 +362,6 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     rotary_dim: Optional[int],
     kernel_type: type[Kernel],
 ) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense decode requires SM90")
     heads, heads_kv = head_shape
     dim = 128
     op = GroupedQueryAttentionDenseFwdOp(
@@ -366,19 +371,19 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
     )
 
     for seq_len_kv in seq_lens_kv:
-        q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=dtype)
-        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+        q = torch.randn(batch, 1, heads, dim, device=DEVICE, dtype=dtype)
+        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=dtype)
         v = torch.randn_like(k)
         if rope_layout is None:
             rope_cos = rope_sin = None
             q_ref, k_ref = q, k
         else:
             assert rotary_dim is not None
-            angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
+            angles = torch.randn(seq_len_kv, rotary_dim // 2, device=DEVICE) * 0.1
             rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
             q_ref = apply_dense_rope(
                 q,
-                torch.tensor([seq_len_kv - 1], device="cuda"),
+                torch.tensor([seq_len_kv - 1], device=DEVICE),
                 rope_cos,
                 rope_sin,
                 rotary_dim=rotary_dim,
@@ -386,7 +391,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
             )
             k_ref = apply_dense_rope(
                 k,
-                torch.arange(seq_len_kv, device="cuda"),
+                torch.arange(seq_len_kv, device=DEVICE),
                 rope_cos,
                 rope_sin,
                 rotary_dim=rotary_dim,
@@ -449,8 +454,6 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
 @pytest.mark.parametrize("seqlen_kv", [1, 63, 128, 1024])
 def test_gqa_decode_autotune_configs_keep_full_tiles_per_split(seqlen_kv: int) -> None:
     """Every swept config leaves each split one full KV tile; num_split=1 stays comparable."""
-    if not torch.cuda.is_available() or get_sm_version() not in (80, 89, 90):
-        pytest.skip("GQA decode requires SM80/89/90")
     kernel = GQADecodeKernel(2, 8, 2, seqlen_kv, 128, dtype=torch.float16)
     configs = kernel.autotune_configs
     assert configs, "the sweep must stay non-empty for any positive sequence length"
@@ -463,8 +466,6 @@ def test_gqa_decode_autotune_configs_keep_full_tiles_per_split(seqlen_kv: int) -
 def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> None:
     """A tuned num_split the sequence cannot fill shrinks instead of pushing
     dispatch into the never-tuned no-split kernel (the reported issue)."""
-    if not torch.cuda.is_available() or get_sm_version() not in (80, 89, 90):
-        pytest.skip("GQA decode requires SM80/89/90")
     batch, heads, heads_kv, dim = 2, 32, 4, 128
     kernel = GQADecodeKernel(
         batch,
@@ -494,8 +495,8 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
 
     # 1024 tokens fill 16 of the tuned 32 splits; 100 cannot fill two
     for seq_len_kv, expected in ((1024, ("split", 16)), (100, ("no_split", 0))):
-        q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.float16)
-        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.float16)
+        q = torch.randn(batch, 1, heads, dim, device=DEVICE, dtype=torch.float16)
+        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=DEVICE, dtype=torch.float16)
         v = torch.randn_like(k)
         output = kernel(q, k, v)
         torch.testing.assert_close(
@@ -520,20 +521,20 @@ def test_gqa_decode_tuned_split_count_tracks_runtime_sequence(monkeypatch) -> No
 def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
     is_causal: bool, use_rope: bool
 ) -> None:
-    if not torch.cuda.is_available() or get_sm_version() != 90:
-        pytest.skip("Dense sliding-window prefill requires SM90")
+    if get_sm_version() not in (31, 90):
+        pytest.skip("Dense sliding-window prefill requires a supported architecture")
     batch, seq_len, heads, heads_kv, dim = 1, 270, 8, 2, 128
     window_size_left = 64
     window_size_right = 0 if is_causal else 32
     sm_scale = 0.125
     softcap = 2.0
-    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.float16)
-    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.float16)
+    q = torch.randn(batch, seq_len, heads, dim, device=DEVICE, dtype=torch.float16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device=DEVICE, dtype=torch.float16)
     v = torch.randn_like(k)
 
     rotary_dim = 64
     if use_rope:
-        angles = torch.randn(seq_len, rotary_dim // 2, device="cuda") * 0.1
+        angles = torch.randn(seq_len, rotary_dim // 2, device=DEVICE) * 0.1
         rope_cos, rope_sin = angles.cos().to(q.dtype), angles.sin().to(q.dtype)
     else:
         rope_cos = rope_sin = None
@@ -555,7 +556,7 @@ def test_gqa_dense_sm90_sliding_window_kernel_matches_reference(
     )
     if use_rope:
         assert rope_cos is not None and rope_sin is not None
-        positions = torch.arange(seq_len, device="cuda")
+        positions = torch.arange(seq_len, device=DEVICE)
         q = apply_dense_rope(q, positions, rope_cos, rope_sin, rotary_dim=rotary_dim, layout="neox")
         k = apply_dense_rope(k, positions, rope_cos, rope_sin, rotary_dim=rotary_dim, layout="neox")
 
@@ -602,17 +603,37 @@ class GroupedQueryAttentionBwdFixture(FixtureBase):
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_gqa_prefill_varlen_subtile_output(dtype) -> None:
+    """Packed output shorter than block_m must not require a full-tile copy."""
+    q = torch.randn(16, 4, 64, device=DEVICE, dtype=dtype)
+    k = torch.randn(32, 2, 64, device=DEVICE, dtype=dtype)
+    v = torch.randn_like(k)
+    cu_q = torch.tensor([0, 16], device=DEVICE, dtype=torch.int32)
+    cu_kv = torch.tensor([0, 32], device=DEVICE, dtype=torch.int32)
+    output = GroupedQueryAttentionPrefillVarlenFwdOp(16, 32)(q, k, v, cu_q, cu_kv)
+    q_ref = q.float().cpu().transpose(0, 1)
+    k_ref = k.float().cpu().repeat_interleave(2, dim=1).transpose(0, 1)
+    v_ref = v.float().cpu().repeat_interleave(2, dim=1).transpose(0, 1)
+    scores = q_ref @ k_ref.transpose(-1, -2) / 8
+    mask = torch.arange(32)[None, :] > torch.arange(16)[:, None] + 16
+    scores.masked_fill_(mask, -torch.inf)
+    expected = (scores.softmax(-1) @ v_ref).transpose(0, 1)
+    torch.testing.assert_close(output.float().cpu(), expected, atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.smoke
 def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
     q_lens, kv_lens = [64, 32], [128, 96]
     heads, heads_kv, dim = 8, 2, 64
-    q = torch.randn(sum(q_lens), heads, dim, device="cuda", dtype=torch.float16).contiguous()
-    k = torch.randn(sum(kv_lens), heads_kv, dim, device="cuda", dtype=torch.float16).contiguous()
+    q = torch.randn(sum(q_lens), heads, dim, device=DEVICE, dtype=torch.float16).contiguous()
+    k = torch.randn(sum(kv_lens), heads_kv, dim, device=DEVICE, dtype=torch.float16).contiguous()
     v = torch.randn_like(k)
     cu_q = torch.tensor(
-        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
+        [0] + torch.tensor(q_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32
     )
     cu_kv = torch.tensor(
-        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device="cuda", dtype=torch.int32
+        [0] + torch.tensor(kv_lens).cumsum(0).tolist(), device=DEVICE, dtype=torch.int32
     )
 
     op = GroupedQueryAttentionPrefillVarlenFwdOp(
@@ -627,7 +648,7 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
             max(q_lens) - 1, max(kv_lens), True, validate_inputs=True
         )
         bad_op(q, k, v, cu_q, cu_kv)
-    bad_cu = torch.tensor([0, 128, 96], device="cuda", dtype=torch.int32)
+    bad_cu = torch.tensor([0, 128, 96], device=DEVICE, dtype=torch.int32)
     with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
         op(q, k, v, bad_cu, cu_kv)
 
@@ -636,12 +657,12 @@ def test_gqa_prefill_varlen_rejects_bad_contract_inputs() -> None:
 def test_gqa_prefill_varlen_rejects_unsupported_dtype() -> None:
     """The element type now arrives with the tensors, so the rejection does too."""
     op = GroupedQueryAttentionPrefillVarlenFwdOp(max_seqlen_q=64, max_seqlen_kv=128)
-    kwargs = {"dtype": torch.float32, "device": "cuda"}
+    kwargs = {"dtype": torch.float32, "device": DEVICE}
     q = torch.randn(64, 8, 64, **kwargs)
     k = torch.randn(128, 2, 64, **kwargs)
     v = torch.randn(128, 2, 64, **kwargs)
-    cu_q = torch.tensor([0, 64], device="cuda", dtype=torch.int32)
-    cu_kv = torch.tensor([0, 128], device="cuda", dtype=torch.int32)
+    cu_q = torch.tensor([0, 64], device=DEVICE, dtype=torch.int32)
+    cu_kv = torch.tensor([0, 128], device=DEVICE, dtype=torch.int32)
     with pytest.raises(ValueError, match="Expected dtype torch.float16 or torch.bfloat16"):
         op(q, k, v, cu_q, cu_kv)
 
@@ -657,6 +678,8 @@ def test_gqa_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if DEVICE == "musa":
+        pytest.skip("muDNN FlashAttention backward baseline is unavailable on MUSA")
     test = GroupedQueryAttentionBwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
     op = GroupedQueryAttentionBwdOp(batch, heads, heads_kv, seq_len, dim, causal, tune=tune)
     test.check(op, *test.gen_inputs(), atol=5e-3, rtol=1e-5)

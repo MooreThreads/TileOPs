@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import MultiHeadAttentionDecodePagedWithKVCacheFwdOp
+from tileops.utils import get_sm_version
 from workloads.attention.mha import (
     MhaDecodePagedWorkload,
 )
@@ -113,6 +114,8 @@ def test_mha_decode_paged_op(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if get_sm_version() not in (31, 80, 89, 90):
+        pytest.skip("unsupported configuration")
     test = MhaDecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch=batch,
@@ -144,6 +147,8 @@ def test_mha_decode_paged_cache_shorter_than_bound(real_lengths: list) -> None:
     and the NaN propagates through the cross-split merge into every element of
     the output.
     """
+    if get_sm_version() not in (31, 80, 89, 90):
+        pytest.skip("unsupported configuration")
     batch, heads, seqlen_kv, dim, page_size = len(real_lengths), 8, 1024, 64, 256
     test = MhaDecodePagedTest(batch, heads, 1, seqlen_kv, dim, page_size, False, torch.float16)
     q, k, v, _full, block_table = test.gen_inputs()
@@ -171,6 +176,8 @@ def test_mha_decode_paged_dispatch_declines_multi_token_query() -> None:
     The warp-specialized kernel exists because ``seqlen_q`` is 1; selection has
     to hand a longer query back rather than serve it.
     """
+    if get_sm_version() not in (31, 80, 89, 90):
+        pytest.skip("unsupported configuration")
     op = MultiHeadAttentionDecodePagedWithKVCacheFwdOp(
         batch=1, heads=8, seqlen_q=4, seqlen_kv=1024, dim=64, page_size=256, is_causal=False
     )

@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.topk_selector import TopkSelectorKernel
+from tileops.utils import is_backend_tensor
 
 from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
@@ -103,14 +104,14 @@ class TopkSelectorFwdOp(Op):
 
         Never traced: kernel construction enters a TileLang builder.
         """
-        if not index_score.is_cuda:
+        if not is_backend_tensor(index_score):
             raise ValueError("TopkSelectorFwdOp expects CUDA inputs")
         if index_score.ndim != 4:
             raise ValueError("TopkSelectorFwdOp expects index_score shape [B, S, S_kv, G]")
         if starts.ndim != 2 or ends.ndim != 2:
             raise ValueError("TopkSelectorFwdOp expects starts/ends shape [B, S]")
-        if not starts.is_cuda or not ends.is_cuda:
-            raise ValueError("starts and ends must be CUDA tensors")
+        if not is_backend_tensor(starts) or not is_backend_tensor(ends):
+            raise ValueError("starts and ends must be backend tensors")
         if starts.dtype != torch.int32 or ends.dtype != torch.int32:
             raise ValueError("TopkSelectorFwdOp expects int32 starts/ends tensors")
 

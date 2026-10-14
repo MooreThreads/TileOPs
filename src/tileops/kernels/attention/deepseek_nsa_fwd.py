@@ -2,10 +2,11 @@ import functools
 from typing import Any, Callable, Optional
 
 import tilelang
+import tilelang.language as T
 import torch
-from tilelang import language as T
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from .online_softmax import LOG2E, make_online_softmax, make_rescale
 
@@ -61,6 +62,7 @@ def _nsa_fwd_varlen_kernel(
         g = groups
         bs = block_s
         bk = bv = block_t
+        use_musa = get_backend_name() == "musa"
         num_stages = 4
 
         online_softmax = make_online_softmax(scale, accum_dtype, g, bs)
@@ -122,13 +124,20 @@ def _nsa_fwd_varlen_kernel(
                         else:
                             T.clear(acc_s)
 
-                        T.gemm(
-                            q_shared,
-                            k_shared,
-                            acc_s,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullRow,
-                        )
+                        if use_musa:
+                            for i, j in T.Parallel(g, bs):
+                                for d in T.Serial(bk):
+                                    acc_s[i, j] += T.cast(q_shared[i, d], accum_dtype) * T.cast(
+                                        k_shared[j, d], accum_dtype
+                                    )
+                        else:
+                            T.gemm(
+                                q_shared,
+                                k_shared,
+                                acc_s,
+                                transpose_B=True,
+                                policy=T.GemmWarpPolicy.FullRow,
+                            )
 
                         online_softmax(
                             acc_s, scores_max, scores_max_prev, scores_scale, scores_sum, logsum
@@ -141,7 +150,14 @@ def _nsa_fwd_varlen_kernel(
                         T.copy(
                             v[bos + i_s : bos + i_s + bs, i_h, i_v * bv : (i_v + 1) * bv], v_shared
                         )
-                        T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                        if use_musa:
+                            for i, j in T.Parallel(g, bv):
+                                for k in T.Serial(bs):
+                                    acc_o[i, j] += T.cast(acc_s_cast[i, k], accum_dtype) * T.cast(
+                                        v_shared[k, j], accum_dtype
+                                    )
+                        else:
+                            T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
                 for i, j in T.Parallel(g, bv):
                     acc_o[i, j] /= logsum[i]
@@ -212,7 +228,7 @@ def _(
 
 
 class NSAFwdVarlenKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,

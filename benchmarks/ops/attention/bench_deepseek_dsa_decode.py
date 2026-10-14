@@ -15,6 +15,7 @@ from benchmarks.benchmark_base import (
 from benchmarks.ops.attention.workload_args import dsa_decode_args
 from tileops.manifest import load_workloads
 from tileops.ops import DeepSeekSparseAttentionDecodeWithKVCacheFwdOp
+from tileops.utils import get_backend_name
 from workloads.attention.deepseek import DsaDecodeWorkload
 
 _DSA_DECODE_BENCH_PARAMS = workload_params(
@@ -99,6 +100,9 @@ def test_dsa_decode_bench(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if get_backend_name() == "musa":
+        pytest.skip("unsupported on MUSA")
+
     test = DsaDecodeWorkload(
         batch,
         heads,

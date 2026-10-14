@@ -7,8 +7,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from .online_softmax import make_log2e_scale, make_online_softmax, make_rescale
+
+DEVICE = get_backend_name()
+
 
 __all__ = ["MHADecodeKernel"]
 
@@ -451,7 +455,7 @@ def _(
 
 
 class MHADecodeKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -514,7 +518,7 @@ class MHADecodeKernel(Kernel):
                     # split_length: fill with evenly divided lengths
                     num_split = param.shape[0]
                     base = seqlen_kv // num_split
-                    t = torch.full((num_split,), base, dtype=torch.int32, device="cuda")
+                    t = torch.full((num_split,), base, dtype=torch.int32, device=DEVICE)
                     t[-1] += seqlen_kv % num_split
                     inputs.append(t)
                 else:

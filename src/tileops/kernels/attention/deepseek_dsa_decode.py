@@ -8,7 +8,7 @@ import torch
 from tilelang.autotuner import autotune
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import get_backend_name, get_sm_version
 
 from .online_softmax import LOG2E
 
@@ -601,7 +601,12 @@ def _sparse_mla_basic_kernel(
             "--expt-extended-lambda",
             "--ptxas-options=-v,--register-usage-level=10",
             "-DNDEBUG",
-        ],
+        ]
+        if get_backend_name() != "musa"
+        else ["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.disable_tma_lower": True, "tl.disable_warp_specialized": True}
+        if get_backend_name() == "musa"
+        else {},
     )
     def _sparse_mla_basic_fwd_func(block_i: int, threads: int, num_stages: int = 2) -> None:
         if topk % block_i != 0:
@@ -657,6 +662,10 @@ def _sparse_mla_basic_kernel(
                 kv_shared = T.alloc_shared([i_block, d], dtype)
                 kv_tail_shared = T.alloc_shared([i_block, d_tail], dtype)
                 s_shared = T.alloc_shared([h_per_block, i_block], dtype)
+                if get_backend_name() == "musa":
+                    v_shared = T.alloc_shared([i_block, d], dtype)
+                else:
+                    v_shared = kv_shared
                 # Q is dead once the last QK^T gemm has been issued, so the
                 # output staging reuses its shared buffer.
                 o_shared = q_shared
@@ -741,7 +750,9 @@ def _sparse_mla_basic_kernel(
 
                     # O += P @ V (V is kv[..., :dim]).
                     T.copy(acc_s, s_shared)
-                    T.gemm(s_shared, kv_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
+                    if get_backend_name() == "musa":
+                        T.copy(kv_shared, v_shared)
+                    T.gemm(s_shared, v_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
 
                 # Rescale
                 for h_i, d_i in T.Parallel(h_per_block, d):
@@ -828,7 +839,7 @@ class SparseMlaBasicKernel(Kernel):
                         the first chunk of data (i.e., whether `cp_rank == 0`).
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -912,6 +923,8 @@ class SparseMlaBasicKernel(Kernel):
         Returns:
             list[dict]: Configs with 'block_i', 'threads' and 'num_stages'.
         """
+        if get_backend_name() == "musa":
+            return [{"block_i": 32, "threads": 128, "num_stages": 2}]
         block_i = [32, 64]
         # threads=256 is kept for targets that support it; the autotuner
         # prunes configs that fail to compile.
@@ -981,7 +994,7 @@ class SparseMlaBasicKernel(Kernel):
             self.seq_len,
             self.heads,
             self.dim + self.tail_dim,
-            device="cuda",
+            device=get_backend_name(),
             dtype=self.dtype,
         )
         kv = torch.randn(
@@ -989,14 +1002,14 @@ class SparseMlaBasicKernel(Kernel):
             self.seq_len_kv,
             self.kv_group,
             self.dim + self.tail_dim,
-            device="cuda",
+            device=get_backend_name(),
             dtype=self.dtype,
         )
         indices = torch.full(
             (self.batch, self.seq_len, self.kv_group, self.topk),
             self.seq_len_kv,
             dtype=torch.int32,
-            device="cuda",
+            device=get_backend_name(),
         )
         for b in range(self.batch):
             for t in range(self.seq_len):

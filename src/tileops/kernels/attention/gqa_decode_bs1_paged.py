@@ -17,11 +17,13 @@ import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall
 from tileops.kernels.attention.gqa_decode_paged import (
+    GQADecodePagedKernel,
     _gqa_decode_paged_no_split_run,
     gqa_decode_paged_block_n,
     paged_decode_entry,
 )
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_backend_name
 
 from .call_spec import decode_bs1_region
 from .gqa_decode_bs1_common import (
@@ -181,7 +183,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     split, shorter lengths run the generic non-split paged GQA decode kernel.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -237,10 +239,36 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
             raise ValueError("seqlen_kv must be positive")
         if self.page_size <= 0 or self.seqlen_kv % self.page_size != 0:
             raise ValueError("page_size must be positive and divide seqlen_kv")
+        if get_backend_name() == "musa":
+            delegate_config = (
+                None
+                if config is None
+                else {
+                    "block_H" if key == "block_M" else key: value for key, value in config.items()
+                }
+            )
+            self._musa_kernel = GQADecodePagedKernel(
+                self.batch,
+                self.heads,
+                self.groups,
+                self.seqlen_kv,
+                self.dim,
+                self.page_size,
+                self.dtype,
+                sm_scale=self.sm_scale,
+                softcap=self.softcap,
+                config=delegate_config,
+            )
+            self.init_config(delegate_config, tune)
+            self._musa_kernel.config = self.config
+            self._musa_dynamic_splits = config is None
+            return
         self.init_config(config, tune)
 
     @property
     def default_config(self) -> dict:
+        if get_backend_name() == "musa":
+            return self._musa_kernel.default_config
         block_n = self.block_n_for_page_size(self.page_size)
         if block_n is None:
             raise ValueError("batch=1 paged decode requires page_size=64 or a multiple of 128")
@@ -256,6 +284,11 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel):
     ):
         c = self.config
         real_max = int(real_seqlen_kv.max().item())
+        if get_backend_name() == "musa":
+            # Keep the BS1 split policy using the existing portable GPU implementation.
+            if self._musa_dynamic_splits:
+                self.config["num_split"] = self._ctx_splits_for(real_max)
+            return self._musa_kernel(Q, K, V, real_seqlen_kv, block_table)
         if real_max < self._MIN_CTX:
             return _gqa_decode_paged_no_split_run(
                 self.batch,

@@ -6,6 +6,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.utils import get_backend_name
+
 from ..kernel_base import Entry, Kernel
 from .call_spec import ATTENTION_DTYPES, dense_fp8_decode_region
 from .dense_entry import dense_fp8_entry
@@ -95,6 +97,76 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     lse_scale = capped_softmax_scale if use_softcap else scale
     defer_row_sum = use_softcap or is_causal or (seq_len_kv + 223) // 224 < 32
     causal_offset = seq_len_kv - seq_len_q
+
+    is_musa = get_backend_name() == "musa"
+    bm, bn = 32, 64
+
+    @T.macro
+    def main_musa(
+        Q: T.Tensor((batch, seq_len_q, heads, dim), fp8_dtype),
+        K: T.Tensor((batch, seq_len_kv, heads_kv, dim), fp8_dtype),
+        V: T.Tensor((batch, seq_len_kv, heads_kv, dim), fp8_dtype),
+        QS: T.Tensor((batch, heads_kv), "float32"),
+        KS: T.Tensor((batch, heads_kv), "float32"),
+        VS: T.Tensor((batch, heads_kv), "float32"),
+        O: T.Tensor((batch, seq_len_q, heads, dim), out_dtype),
+        L: T.Tensor((batch, heads, seq_len_q), "float32"),
+    ):
+        with T.Kernel(T.ceildiv(seq_len_q, bm), heads, batch, threads=128) as (bx, h, b):
+            q = T.alloc_shared((bm, dim), fp8_dtype)
+            k = T.alloc_shared((bn, dim), fp8_dtype)
+            v = T.alloc_shared((dim, bn), fp8_dtype)
+            p = T.alloc_shared((bm, bn), fp8_dtype)
+            score = T.alloc_fragment((bm, bn), "float32")
+            acc = T.alloc_fragment((bm, dim), "float32")
+            mx = T.alloc_fragment((bm,), "float32")
+            old = T.alloc_fragment((bm,), "float32")
+            denom = T.alloc_fragment((bm,), "float32")
+            rowsum = T.alloc_fragment((bm,), "float32")
+            alpha = T.alloc_fragment((bm,), "float32")
+            T.clear(acc)
+            T.clear(denom)
+            T.fill(mx, -T.infinity("float32"))
+            for i, j in T.Parallel(bm, dim):
+                q[i, j] = T.if_then_else(bx * bm + i < seq_len_q, Q[b, bx * bm + i, h, j], 0)
+            for tile in T.serial(T.ceildiv(seq_len_kv, bn)):
+                for i, j in T.Parallel(bn, dim):
+                    k[i, j] = T.if_then_else(
+                        tile * bn + i < seq_len_kv, K[b, tile * bn + i, h // groups, j], 0
+                    )
+                    v[j, i] = T.if_then_else(
+                        tile * bn + i < seq_len_kv, V[b, tile * bn + i, h // groups, j], 0
+                    )
+                T.clear(score)
+                T.gemm(q, k, score, transpose_B=True)
+                for i, j in T.Parallel(bm, bn):
+                    score[i, j] *= QS[b, h // groups] * KS[b, h // groups] * sm_scale
+                    if use_softcap:
+                        score[i, j] = softcap * T.tanh(score[i, j] / softcap)
+                    if tile * bn + j >= seq_len_kv:
+                        score[i, j] = -T.infinity("float32")
+                    if is_causal and tile * bn + j > bx * bm + i + causal_offset:
+                        score[i, j] = -T.infinity("float32")
+                T.copy(mx, old)
+                T.reduce_max(score, mx, dim=1, clear=False)
+                for i in T.Parallel(bm):
+                    alpha[i] = T.exp2((old[i] - mx[i]) * LOG2E)
+                for i, j in T.Parallel(bm, bn):
+                    score[i, j] = T.exp2((score[i, j] - mx[i]) * LOG2E)
+                    p[i, j] = score[i, j]
+                T.reduce_sum(score, rowsum, dim=1)
+                for i in T.Parallel(bm):
+                    denom[i] = denom[i] * alpha[i] + rowsum[i]
+                for i, j in T.Parallel(bm, dim):
+                    acc[i, j] *= alpha[i]
+                T.gemm(p, v, acc, transpose_B=True)
+            for i, j in T.Parallel(bm, dim):
+                if bx * bm + i < seq_len_q:
+                    O[b, bx * bm + i, h, j] = acc[i, j] * VS[b, h // groups] / denom[i]
+            if write_lse:
+                for i in T.Parallel(bm):
+                    if bx * bm + i < seq_len_q:
+                        L[b, h, bx * bm + i] = mx[i] + T.log(denom[i])
 
     @T.macro
     def online_softmax_with_partial_sum(
@@ -192,9 +264,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         out_idx=[6, 7],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+            tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: not is_musa,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: is_musa,
         },
-        compile_flags=[
+        compile_flags=["-O3", "-DENABLE_BF16"]
+        if is_musa
+        else [
             "-O3",
             "-DENABLE_BF16",
             "-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
@@ -268,8 +343,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         seq_len_q - row_start,
                     )
 
-        @T.prim_func
-        def main(
+        @T.macro
+        def main_cuda(
             q: T.Tensor(q_shape, fp8_dtype),
             k: T.Tensor(kv_shape, fp8_dtype),
             v: T.Tensor(kv_shape, fp8_dtype),
@@ -858,6 +933,22 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         if groups == 8 and defer_row_sum:
                             T.sync_threads(barrier_id=5, arrive_count=384)
 
+        @T.prim_func
+        def main(
+            q: T.Tensor(q_shape, fp8_dtype),
+            k: T.Tensor(kv_shape, fp8_dtype),
+            v: T.Tensor(kv_shape, fp8_dtype),
+            q_descale: T.Tensor(descale_shape, accum_dtype),
+            k_descale: T.Tensor(descale_shape, accum_dtype),
+            v_descale: T.Tensor(descale_shape, accum_dtype),
+            output: T.Tensor(q_shape, out_dtype),
+            lse: T.Tensor([batch, heads, seq_len_q], accum_dtype),
+        ) -> None:
+            if is_musa:
+                main_musa(q, k, v, q_descale, k_descale, v_descale, output, lse)
+            else:
+                main_cuda(q, k, v, q_descale, k_descale, v_descale, output, lse)
+
         return main
 
     return func
@@ -948,11 +1039,15 @@ def _validate_fa3_gqa_descales(
 class GQADenseFP8Kernel(Kernel):
     """Native-FP8 Dense GQA main kernel using the BN224 schedule."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     @classmethod
     def applies(cls, call) -> bool:
-        return call.is_fp8 and not dense_fp8_decode_region(call)
+        # The context-split decode specialization is SM90-only.  MP31 uses
+        # the same native FP8 dense kernel for this small-query shape.
+        return call.is_fp8 and (
+            not dense_fp8_decode_region(call) or call.arch == 31
+        )
 
     @classmethod
     def entry_for(cls, call) -> Entry:
