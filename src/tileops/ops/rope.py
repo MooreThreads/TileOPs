@@ -36,6 +36,7 @@ from tileops.kernels.rope import (
     RopeNonNeoxKernel,
     RopeYarnKernel,
 )
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from ._compile_boundary_codegen import OperatorSpec
 from .op_base import Op
@@ -219,8 +220,8 @@ class _RopeOpBase(Op):
         Raises:
             ValueError: If x is not CUDA, has wrong dtype, or wrong shape.
         """
-        if not x.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(x):
+            raise ValueError(backend_tensor_error("Input"))
         if self.layout == "1d":
             if x.ndim != 2:
                 raise ValueError("RoPE 1d layout expects input shape [seq_len, head_dim]")
@@ -418,8 +419,8 @@ class RopeNeoxPositionIdsFwdOp(Op):
         x: torch.Tensor,
         position_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if not x.is_cuda:
-            raise ValueError("Input must be a CUDA tensor")
+        if not is_backend_tensor(x):
+            raise ValueError(backend_tensor_error("Input"))
         if x.ndim != 3:
             raise ValueError(
                 "RopeNeoxPositionIdsFwdOp expects input shape [tokens, heads, head_dim]"
@@ -434,8 +435,8 @@ class RopeNeoxPositionIdsFwdOp(Op):
             raise ValueError("rotary_dim must not exceed head_dim")
         self.rotary_dim = rotary_dim
         self.dtype = x.dtype
-        if not position_ids.is_cuda:
-            raise ValueError("position_ids must be a CUDA tensor")
+        if not is_backend_tensor(position_ids):
+            raise ValueError(backend_tensor_error("position_ids"))
         if tuple(position_ids.shape) != (self.num_tokens,):
             raise ValueError(
                 f"Expected position_ids shape {(self.num_tokens,)}, got {tuple(position_ids.shape)}"

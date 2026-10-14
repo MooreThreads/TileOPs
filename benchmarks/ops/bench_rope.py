@@ -16,9 +16,9 @@ import torch
 
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
-    VLLM_TAG,
     compiled_reference,
-    vllm_op,
+    # VLLM_TAG,
+    # vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
@@ -30,6 +30,9 @@ from tileops.ops.rope import (
     RopeNonNeoxFwdOp,
     RopeYarnFwdOp,
 )
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 # Bench-local: manifest workload entries carry no ``base``; the ops and the
 # baseline both use the manifest signature default (``base: 10000.0``).
@@ -72,9 +75,9 @@ def _rope_tables(seq_len: int, head_dim: int, dtype: torch.dtype):
     serves all of them.
     """
     half = head_dim // 2
-    freqs = 1.0 / (_BASE ** (torch.arange(0, half, device="cuda", dtype=torch.float32) / half))
+    freqs = 1.0 / (_BASE ** (torch.arange(0, half, device=DEVICE, dtype=torch.float32) / half))
     angles = torch.outer(
-        torch.arange(seq_len, device="cuda", dtype=torch.float32),
+        torch.arange(seq_len, device=DEVICE, dtype=torch.float32),
         freqs,
     )
     return (
@@ -89,39 +92,43 @@ def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tens
     return x * cos + torch.cat((-x2, x1), dim=-1) * sin
 
 
-def _vllm_rope(
-    x: torch.Tensor,
-    position_ids: torch.Tensor,
-    head_dim: int,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-):
-    """Return vllm's rotary_embedding and the arguments it rotates.
-
-    It rewrites its query in place and takes it flattened to
-    ``[num_tokens, num_heads * head_dim]``, so it gets its own copy; its cache is
-    the half-width cos and sin concatenated, not the doubled tables the reference
-    indexes; and ``is_neox=True`` is the same half-split rotation.
-    """
-    fn = vllm_op("rotary_embedding")
-    num_tokens = x.shape[0]
-    half = head_dim // 2
-    cache = torch.cat([cos[:, :half], sin[:, :half]], dim=-1).contiguous()
-    positions = position_ids.long()
-    query = x.reshape(num_tokens, -1).clone()
-
-    def baseline_fn(positions_i, query_i):
-        fn(positions_i, query_i, None, head_dim, cache, True)
-        return query_i
-
-    return baseline_fn, (positions, query)
+# The vllm baseline is disabled on this backend, so its helper is commented out
+# with its import and its call site, as in ``bench_norm.py``. Uncomment all three
+# together to re-enable it.
+#
+# def _vllm_rope(
+#     x: torch.Tensor,
+#     position_ids: torch.Tensor,
+#     head_dim: int,
+#     cos: torch.Tensor,
+#     sin: torch.Tensor,
+# ):
+#     """Return vllm's rotary_embedding and the arguments it rotates.
+#
+#     It rewrites its query in place and takes it flattened to
+#     ``[num_tokens, num_heads * head_dim]``, so it gets its own copy; its cache is
+#     the half-width cos and sin concatenated, not the doubled tables the reference
+#     indexes; and ``is_neox=True`` is the same half-split rotation.
+#     """
+#     fn = vllm_op("rotary_embedding")
+#     num_tokens = x.shape[0]
+#     half = head_dim // 2
+#     cache = torch.cat([cos[:, :half], sin[:, :half]], dim=-1).contiguous()
+#     positions = position_ids.long()
+#     query = x.reshape(num_tokens, -1).clone()
+#
+#     def baseline_fn(positions_i, query_i):
+#         fn(positions_i, query_i, None, head_dim, cache, True)
+#         return query_i
+#
+#     return baseline_fn, (positions, query)
 
 
 def _profile_rope(
     op, bm: ManifestBenchmark, shape: tuple[int, ...], dtype: torch.dtype, layout: str
 ) -> None:
     """Profile op and the torch rotation baseline on the same input."""
-    x = torch.randn(shape, device="cuda", dtype=dtype)
+    x = torch.randn(shape, device=DEVICE, dtype=dtype)
 
     seq_len = shape[0] if layout == "1d" else shape[1]
     cos, sin = _rope_tables(seq_len, shape[-1], dtype)
@@ -224,11 +231,11 @@ def test_rope_neox_position_ids_bench(
     max_position: int,
 ) -> None:
     num_tokens, _, head_dim = shape
-    x = torch.randn(shape, device="cuda", dtype=dtype)
+    x = torch.randn(shape, device=DEVICE, dtype=dtype)
     position_ids = (
         torch.arange(
             num_tokens,
-            device="cuda",
+            device=DEVICE,
             dtype=torch.int32,
         )
         % max_position
@@ -246,19 +253,19 @@ def test_rope_neox_position_ids_bench(
     # vllm rotates in fp32 and rounds once, the reference in the storage dtype, so they
     # agree to one rounding step of the storage dtype, which is what the default
     # tolerances allow.
-    check_fn, check_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
-    torch.testing.assert_close(
-        check_fn(*check_args).view(x.shape),
-        baseline_fn(x, position_ids),
-        rtol=1e-2,
-        atol=2e-2,
-    )
-    vllm_fn, vllm_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
+    # check_fn, check_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
+    # torch.testing.assert_close(
+    #     check_fn(*check_args).view(x.shape),
+    #     baseline_fn(x, position_ids),
+    #     rtol=1e-2,
+    #     atol=2e-2,
+    # )
+    # vllm_fn, vllm_args = _vllm_rope(x, position_ids, head_dim, cos, sin)
 
     bm.compare(
         {
             "tileops": op,
-            VLLM_TAG: (vllm_fn, vllm_args),
+            # VLLM_TAG: (vllm_fn, vllm_args),
             "torch-ref": baseline_fn,
             TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
         },

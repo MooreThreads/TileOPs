@@ -384,7 +384,7 @@ class _RopeKernelBase(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
     ROTATION_STYLE: str = "neox"  # "neox" or "non_neox"
 
@@ -426,8 +426,10 @@ class _RopeKernelBase(Kernel):
 
         if self.ROTATION_STYLE == "neox":
             if self.layout == "1d":
-                return _make_rope_neox_1d(
+                return _make_rope_neox_2d(
+                    1,
                     self.seq_len,
+                    1,
                     self.head_dim,
                     dtype_str,
                     threads=cfg["threads"],
@@ -445,8 +447,10 @@ class _RopeKernelBase(Kernel):
                 )
         elif self.ROTATION_STYLE == "non_neox":
             if self.layout == "1d":
-                return _make_rope_non_neox_1d(
+                return _make_rope_non_neox_2d(
+                    1,
                     self.seq_len,
+                    1,
                     self.head_dim,
                     dtype_str,
                     threads=cfg["threads"],
@@ -501,7 +505,8 @@ class _RopeKernelBase(Kernel):
             result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x_flat, cos, sin)
             return result.reshape(orig_shape)
         else:
-            return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, cos, sin)
+            result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x.reshape(-1), cos, sin)
+            return result.reshape(orig_shape)
 
 
 # Concrete kernel classes (5 variants)
@@ -520,7 +525,7 @@ class RopeNeoxKernel(_RopeKernelBase):
 class RopeNeoxPositionIdsKernel(Kernel):
     """GPT-NeoX style RoPE kernel for packed THD tensors with explicit positions."""
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     SUPPORTED_DTYPES = _FLOAT_DTYPES
 
     def __init__(
