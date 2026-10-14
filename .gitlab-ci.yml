@@ -1,0 +1,82 @@
+# GitLab CI for this fork.
+#
+# `.github/workflows/` does not run here. GitLab does not execute GitHub Actions,
+# and every job in `.github/workflows/preflight.yml` is additionally guarded by
+# `if: github.repository == 'tile-ai/TileOPs'` -- "the canonical repo only" -- so
+# on this fork the checks those files define had no execution point at all. This
+# file is that execution point.
+#
+# The two jobs split by how much of the tree already satisfies them.
+#
+# `convention-lints` reads the five linters in `scripts/lint/`. They import
+# nothing outside the standard library, finish in about nine seconds over the
+# whole tree, and the tree satisfies them, so this job installs nothing and stays
+# strict over everything. Nothing here can fail for an environmental reason.
+#
+# `ruff` reads only the files a change touches. Ruff reports findings this tree
+# has not cleared, so a whole-tree gate would fail every merge request until
+# somebody sweeps the tree -- and a sweep is what this fork can least afford. It
+# rewrites files upstream also owns, and every rewritten line becomes a conflict
+# the next time an upstream PR is ported. Existing findings are frozen; new ones
+# are refused. The same reasoning applies to a feature branch: clear the tree in
+# its own change, not inside someone else's.
+
+default:
+  # Has python3, pip3 and git. `public/ubuntu:22.04`, which this pipeline used
+  # before, has none of the three.
+  image: sh-harbor.mthreads.com/public/base-ubuntu-22-04:v1
+  tags:
+    - k8s007-sh-farm
+
+stages:
+  - lint
+
+variables:
+  # The dev images reach a mirror, not pypi.org. Override this in the project's
+  # CI/CD variables if a runner reaches a different index.
+  PIP_INDEX_URL: "https://pypi.tuna.tsinghua.edu.cn/simple"
+  # The ruff job diffs against the target branch, so it needs the history.
+  GIT_DEPTH: "0"
+
+convention-lints:
+  stage: lint
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - python3 scripts/lint/shipped_refs_lint.py
+    - python3 scripts/lint/workload_names_lint.py
+    - python3 scripts/lint/bench_baseline_lint.py
+    - python3 scripts/lint/op_docstrings_lint.py
+    - python3 scripts/lint/tilelang_idioms_lint.py
+
+ruff:
+  stage: lint
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  variables:
+    # Keep in step with the ruff-pre-commit rev in .pre-commit-config.yaml, so a
+    # finding here is the same finding the local hook reports.
+    RUFF_VERSION: "0.14.13"
+  script:
+    - python3 -m pip install --quiet --disable-pip-version-check "ruff==${RUFF_VERSION}"
+    - |
+      if [ -n "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" ]; then
+        base="origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+        git fetch --quiet --depth=1 origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+        git diff --name-only --diff-filter=ACMR "$base...HEAD" > changed-files.txt
+      else
+        base="HEAD~1"
+        git rev-parse --verify --quiet "$base" >/dev/null || { echo "Single commit; nothing to diff."; exit 0; }
+        git diff --name-only --diff-filter=ACMR "$base" HEAD > changed-files.txt
+      fi
+      files=$(grep -E '\.py$' changed-files.txt || true)
+      if [ -z "$files" ]; then
+        echo "No Python file changed."
+        exit 0
+      fi
+      echo "Checking:"
+      echo "$files" | sed 's/^/  /'
+      echo "$files" | xargs ruff check --config pyproject.toml --output-format concise
+      echo "$files" | xargs ruff format --check --config pyproject.toml

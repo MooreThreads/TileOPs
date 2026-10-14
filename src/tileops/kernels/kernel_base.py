@@ -3,6 +3,8 @@ from typing import Any, Callable, Dict, Hashable, Optional, Union
 
 import torch
 
+from tileops.utils import is_backend_tensor
+
 __all__ = ["Entry", "Kernel"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
@@ -177,7 +179,7 @@ class Kernel(ABC):
         did not pass arrives as ``None`` and is skipped.
         """
         for name, tensor in tensors.items():
-            if tensor is not None and not tensor.is_cuda:
+            if tensor is not None and not is_backend_tensor(tensor):
                 raise ValueError(
                     f"{type(self).__name__} is a CUDA kernel; got {name} on {tensor.device}. "
                     "Another target's backend serves other devices."

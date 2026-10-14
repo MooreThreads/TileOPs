@@ -32,6 +32,7 @@ from tileops.manifest import (
     manifest_key,
     single_input_workload_contract,
 )
+from workloads.workload_base import benchmark_compare_context
 
 __all__ = [
     "BenchmarkBase",
@@ -342,7 +343,9 @@ class OpBenchmark(BenchmarkBase[W]):
 
         Timing each one twice in opposite orders keeps drift across the case
         from landing on whichever ran last. A value is a callable timed on
-        *inputs*, or a ``(callable, args)`` pair. Every callable runs under
+        *inputs*, or a ``(callable, args)`` pair; a ``None`` value is an optional
+        baseline the toolchain cannot provide, and its tag is omitted, not timed. Every
+        callable runs under
         ``no_grad``: a graph built inside the timed region is host work, and a
         backward reached through autograd runs where the timer cannot attribute
         it. A backward baseline is timed by applying its node directly.
@@ -355,7 +358,10 @@ class OpBenchmark(BenchmarkBase[W]):
         plan = {
             tag: value if isinstance(value, tuple) else (value, inputs)
             for tag, value in functors.items()
+            if value is not None
         }
+        if not plan:
+            raise ValueError("compare requires at least one available implementation")
         tags = list(plan)
         order = tags + tags[::-1]
         # Split the budget across the two passes rather than spending it twice:
@@ -363,30 +369,31 @@ class OpBenchmark(BenchmarkBase[W]):
         passes = 2
         samples: dict[str, list[Sample]] = {tag: [] for tag in tags}
         meta: dict[str, dict] = {}
-        for tag in order:
-            functor, args = plan[tag]
-            with torch.no_grad():
-                samples[tag].extend(
-                    bench_kernel(
-                        functor,
-                        args=args,
-                        dry_run_ms=DRY_RUN_MS / passes,
-                        repeat_ms=REPEAT_MS / passes,
-                        max_iters=_MAX_ITERS // passes,
-                        min_iters=max(1, _MIN_ITERS // passes),
-                        count_copies=count_copies,
+        with benchmark_compare_context():
+            for tag in order:
+                functor, args = plan[tag]
+                with torch.no_grad():
+                    samples[tag].extend(
+                        bench_kernel(
+                            functor,
+                            args=args,
+                            dry_run_ms=DRY_RUN_MS / passes,
+                            repeat_ms=REPEAT_MS / passes,
+                            max_iters=_MAX_ITERS // passes,
+                            min_iters=max(1, _MIN_ITERS // passes),
+                            count_copies=count_copies,
+                        )
                     )
-                )
-            pass_meta = _capture_bench_meta()
-            previous = meta.get(tag)
-            if previous is not None and previous["timing"] != pass_meta["timing"]:
-                raise RuntimeError(
-                    f"{tag}: the two passes timed with different methods "
-                    f"({previous['timing']} then {pass_meta['timing']}); pooling "
-                    "them would report one median over two kinds of measurement. "
-                    "Only reachable with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1."
-                )
-            meta[tag] = pass_meta
+                pass_meta = _capture_bench_meta()
+                previous = meta.get(tag)
+                if previous is not None and previous["timing"] != pass_meta["timing"]:
+                    raise RuntimeError(
+                        f"{tag}: the two passes timed with different methods "
+                        f"({previous['timing']} then {pass_meta['timing']}); pooling "
+                        "them would report one median over two kinds of measurement. "
+                        "Only reachable with TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK=1."
+                    )
+                meta[tag] = pass_meta
         results = {tag: self._build_result(samples[tag], meta[tag]) for tag in tags}
         params = self.case_params()
         for tag in tags:

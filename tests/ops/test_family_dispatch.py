@@ -17,10 +17,6 @@ from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet_recurrence import DeltaNetDecodeFwdOp
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="selection reads the device architecture"
-)
-
 _SM90 = 90
 _SM80 = 80
 

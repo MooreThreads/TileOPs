@@ -13,11 +13,10 @@ import torch
 from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
 from tileops.ops.norm import BatchNormFwdOp, RMSNormFwdOp
 from tileops.ops.reduction import SumFwdOp, VarMeanFwdOp
+from tileops.utils import get_backend_name
 
-pytestmark = [
-    pytest.mark.smoke,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
-]
+pytestmark = pytest.mark.smoke
+DEVICE = get_backend_name()
 
 DTYPE = torch.float16
 
@@ -31,7 +30,7 @@ def _message(op_class_name: str, input_name: str, shape: tuple) -> str:
 
 @pytest.fixture
 def empty() -> torch.Tensor:
-    return torch.randn(0, 8, device="cuda", dtype=DTYPE)
+    return torch.randn(0, 8, device=DEVICE, dtype=DTYPE)
 
 
 @pytest.mark.parametrize(
@@ -57,8 +56,8 @@ def test_empty_input_is_refused(empty, call, op_class_name, input_name):
 
 def test_batch_norm_training_is_refused():
     """An op reading a private multi-output from its kernel is refused like any other."""
-    x = torch.empty(0, 4, 2, 2, device="cuda", dtype=DTYPE)
-    stat = lambda: torch.zeros(4, device="cuda")  # noqa: E731
+    x = torch.empty(0, 4, 2, 2, device=DEVICE, dtype=DTYPE)
+    stat = lambda: torch.zeros(4, device=DEVICE)  # noqa: E731
     with pytest.raises(ValueError, match=re.escape(_message("BatchNormFwdOp", "x", (0, 4, 2, 2)))):
         BatchNormFwdOp(training=True)(x, stat(), stat(), stat(), stat())
 
@@ -66,7 +65,7 @@ def test_batch_norm_training_is_refused():
 def test_compiled_call_is_refused_the_same_way(empty):
     """The traced path reaches kernel selection too, so it gets the same message."""
     compiled = torch.compile(ReluFwdOp(), fullgraph=True)
-    assert compiled(torch.randn(4, 8, device="cuda", dtype=DTYPE)).shape == (4, 8)
+    assert compiled(torch.randn(4, 8, device=DEVICE, dtype=DTYPE)).shape == (4, 8)
     with pytest.raises(ValueError, match=re.escape(_message("ReluFwdOp", "input", (0, 8)))):
         compiled(empty)
 
@@ -74,7 +73,7 @@ def test_compiled_call_is_refused_the_same_way(empty):
 def test_the_op_s_own_validation_precedes_the_refusal():
     """``_eager_forward``'s prelude runs before kernel selection, so it reports first."""
     with pytest.raises(ValueError, match="needs every input on one device"):
-        AddFwdOp()(torch.empty(0, 2), torch.empty(0, 2, device="cuda"))
+        AddFwdOp()(torch.empty(0, 2), torch.empty(0, 2, device=DEVICE))
 
 
 def test_the_refusal_precedes_what_the_kernel_states():

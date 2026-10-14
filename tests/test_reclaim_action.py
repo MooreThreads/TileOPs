@@ -483,7 +483,7 @@ def _evaluate_checks(runs: list[tuple[str, str, str, int]]) -> tuple[str, str]:
     return out[0], (out[1] if len(out) > 1 else "")
 
 
-@pytest.mark.skipif(shutil.which("jq") is None, reason="executes the workflow's jq calls")
+@pytest.mark.skipif(shutil.which("jq") is None, reason="requires optional dependencies")
 def test_a_skipped_check_does_not_outrank_an_earlier_success() -> None:
     """Blocking on a skipped run burned the 900s deadline and skipped GPU smoke with
     "Timed out" in the log, so a PR could reach ready with GPU smoke never having

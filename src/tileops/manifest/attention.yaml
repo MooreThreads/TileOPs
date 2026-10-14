@@ -527,9 +527,9 @@ GroupedQueryAttentionDecodePagedWithKVCacheFwdOp:
     - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-70b-p256"}
     - {q_shape: [4, 128, 128], kv_shape: [4096, 8, 128], page_size: 256, dtypes: [float16], label: "serving-405b-p256"}
     - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 64, softcap: 50.0, dtypes: [float16], label: "serving-8b-p64-softcap50"}
-    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-8b-p16"}
-    - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "throughput-8b-p16"}
-    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "page_size=16 not yet supported by kernel", label: "serving-70b-p16"}
+    - {q_shape: [32, 32, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "unsupported configuration", label: "serving-8b-p16"}
+    - {q_shape: [64, 32, 128], kv_shape: [2048, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "unsupported configuration", label: "throughput-8b-p16"}
+    - {q_shape: [8, 64, 128], kv_shape: [4096, 8, 128], page_size: 16, dtypes: [float16], bench_skip_reason: "unsupported configuration", label: "serving-70b-p16"}
 
   roofline:
     func: "tileops.perf.formulas.gqa_decode_paged_roofline"

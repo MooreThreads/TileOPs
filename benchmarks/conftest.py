@@ -7,6 +7,7 @@ import torch
 # reaching torch's op registry before vllm. See benchmarks.baselines.
 import benchmarks.baselines  # noqa: F401
 from benchmarks.report import BenchmarkReport, _bench_results
+from tileops.utils import empty_cache, manual_seed_all
 
 
 def pytest_make_parametrize_id(config, val, argname):
@@ -66,15 +67,13 @@ def _emit(item, tag: str, entry: dict) -> None:
 def _release_cuda_cache_after_case() -> None:
     """Drop per-case Python references and cached CUDA blocks between benchmarks."""
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    empty_cache()
 
 
 @pytest.fixture(autouse=True)
 def setup() -> None:
     torch.manual_seed(1235)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1235)
+    manual_seed_all(1235)
 
 
 def pytest_sessionstart(session):

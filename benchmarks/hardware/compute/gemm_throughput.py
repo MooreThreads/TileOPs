@@ -11,7 +11,7 @@ lock.  Each dtype gets its own telemetry window, and the sustained factor is
 reported next to the clocks it was taken at; burst is the pre-cap rate.
 
 Usage:
-    python benchmarks/hardware/compute/gemm_throughput.py [--profile h200]
+    python benchmarks/hardware/compute/gemm_throughput.py [--profile nvidia/h200]
 """
 
 import argparse
@@ -23,7 +23,7 @@ import time
 import torch
 from fma_throughput import _ClockSampler
 
-from tileops.perf import load_profile
+from tileops.perf import get_profile_path, load_profile
 
 # Square GEMMs large enough to saturate the tensor cores; the sweep exists
 # because the cuBLAS-peak size moves with dtype and architecture.
@@ -186,7 +186,7 @@ def _enable_tf32():
 
 def main():
     parser = argparse.ArgumentParser(description="Tensor-core GEMM throughput via cuBLAS")
-    parser.add_argument("--profile", default="h200", help="GPU profile name")
+    parser.add_argument("--profile", default="nvidia/h200", help="GPU profile name")
     args = parser.parse_args()
 
     profile = load_profile(args.profile)
@@ -304,7 +304,7 @@ def main():
             f" {burst:8.1f} burst{clocks}"
         )
 
-    print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
+    print(f"\nUpdate {get_profile_path(args.profile)}:")
     for dtype_name, ((med, _, _), burst, theo, _) in results.items():
         print(f"  tensor_core.{dtype_name}.calibration: {med / theo:.4f}")
         print(f"  tensor_core.{dtype_name}.calibration_burst: {burst / theo:.4f}")

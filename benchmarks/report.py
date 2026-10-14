@@ -4,6 +4,7 @@ Holds no opinion on how a number was produced -- it is handed results and turns 
 into the report a run leaves behind.
 """
 
+import json
 import logging
 import subprocess
 import threading
@@ -11,6 +12,8 @@ from datetime import datetime
 from typing import Any, Optional
 
 import torch
+
+from tileops.utils import get_backend_name, is_available
 
 _logger = logging.getLogger("tileops.bench")
 
@@ -26,54 +29,111 @@ def _current_case_rows() -> list:
     return _bench_results.entries
 
 
+def _toolkit_version(backend: str) -> str:
+    """Return the backend toolkit version as ``major.minor.patch``.
+
+    ``torch.version.musa`` packs it into five digits -- 50200 is 5.2.0 -- which
+    tells a reader nothing.
+    """
+    if backend != "musa":
+        return torch.version.cuda or "N/A"
+    raw = getattr(torch.version, "musa", None)
+    if isinstance(raw, str) and len(raw) == 5 and raw.isdigit():
+        return f"{raw[0]}.{int(raw[1:3])}.{int(raw[3:])}"
+    return str(raw) if raw else "N/A"
+
+
+def _triton_version() -> str:
+    """The Triton the baselines were compiled by.
+
+    A separate line because it is not torch's: MUSA runs a fork, and which one
+    decides what the flag_gems baselines can do (its _mthreads backend reads an
+    API triton 3.6 renamed).
+    """
+    try:
+        import triton
+    except Exception:  # noqa: BLE001 - a report line, never a failure
+        return "N/A"
+    return getattr(triton, "__version__", "unknown")
+
+
 def _get_env_metadata() -> list[str]:
-    """Collect GPU model, driver version, CUDA version, and torch version."""
+    """Collect GPU model, driver version, toolkit version, and library versions."""
+    backend = get_backend_name()
     lines = []
     lines.append(f"- **Torch version**: {torch.__version__}")
-    lines.append(f"- **CUDA version (torch)**: {torch.version.cuda or 'N/A'}")
-
-    if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(0)
+    lines.append(f"- **Triton version**: {_triton_version()}")
+    lines.append(f"- **{backend.upper()} version (torch)**: {_toolkit_version(backend)}")
+    if is_available():
+        gpu_name = (
+            torch.musa.get_device_name(0) if backend == "musa" else torch.cuda.get_device_name(0)
+        )
         lines.append(f"- **GPU model**: {gpu_name}")
     else:
-        lines.append("- **GPU model**: N/A (no CUDA device)")
+        lines.append(f"- **GPU model**: N/A (no {backend.upper()} device)")
 
-    # Try to get NVIDIA driver version and clocks from nvidia-smi.
-    gpu_query_fields = [
-        "driver_version",
-        "clocks.current.sm",
-        "clocks.current.memory",
-        "clocks.applications.graphics",
-        "clocks.applications.memory",
-    ]
-    gpu_query_values = []
-    try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                f"--query-gpu={','.join(gpu_query_fields)}",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            gpu_query_values = [part.strip() for part in result.stdout.splitlines()[0].split(",")]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    if backend == "cuda":
+        # Try to get NVIDIA driver version and clocks from nvidia-smi.
+        gpu_query_fields = [
+            "driver_version",
+            "clocks.current.sm",
+            "clocks.current.memory",
+            "clocks.applications.graphics",
+            "clocks.applications.memory",
+        ]
+        gpu_query_values = []
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    f"--query-gpu={','.join(gpu_query_fields)}",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                gpu_query_values = [
+                    part.strip() for part in result.stdout.splitlines()[0].split(",")
+                ]
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
-    driver = gpu_query_values[0] if len(gpu_query_values) == len(gpu_query_fields) else "N/A"
-    lines.append(f"- **Driver version**: {driver}")
+        driver = gpu_query_values[0] if len(gpu_query_values) == len(gpu_query_fields) else "N/A"
+        lines.append(f"- **Driver version**: {driver}")
 
-    if len(gpu_query_values) == len(gpu_query_fields):
-        sm_clock, mem_clock, app_sm_clock, app_mem_clock = gpu_query_values[1:]
-        lines.append(
-            "- **GPU clocks**: "
-            f"SM current {sm_clock} MHz, memory current {mem_clock} MHz, "
-            f"application SM {app_sm_clock} MHz, "
-            f"application memory {app_mem_clock} MHz"
-        )
+        if len(gpu_query_values) == len(gpu_query_fields):
+            sm_clock, mem_clock, app_sm_clock, app_mem_clock = gpu_query_values[1:]
+            lines.append(
+                "- **GPU clocks**: "
+                f"SM current {sm_clock} MHz, memory current {mem_clock} MHz, "
+                f"application SM {app_sm_clock} MHz, "
+                f"application memory {app_mem_clock} MHz"
+            )
+    if backend == "musa":
+        try:
+            result = subprocess.run(
+                ["mthreads-gmi", "-q", "--json", "-d", "CLOCK"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                info = json.loads(result.stdout)
+                driver_version = info["Driver Version"]
+                graphics = info["GPU"][0]["Clocks"]["Graphics"]
+                memory = info["GPU"][0]["Clocks"]["Memory"]
+                lines.append(f"- **Driver version**: {driver_version}")
+                lines.append(f"- **GPU clocks**: Graphics {graphics} MHz, Memory {memory} MHz")
+        except (
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+            KeyError,
+            IndexError,
+        ):
+            lines.append("- **Driver version**: N/A")
 
     return lines
 

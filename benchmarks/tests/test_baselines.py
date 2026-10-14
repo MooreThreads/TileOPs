@@ -14,6 +14,7 @@ import torch
 from benchmarks.baselines import (
     _FlagGemsImportOrder,
     assert_matches_reference,
+    compiled_reference,
     flaggems_op,
     reference_tolerance,
     vllm_op,
@@ -23,11 +24,9 @@ from benchmarks.baselines import (
 _BOTH_LIBRARIES = (
     find_spec("flag_gems") is not None
     and find_spec("vllm") is not None
-    and torch.cuda.is_available()
+    and find_spec("vllm._C") is not None
 )
-_needs_both = pytest.mark.skipif(
-    not _BOTH_LIBRARIES, reason="needs both flag_gems and vllm installed, on a GPU"
-)
+_needs_both = pytest.mark.skipif(not _BOTH_LIBRARIES, reason="requires optional dependencies")
 
 
 def _run(source: str) -> subprocess.CompletedProcess:
@@ -72,7 +71,7 @@ def test_the_guard_makes_either_import_order_safe():
     assert "survived" in result.stdout
 
 
-@pytest.mark.skipif(find_spec("vllm") is None, reason="needs vllm installed")
+@pytest.mark.skipif(find_spec("vllm") is None, reason="requires optional dependencies")
 def test_vllm_op_reports_the_order_instead_of_aborting(monkeypatch):
     """A process that lost the race gets a message, not a segfault."""
     monkeypatch.setitem(sys.modules, "flag_gems", object())
@@ -81,8 +80,7 @@ def test_vllm_op_reports_the_order_instead_of_aborting(monkeypatch):
         vllm_op("rms_norm")
 
 
-@pytest.mark.skipif(find_spec("flag_gems") is None, reason="needs flag_gems installed")
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="flag_gems needs a device")
+@pytest.mark.skipif(find_spec("flag_gems") is None, reason="requires optional dependencies")
 def test_flaggems_op_refuses_a_pointwise_entry_point():
     """A pointwise kernel would abort the process on the timing loop's second call."""
     with pytest.raises(RuntimeError, match="LibEntry"):
@@ -95,6 +93,11 @@ def test_reference_tolerance_follows_the_dtype():
     assert reference_tolerance(torch.float16) == {"rtol": 1e-3, "atol": 1e-3}
     # The other branch: an unlisted dtype leaves assert_close on its own defaults.
     assert reference_tolerance(torch.int32) == {}
+
+
+def test_compiled_reference_can_be_explicitly_disabled(monkeypatch):
+    monkeypatch.setenv("TILEOPS_DISABLE_TORCH_COMPILE_BASELINE", "1")
+    assert compiled_reference(torch.abs) is None
 
 
 def test_assert_matches_reference_compares_every_output_the_reference_returns():

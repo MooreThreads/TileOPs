@@ -16,7 +16,7 @@ Each mix's rate is emitted for the profile's ``calibration_mixes``.
     Visual Performance Model for Multicore Architectures." CACM 52(4).
 
 Usage:
-    python benchmarks/hardware/memory/hbm_bandwidth.py [--profile h200] [--size-mb 2048]
+    python benchmarks/hardware/memory/hbm_bandwidth.py [--profile nvidia/h200] [--size-mb 2048]
 """
 
 import argparse
@@ -25,7 +25,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tileops.perf import load_profile
+from tileops.perf import get_profile_path, load_profile
 
 _CU_SRC = Path(__file__).parent / "hbm_saturation.cu"
 
@@ -83,7 +83,7 @@ def _parse_peaks(lines):
 
 def main():
     parser = argparse.ArgumentParser(description="HBM bandwidth microbenchmark")
-    parser.add_argument("--profile", default="h200", help="GPU profile name")
+    parser.add_argument("--profile", default="nvidia/h200", help="GPU profile name")
     parser.add_argument("--size-mb", type=int, default=2048, help="Working set size in MB")
     parser.add_argument("--arch", default="sm_90", help="CUDA architecture")
     args = parser.parse_args()
@@ -129,7 +129,7 @@ def main():
         print(f"Theoretical:      {theo_peak_gbs:.1f} GB/s")
         print(f"Calibration:      {calibration:.4f}")
         mixes = ", ".join(f"{m}: {peaks[m] / theo_peak_gbs:.4f}" for m in _MIXES)
-        print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
+        print(f"\nUpdate {get_profile_path(args.profile)}:")
         print(f"  hbm.calibration: {calibration:.4f}")
         print(f"  hbm.calibration_mixes: {{{mixes}}}")
         print(f"{'=' * 60}")

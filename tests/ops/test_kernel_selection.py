@@ -7,6 +7,7 @@ from tileops.ops import (
     GroupedQueryAttentionDecodePagedWithKVCacheFwdOp,
     GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp,
 )
+from tileops.utils import get_sm_version
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),
@@ -31,6 +32,8 @@ pytestmark = pytest.mark.skipif(
 )
 def test_paged_decode_dispatch_is_unchanged(ctor: dict, dtype: torch.dtype, expected: str) -> None:
     """Paged decode keeps its batch-1 fast path and its page-tile guard."""
+    if get_sm_version() not in (31, 90):
+        pytest.skip("requires Hopper")
     kwargs = {
         "batch": 1,
         "heads": 32,
@@ -78,7 +81,7 @@ def test_paged_prefill_dispatch_is_unchanged(ctor: dict, expected: str) -> None:
 def test_paged_prefill_fp8_cache_dispatch_is_unchanged() -> None:
     """An FP8 KV cache still selects the FP8-cache kernel."""
     if not hasattr(torch, "float8_e4m3fn"):
-        pytest.skip("this torch build has no float8_e4m3fn")
+        pytest.skip("requires FP8 support")
     op = GroupedQueryAttentionPrefillPagedWithKVCacheFwdOp(
         batch=2,
         heads=32,

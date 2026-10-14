@@ -12,6 +12,10 @@ two tests are the contract and are written once.
 import pytest
 import torch
 
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
+
 from tests.compile_contract import (
     assert_fake_matches_eager,
     assert_op_owns_graph_nodes,
@@ -185,9 +189,9 @@ def _attention_cases():
         return FP8LightningIndexerFwdOp(), case.gen_inputs()
 
     def topk_selector():
-        score = torch.randn(1, 256, 512, 1, dtype=torch.float32, device="cuda")
-        starts = torch.zeros(1, 256, dtype=torch.int32, device="cuda")
-        ends = torch.full((1, 256), 512, dtype=torch.int32, device="cuda")
+        score = torch.randn(1, 256, 512, 1, dtype=torch.float32, device=DEVICE)
+        starts = torch.zeros(1, 256, dtype=torch.int32, device=DEVICE)
+        ends = torch.full((1, 256), 512, dtype=torch.int32, device=DEVICE)
         return TopkSelectorFwdOp(topk=64), (score, starts, ends)
 
     return (
@@ -215,7 +219,7 @@ def _gemm_cases():
     _M, _N, _K = 128, 256, 256
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=DEVICE)
 
     def gemm():
         return GemmFwdOp(), (_x(_M, _K), _x(_N, _K))
@@ -235,15 +239,15 @@ def _gemm_cases():
         group = 128
         return GemmW4A16FwdOp(), (
             _x(_M, _K),
-            torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device="cuda"),
+            torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device=DEVICE),
             _x(_N, _K // group, dtype=torch.float32).abs(),
-            torch.randint(0, 15, (_N, _K // group), dtype=torch.uint8, device="cuda"),
+            torch.randint(0, 15, (_N, _K // group), dtype=torch.uint8, device=DEVICE),
         )
 
     def grouped_gemm():
         groups, rows = 2, 128
-        sizes = torch.full((groups,), rows, dtype=torch.int32, device="cuda")
-        offsets = torch.tensor([0, rows], dtype=torch.int32, device="cuda")
+        sizes = torch.full((groups,), rows, dtype=torch.int32, device=DEVICE)
+        offsets = torch.tensor([0, rows], dtype=torch.int32, device=DEVICE)
         return GroupedGemmFwdOp(), (
             _x(groups * rows, _K),
             _x(groups, _N, _K),
@@ -259,7 +263,7 @@ def _gemm_cases():
     def bmm_fp8():
         batch = 2
         fp8 = dict(dtype=torch.float8_e4m3fn)
-        scale = torch.tensor(1.0, dtype=torch.float32, device="cuda")
+        scale = torch.tensor(1.0, dtype=torch.float32, device=DEVICE)
         return BmmFp8FwdOp(out_dtype=torch.float16), (
             _x(batch, _M, _K).to(**fp8),
             _x(batch, _K, _N).to(**fp8),
@@ -285,7 +289,7 @@ def _mamba_cases():
     _S = _Q * _NC
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=DEVICE)
 
     f32 = dict(dtype=torch.float32)
 
@@ -351,7 +355,7 @@ def _linear_attention_cases():
     _SCALE = _D**-0.5
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=DEVICE)
 
     chunks = _S // _CHUNK + 1
 
@@ -442,7 +446,7 @@ def _sequence_modeling_cases():
     _CONV_TAPS = 4
 
     def _x(*shape, dtype=_DTYPE):
-        return torch.randn(*shape, dtype=dtype, device="cuda")
+        return torch.randn(*shape, dtype=dtype, device=DEVICE)
 
     def engram_gate_conv_fwd():
         op = EngramGateConvFwdOp(_M, _SEQ_LEN, _D)

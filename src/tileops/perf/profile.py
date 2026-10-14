@@ -1,6 +1,7 @@
 """GPU profile loader.
 
-Reads YAML profiles from src/tileops/perf/profiles/ and returns them as dicts.
+Reads YAML profiles from vendor subdirectories under
+src/tileops/perf/profiles/ and returns them as dicts.
 This is the M6 -> M5 data contract interface (see docs/design/architecture.md).
 
 YAML files store only ``theoretical`` and ``calibration`` values.
@@ -18,11 +19,17 @@ _PROFILES_DIR = Path(__file__).parent / "profiles"
 _NUMERIC_KEYS = frozenset({"theoretical", "calibration", "calibration_burst", "effective"})
 
 
+def _profile_paths() -> list[Path]:
+    """Return all vendor profile paths in deterministic order."""
+    return sorted(_PROFILES_DIR.rglob("*.yaml"))
+
+
 def get_profile_path(gpu_name: str) -> Path:
     """Return the path to a GPU profile YAML.
 
     Args:
-        gpu_name: Profile name without extension (e.g. "h200").
+        gpu_name: Bare profile name (e.g. "h200") or vendor-qualified name
+            (e.g. "nvidia/h200"), without the YAML extension.
 
     Returns:
         Path to the YAML file.
@@ -30,11 +37,31 @@ def get_profile_path(gpu_name: str) -> Path:
     Raises:
         FileNotFoundError: If no profile exists for the given name.
     """
-    path = _PROFILES_DIR / f"{gpu_name}.yaml"
-    if not path.exists():
-        available = [p.stem for p in _PROFILES_DIR.glob("*.yaml")]
-        raise FileNotFoundError(f"No GPU profile '{gpu_name}'. Available: {available}")
-    return path
+    requested = Path(gpu_name)
+    if requested.is_absolute() or ".." in requested.parts:
+        raise FileNotFoundError(f"Invalid GPU profile name '{gpu_name}'")
+    if requested.suffix == ".yaml":
+        requested = requested.with_suffix("")
+
+    # A vendor-qualified name (for example ``nvidia/h200``) maps directly to
+    # its nested YAML.  A bare name remains supported for existing callers and
+    # is resolved by the unique filename stem across all vendors.
+    direct = _PROFILES_DIR / f"{requested}.yaml"
+    if direct.is_file():
+        return direct
+
+    if len(requested.parts) == 1:
+        matches = [path for path in _profile_paths() if path.stem == requested.name]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            names = [path.relative_to(_PROFILES_DIR).with_suffix("").as_posix() for path in matches]
+            raise FileNotFoundError(f"GPU profile '{gpu_name}' is ambiguous. Use one of: {names}")
+
+    available = [
+        path.relative_to(_PROFILES_DIR).with_suffix("").as_posix() for path in _profile_paths()
+    ]
+    raise FileNotFoundError(f"No GPU profile '{gpu_name}'. Available: {available}")
 
 
 def _coerce_numeric_strings(obj, key=None):
@@ -117,8 +144,10 @@ def find_profile(device_name: str) -> dict | None:
         device — the caller leaves speed-of-light readings blank rather
         than guessing a ceiling.
     """
-    for path in _PROFILES_DIR.glob("*.yaml"):
-        profile = load_profile(path.stem)
+    for path in _profile_paths():
+        profile = _load_profile_path(path)
+        if profile.get("status", "ready") != "ready":
+            continue
         if profile.get("gpu") == device_name:
             return profile
     return None
@@ -146,13 +175,19 @@ def load_profile(gpu_name: str) -> dict:
     """Load a GPU profile as a dict.
 
     Args:
-        gpu_name: Profile name without extension (e.g. "h200").
+        gpu_name: Bare profile name (e.g. "h200") or vendor-qualified name
+            (e.g. "nvidia/h200"), without the YAML extension.
 
     Returns:
         Dict with keys: gpu, compute_capability, hbm, tensor_core.
         Each hbm/tensor_core section includes a computed ``effective`` field.
     """
     path = get_profile_path(gpu_name)
+    return _load_profile_path(path)
+
+
+def _load_profile_path(path: Path) -> dict:
+    """Load and normalize one already-resolved profile path."""
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     data = _coerce_numeric_strings(data)

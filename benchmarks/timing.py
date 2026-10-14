@@ -23,6 +23,10 @@ from typing import Any, Callable, NamedTuple, Optional
 
 import torch
 
+from tileops.utils import get_backend_name, reset_persisting_l2_cache
+
+DEVICE = get_backend_name()
+
 _logger = logging.getLogger("tileops.bench")
 
 # Per-phase wall-time budgets in ms, divided by the cost of one cold-isolated iteration.
@@ -68,6 +72,12 @@ _PREPARE_ID = 1 << 32
 
 # L2 cache flush buffer, allocated lazily.
 _l2_flush_cache: Optional[torch.Tensor] = None
+_musa_l2_flush_cache: Optional[torch.Tensor] = None
+_FALLBACK_L2_BYTES = int(256e6)
+_KNOWN_L2_BYTES = {
+    # Verified with the MUSA toolkit deviceQuery sample on the test host.
+    "MTT S5000": 62_914_560,
+}
 
 
 def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS, min_iters: int = _MIN_ITERS) -> int:
@@ -302,6 +312,12 @@ def collect_repeats(
     call is drained before the next begins, so an iteration's kernels neither overlap
     nor borrow a neighbour's cache state.
     """
+    if DEVICE == "musa":
+        from tileops.utils.backend import collect_musa_mupti_repeats
+
+        kernels, iteration_of, dropped = collect_musa_mupti_repeats(run_one, n_repeat, prepare_one)
+        return Trace(kernels, iteration_of, dropped)
+
     cupti = _load_cupti()
     kind = cupti.ExternalCorrelationKind.CUSTOM0
     # Before the session, not inside it: the proof runs a phase of its own.
@@ -537,9 +553,39 @@ def _get_l2_flush_cache() -> torch.Tensor:
                 "L2 cache size query returned %d; flushing a 256 MB buffer instead",
                 l2_bytes,
             )
-            l2_bytes = int(256e6)
+            l2_bytes = _FALLBACK_L2_BYTES
         _l2_flush_cache = torch.empty(2 * l2_bytes, dtype=torch.int8, device="cuda")
     return _l2_flush_cache
+
+
+def _reported_l2_bytes(properties: object) -> int:
+    """Read backend device-property spelling variants, or use a safe fallback."""
+    for name in ("L2_cache_size", "l2_cache_size", "l2CacheSize"):
+        value = getattr(properties, name, None)
+        if value is not None and int(value) > 0:
+            return int(value)
+    device_name = getattr(properties, "name", None)
+    if device_name in _KNOWN_L2_BYTES:
+        return _KNOWN_L2_BYTES[device_name]
+    return _FALLBACK_L2_BYTES
+
+
+def _get_musa_l2_flush_cache() -> torch.Tensor:
+    global _musa_l2_flush_cache
+    if _musa_l2_flush_cache is None:
+        properties = torch.musa.get_device_properties(0)
+        l2_bytes = _reported_l2_bytes(properties)
+        if l2_bytes == _FALLBACK_L2_BYTES:
+            _logger.warning(
+                "MUSA device properties expose no positive L2 cache size; "
+                "flushing a 256 MB buffer instead"
+            )
+        _musa_l2_flush_cache = torch.empty(
+            2 * l2_bytes // 4,
+            dtype=torch.float32,
+            device="musa",
+        )
+    return _musa_l2_flush_cache
 
 
 def _native_output_suppressor():
@@ -616,10 +662,13 @@ def bench_kernel(
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None
     _bench_meta.attribution_retries = None
-    cache = _get_l2_flush_cache()
+    cache = _get_musa_l2_flush_cache() if DEVICE == "musa" else _get_l2_flush_cache()
 
     def _flush_l2():
-        _reset_persisting_l2_cache()
+        if DEVICE == "musa":
+            reset_persisting_l2_cache()
+        else:
+            _reset_persisting_l2_cache()
         cache.zero_()
 
     def _call_raw():
@@ -627,14 +676,16 @@ def bench_kernel(
 
     _flush_l2()
     _call_raw()
-    torch.cuda.synchronize()
-    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    synchronize = torch.musa.synchronize if DEVICE == "musa" else torch.cuda.synchronize
+    synchronize()
+    Event = torch.musa.Event if DEVICE == "musa" else torch.cuda.Event
+    start, end = Event(enable_timing=True), Event(enable_timing=True)
     start.record()
     for _ in range(_CALIBRATION_ITERS):
         _flush_l2()
         _call_raw()
     end.record()
-    torch.cuda.synchronize()
+    synchronize()
     per_iter_ms = max(start.elapsed_time(end) / _CALIBRATION_ITERS, 1e-6)
 
     n_warmup = _clamp_iters(dry_run_ms / per_iter_ms, max_iters, min_iters)
@@ -645,17 +696,17 @@ def bench_kernel(
 
     def _prepare_iteration(i):
         _flush_l2()
-        torch.cuda.synchronize()
+        synchronize()
 
     for i in range(n_warmup):
         _prepare_iteration(i)
         _run(i)
-    torch.cuda.synchronize()
+    synchronize()
 
     try:
         with _native_output_suppressor():
             samples = _collect_attributed(_run, n_repeat, _prepare_iteration, count_copies)
-        _bench_meta.timing = "cupti"
+        _bench_meta.timing = "mupti" if DEVICE == "musa" else "cupti"
     except (_CUPTIAttributionError, CUPTIError) as exc:
         if not allow_fallback:
             raise RuntimeError(
@@ -680,6 +731,6 @@ def bench_kernel(
             Sample(device_busy_ms=elapsed, latency_ms=elapsed, n_kernels=None)
             for elapsed in (s.elapsed_time(e) for s, e in zip(starts, ends, strict=True))
         ]
-
-    torch.cuda.empty_cache()
+    empty_cache = torch.musa.empty_cache if DEVICE == "musa" else torch.cuda.empty_cache
+    empty_cache()
     return samples

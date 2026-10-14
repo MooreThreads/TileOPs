@@ -38,6 +38,14 @@ flash-linear-attention==0.5.2
 vllm==0.27.1
 # The 2D pooling baseline. Installed --no-deps: it pins numpy==1.26.4, this stack is on 2.2.6.
 flag_gems==5.0.2
+# MUSA does not take the pin above. 5.0.2 is the newest release PyPI has, but its
+# _mthreads backend reads triton's fill_2d_tma_descriptor at import, which the MUSA
+# triton 3.6 in the benchmark container renamed to fill_tme_descriptor; the
+# AttributeError escapes import_vendor_extra_lib as a RuntimeError, so flag_gems
+# never imports and the flaggems columns disappear. The MUSA image bakes v5.3.6
+# instead -- commit 3681588075ce95a4f7104e9b3295a68f68fcd75b, the newest tag whose
+# _mthreads backend matches that triton -- from a wheel vendored beside the MUSA
+# tarballs in the basesdk build context. See that image's Dockerfile.
 # flag_gems imports it at module load.
 sqlalchemy==2.0.52
 # cuBLASLt's algorithm-selection API for the GEMM benchmark. Bare, not `[cu13]`: it maps torch's

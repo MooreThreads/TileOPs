@@ -487,7 +487,6 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
     site that wanted a concrete op.
     """
     import importlib
-    import inspect
     import pkgutil
     import re
     from pathlib import Path
@@ -502,7 +501,8 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
             continue
         for obj in vars(mod).values():
             if (
-                inspect.isclass(obj)
+                isinstance(obj, type)
+                and getattr(obj, "__origin__", None) is None
                 and issubclass(obj, Op)
                 and getattr(obj, "__abstractmethods__", None)
             ):

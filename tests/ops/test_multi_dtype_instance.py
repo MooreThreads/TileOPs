@@ -12,6 +12,10 @@ from tileops.manifest import load_manifest
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.reduction.reduce import SumFwdOp
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
+
 
 _DTYPES = (torch.float16, torch.bfloat16)
 
@@ -26,7 +30,7 @@ def _assert_two_entries(op):
 def test_reduction_serves_two_dtypes_from_one_instance():
     op = SumFwdOp(dim=-1)
     for dtype in _DTYPES:
-        x = torch.randn(8, 128, dtype=dtype, device="cuda")
+        x = torch.randn(8, 128, dtype=dtype, device=DEVICE)
         y = op(x)
         assert y.dtype == dtype
         torch.testing.assert_close(y, x.sum(-1), atol=2e-2, rtol=2e-2)
@@ -38,8 +42,8 @@ def test_rms_norm_serves_two_dtypes_from_one_instance():
     n = 256
     op = RMSNormFwdOp(normalized_shape=(n,))
     for dtype in _DTYPES:
-        x = torch.randn(16, n, dtype=dtype, device="cuda")
-        w = torch.randn(n, dtype=dtype, device="cuda")
+        x = torch.randn(16, n, dtype=dtype, device=DEVICE)
+        w = torch.randn(n, dtype=dtype, device=DEVICE)
         y = op(x, w)
         assert y.dtype == dtype
     _assert_two_entries(op)
@@ -51,9 +55,9 @@ def test_layer_norm_keys_on_dtype():
     n = 256
     op = LayerNormFwdOp(normalized_shape=(n,))
     for dtype in _DTYPES:
-        x = torch.randn(16, n, dtype=dtype, device="cuda")
-        w = torch.randn(n, dtype=dtype, device="cuda")
-        b = torch.randn(n, dtype=dtype, device="cuda")
+        x = torch.randn(16, n, dtype=dtype, device=DEVICE)
+        w = torch.randn(n, dtype=dtype, device=DEVICE)
+        b = torch.randn(n, dtype=dtype, device=DEVICE)
         assert op(x, w, b).dtype == dtype
     assert set(op.built_kernels("layer_norm")) == set(_DTYPES)
 
@@ -62,9 +66,9 @@ def test_layer_norm_keys_on_dtype():
 def test_roofline_reports_the_most_recent_forward():
     """`self.dtype` is most-recent-forward, so bytes follow the last call."""
     op = SumFwdOp(dim=-1)
-    op(torch.randn(8, 128, dtype=torch.float32, device="cuda"))
+    op(torch.randn(8, 128, dtype=torch.float32, device=DEVICE))
     _, bytes_fp32 = op.eval_roofline()
-    op(torch.randn(8, 128, dtype=torch.float16, device="cuda"))
+    op(torch.randn(8, 128, dtype=torch.float16, device=DEVICE))
     _, bytes_fp16 = op.eval_roofline()
     assert bytes_fp16 < bytes_fp32
 
@@ -76,10 +80,10 @@ def test_moe_post_permute_serves_two_dtypes_from_one_instance():
     total_tokens, top_k, hidden = 16, 2, 128
     numel = total_tokens * top_k
     op = MoePostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
-    fwd_idx = torch.arange(numel, device="cuda", dtype=torch.int32)
+    fwd_idx = torch.arange(numel, device=DEVICE, dtype=torch.int32)
     for dtype in _DTYPES:
-        mm2_pad = torch.randn(numel, hidden, dtype=dtype, device="cuda")
-        weights = torch.rand(total_tokens, top_k, dtype=torch.float32, device="cuda")
+        mm2_pad = torch.randn(numel, hidden, dtype=dtype, device=DEVICE)
+        weights = torch.rand(total_tokens, top_k, dtype=torch.float32, device=DEVICE)
         assert op(mm2_pad, weights, fwd_idx).dtype == dtype
     _assert_two_entries(op)
 
@@ -92,8 +96,8 @@ def test_cb_producer_serves_two_dtypes_from_one_instance():
     op = CBProducerFwdOp(batch, chunks, groups, chunk_len, d_state)
     s = chunks * chunk_len
     for dtype in _DTYPES:
-        c = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
-        b = torch.randn(batch, s, groups, d_state, dtype=dtype, device="cuda")
+        c = torch.randn(batch, s, groups, d_state, dtype=dtype, device=DEVICE)
+        b = torch.randn(batch, s, groups, d_state, dtype=dtype, device=DEVICE)
         assert op(c, b).dtype == dtype
     _assert_two_entries(op)
 
@@ -103,8 +107,8 @@ def test_mismatched_input_dtypes_are_rejected():
     """The anchor selects the kernel; the others must agree with it."""
     n = 256
     op = RMSNormFwdOp(normalized_shape=(n,))
-    x = torch.randn(16, n, dtype=torch.float16, device="cuda")
-    w = torch.randn(n, dtype=torch.bfloat16, device="cuda")
+    x = torch.randn(16, n, dtype=torch.float16, device=DEVICE)
+    w = torch.randn(n, dtype=torch.bfloat16, device=DEVICE)
     with pytest.raises(ValueError):
         op(x, w)
 
@@ -120,8 +124,8 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
     from tileops.ops.elementwise import BitwiseAndFwdOp
 
     op = BitwiseAndFwdOp()
-    b = torch.tensor([True, False] * 32, device="cuda")
-    i = torch.arange(64, device="cuda", dtype=torch.int32)
+    b = torch.tensor([True, False] * 32, device=DEVICE)
+    i = torch.arange(64, device=DEVICE, dtype=torch.int32)
 
     torch.testing.assert_close(op(b, ~b), b & ~b)
     torch.testing.assert_close(op(i, i + 1), i & (i + 1))
@@ -138,8 +142,8 @@ def test_logical_and_output_stays_bool_across_input_storage():
     from tileops.ops.elementwise import LogicalAndFwdOp
 
     op = LogicalAndFwdOp()
-    b = torch.tensor([True, False] * 32, device="cuda")
-    f = torch.tensor([0.0, 1.0] * 32, device="cuda")
+    b = torch.tensor([True, False] * 32, device=DEVICE)
+    f = torch.tensor([0.0, 1.0] * 32, device=DEVICE)
 
     torch.testing.assert_close(op(b, ~b), torch.logical_and(b, ~b))
     torch.testing.assert_close(op(f, f), torch.logical_and(f, f))
@@ -156,9 +160,9 @@ def test_masked_fill_alternates_between_bool_and_float_input():
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     op = MaskedFillScalarFwdOp(value=1)
-    mask = torch.tensor([True, False] * 32, device="cuda")
-    b = torch.zeros(64, device="cuda", dtype=torch.bool)
-    f = torch.zeros(64, device="cuda", dtype=torch.float32)
+    mask = torch.tensor([True, False] * 32, device=DEVICE)
+    b = torch.zeros(64, device=DEVICE, dtype=torch.bool)
+    f = torch.zeros(64, device=DEVICE, dtype=torch.float32)
 
     torch.testing.assert_close(op(b, mask), b.masked_fill(mask, 1))
     torch.testing.assert_close(op(f, mask), f.masked_fill(mask, 1))
@@ -213,11 +217,11 @@ def test_single_tensor_op_records_its_dtype(name):
     for dtype in dtypes:
         op = _SINGLE_TENSOR_OPS[name]()
         if dtype == torch.bool:
-            x = torch.tensor([True, False] * 32, device="cuda")
+            x = torch.tensor([True, False] * 32, device=DEVICE)
         elif dtype.is_floating_point:
-            x = torch.rand(64, device="cuda", dtype=dtype) + 0.5
+            x = torch.rand(64, device=DEVICE, dtype=dtype) + 0.5
         else:
-            x = torch.arange(1, 65, device="cuda", dtype=dtype)
+            x = torch.arange(1, 65, device=DEVICE, dtype=dtype)
         op(x)  # an unexpected failure here is a real defect, not a skip
         assert op.dtype == dtype, f"{name} did not record {dtype}"
 

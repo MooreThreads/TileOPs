@@ -10,12 +10,9 @@ import pytest
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import forget_device_properties, get_sm_version
+from tileops.utils import forget_device_properties, get_backend_name, get_sm_version
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="kernel-map install tests build kernels on the current device",
-)
+DEVICE = get_backend_name()
 
 
 def _make_incompatible_arch_list() -> list[int]:
@@ -93,7 +90,12 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
         @property
         def default_kernel_map(self) -> dict[str, Kernel]:
             defaults = super().default_kernel_map
-            return {**defaults, "gemm_tma_kernel": IncompatibleGemm}
+            return {
+                **defaults,
+                "mp31_gemm_kernel": IncompatibleGemm,
+                "gemm_tma_kernel": IncompatibleGemm,
+                "gemm_cp_async_kernel": IncompatibleGemm,
+            }
 
     op = AutoDiscoveredIncompatibleOp()
 
@@ -119,10 +121,9 @@ def test_single_implementation_slot_is_refused_at_first_build() -> None:
     op = mod.ReluFwdOp(kernel_map={key: IncompatibleKernel})
 
     with pytest.raises(ValueError, match="is built for architectures"):
-        op(torch.randn(8, device="cuda", dtype=torch.float16))
+        op(torch.randn(8, device=DEVICE, dtype=torch.float16))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.smoke
 def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     """A compatible user-supplied override yields bit-identical forward output.
@@ -146,7 +147,7 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     overridden = cls(kernel_map={key: MarkerKernel})
 
     torch.manual_seed(0)
-    x = torch.randn(n_total, dtype=dtype, device="cuda")
+    x = torch.randn(n_total, dtype=dtype, device=DEVICE)
     y_baseline = baseline(x.clone())
     y_overridden = overridden(x.clone())
     ((built,),) = [tuple(overridden.built_kernels(key).values())]
@@ -156,7 +157,6 @@ def test_install_kernel_map_compatible_override_forward_bit_identical() -> None:
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.smoke
 def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     """``supported_archs=None`` means no restriction, and the op runs.
@@ -175,7 +175,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
         supported_archs = None
 
     op = cls(kernel_map={key: UnrestrictedKernel})
-    x = torch.randn(8, device="cuda", dtype=torch.float16)
+    x = torch.randn(8, device=DEVICE, dtype=torch.float16)
 
     torch.testing.assert_close(op(x), torch.relu(x))
 
@@ -191,7 +191,7 @@ def test_autotune_reaches_elementwise_entries():
 
     op = AbsFwdOp()
     for dtype in (torch.float16, torch.float32):
-        op(torch.randn(256, device="cuda", dtype=dtype))
+        op(torch.randn(256, device=DEVICE, dtype=dtype))
 
     found = list(op.iter_kernels())
     assert len(found) == 2, f"autotune would see {len(found)} of 2 built kernels"
@@ -220,7 +220,7 @@ def test_native_bool_backend_is_constructed_with_bool():
             return a & b
 
     op = BitwiseAndFwdOp(kernel_map={"bitwise_and": NativeBoolAnd})
-    x = torch.tensor([True, False] * 32, device="cuda")
+    x = torch.tensor([True, False] * 32, device=DEVICE)
 
     torch.testing.assert_close(op(x, ~x), x & ~x)
     ((built,),) = [tuple(op.built_kernels(op._op_name).values())]
@@ -259,7 +259,7 @@ def test_integer_fallback_yields_to_a_backend_that_serves_integers():
     from tileops.kernels.elementwise import FloorFwdKernel
     from tileops.ops.elementwise import FloorFwdOp
 
-    x = torch.arange(1, 65, device="cuda", dtype=torch.int32)
+    x = torch.arange(1, 65, device=DEVICE, dtype=torch.int32)
 
     from tileops.ops.elementwise._base import _IntFallbackCall
 

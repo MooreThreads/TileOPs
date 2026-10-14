@@ -5,7 +5,7 @@ calibration factor for src/tileops/perf/profiles/.  The CUDA-core counterpart
 of memory/hbm_bandwidth.py: the two together fix both roofline axes.
 
 Usage:
-    python benchmarks/hardware/compute/fma_throughput.py [--profile h200] [--iters 20000]
+    python benchmarks/hardware/compute/fma_throughput.py [--profile nvidia/h200] [--iters 20000]
 """
 
 import argparse
@@ -16,7 +16,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from tileops.perf import load_profile
+from tileops.perf import get_profile_path, load_profile
 
 _CU_SRC = Path(__file__).parent / "fma_saturation.cu"
 
@@ -184,7 +184,7 @@ def _parse_derived(lines, key):
 
 def main():
     parser = argparse.ArgumentParser(description="CUDA-core fp32 FMA microbenchmark")
-    parser.add_argument("--profile", default="h200", help="GPU profile name")
+    parser.add_argument("--profile", default="nvidia/h200", help="GPU profile name")
     parser.add_argument("--iters", type=int, default=20000, help="FMA iterations per chain")
     parser.add_argument("--arch", default="sm_90", help="CUDA architecture")
     parser.add_argument("--gpu-index", type=int, default=0, help="GPU to sample telemetry from")
@@ -290,7 +290,7 @@ def main():
         if not clocks_steady:
             print("\nWARNING: the SM clock moved during this run; the calibration below is")
             print("         conditional on the clocks recorded above, not on locked ones.")
-        print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
+        print(f"\nUpdate {get_profile_path(args.profile)}:")
         print(f"  cuda_core.fp32.calibration: {calibration:.4f}")
     elif telemetry is None:
         print("\nNot emitting a calibration factor: the SM clock could not be sampled,")

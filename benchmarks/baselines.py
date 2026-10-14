@@ -12,10 +12,13 @@ Importing this module also arms :class:`_FlagGemsImportOrder`.
 import contextlib
 import importlib
 import importlib.abc
+import os
 import sys
 from typing import Any, Callable, Optional
 
 import torch
+
+from tileops.utils import get_backend_name
 
 __all__ = [
     "DEEPGEMM_TAG",
@@ -30,6 +33,7 @@ __all__ = [
     "flaggems_group_norm",
     "flaggems_op",
     "flashinfer_op",
+    "prepare_fla_import",
     "reference_tolerance",
     "vllm_op",
 ]
@@ -49,14 +53,49 @@ FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
 VLLM_TAG = "vllm"
 
+_TORCHVISION_SCHEMA_LIB = None
 
-def compiled_reference(fn: Callable, *, dynamic: bool = False) -> Callable:
+
+def prepare_fla_import() -> None:
+    """Make optional FLA imports work with the installed MUSA torchvision wheel.
+
+    FLA imports torchvision indirectly through its optional model API. Use the
+    installed native extension when it provides the ``torchvision::nms`` schema;
+    define the schema only for wheels whose extension cannot provide it.
+    """
+    global _TORCHVISION_SCHEMA_LIB
+    if _TORCHVISION_SCHEMA_LIB is not None:
+        return
+    try:
+        importlib.import_module("torchvision")
+        return
+    except (ImportError, OSError, RuntimeError):
+        pass
+    try:
+        torch._C._dispatch_has_kernel_for_dispatch_key("torchvision::nms", "Meta")
+    except RuntimeError:
+        _TORCHVISION_SCHEMA_LIB = torch.library.Library("torchvision", "DEF")
+        _TORCHVISION_SCHEMA_LIB.define(
+            "nms(Tensor dets, Tensor scores, float iou_threshold) -> Tensor"
+        )
+
+
+def compiled_reference(fn: Callable, *, dynamic: bool = False) -> Callable | None:
     """Return *fn* compiled by inductor, resetting dynamo first.
 
     dynamo caches eight graphs per code object and every case of a bench file
     shares one reference callable, so without the reset the later cases would
     time eager under a tag that says compiled.
+
+    Set ``TILEOPS_DISABLE_TORCH_COMPILE_BASELINE=1`` only for a documented
+    toolchain incompatibility.  Eager torch remains the reference; the missing
+    optional baseline is omitted instead of being silently relabelled.
     """
+    if (
+        os.environ.get("TILEOPS_DISABLE_TORCH_COMPILE_BASELINE") == "1"
+        or get_backend_name() == "musa"
+    ):
+        return None
     torch._dynamo.reset()
     return torch.compile(fn, dynamic=dynamic)
 

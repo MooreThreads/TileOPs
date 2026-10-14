@@ -32,6 +32,29 @@ LOG_TAIL_LINES = 80
 PY_SPY_TIMEOUT_S = 120
 TEARDOWN_TIMEOUT_S = 120
 
+_MUSA_BENCHMARK_ISOLATE_CASES = frozenset(
+    {"bench_bmm.py", "bench_gated_deltanet_recurrence.py", "bench_norm.py"}
+)
+
+_COLLECT_CASES = r"""import pathlib
+import sys
+
+import pytest
+
+
+class Collector:
+    def pytest_collection_modifyitems(self, items):
+        pathlib.Path(sys.argv[1]).write_text(
+            "\n".join(item.nodeid for item in items), encoding="utf-8"
+        )
+
+
+args = ["--collect-only", "-q", sys.argv[2]]
+if len(sys.argv) == 4:
+    args.extend(["-k", sys.argv[3]])
+raise SystemExit(pytest.main(args, plugins=[Collector()]))
+"""
+
 # Child preamble; argv[1] = status pipe fd, argv[2:] = pytest args, argv[3]
 # = the bench file. prctl(PR_SET_PTRACER, parent) lets py-spy attach under
 # yama ptrace_scope=1. The collect-only pass runs while another file owns
@@ -84,6 +107,13 @@ class Child:
         read_fd, write_fd = os.pipe()
         log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
+            child_env = {
+                **os.environ,
+                "TILEOPS_COLLECT_STATUS": str(status_path),
+                "TILEOPS_HEARTBEAT": str(beat_path),
+            }
+            if child_env.get("TILEOPS_BACKEND", "musa").lower() == "musa":
+                child_env.setdefault("TILELANG_AUTO_TUNING_MAX_CPU_COUNT", "1")
             self.proc = subprocess.Popen(
                 [sys.executable, "-c", code, str(write_fd), *argv],
                 stdin=subprocess.PIPE,
@@ -91,11 +121,7 @@ class Child:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 pass_fds=(write_fd,),
-                env={
-                    **os.environ,
-                    "TILEOPS_COLLECT_STATUS": str(status_path),
-                    "TILEOPS_HEARTBEAT": str(beat_path),
-                },
+                env=child_env,
             )
         finally:
             os.close(log_fd)
@@ -186,7 +212,7 @@ def _dump_stack(pid: int, dump_path: Path) -> None:
 
 
 def _discover_bench_files(targets: list[str]) -> list[str]:
-    """Return bench_*.py files under targets by filesystem walk.
+    """Return the requested bench_*.py files under targets by filesystem walk.
 
     Discovery must not import benchmark modules: a module-level crash or
     hang would take down the whole run before any isolation exists. A
@@ -196,7 +222,8 @@ def _discover_bench_files(targets: list[str]) -> list[str]:
     for target in targets:
         path = Path(target)
         if path.is_file():
-            files[str(path)] = None
+            if path.name.startswith("bench_") and path.suffix == ".py":
+                files[str(path)] = None
         elif path.is_dir():
             for f in sorted(path.rglob("bench_*.py")):
                 files[str(f)] = None
@@ -205,26 +232,57 @@ def _discover_bench_files(targets: list[str]) -> list[str]:
     return list(files)
 
 
+def _discover_bench_cases(bench_file: str, case_filter: str | None, output: Path) -> list[str]:
+    """Collect nodeids for a benchmark file in a separate, torch-owning process."""
+    argv = [sys.executable, "-c", _COLLECT_CASES, str(output), bench_file]
+    if case_filter is not None:
+        argv.append(case_filter)
+    result = subprocess.run(argv, cwd=Path.cwd(), capture_output=True, text=True)
+    if result.returncode not in (0, 5):
+        raise RuntimeError(
+            f"case collection failed for {bench_file}:\n"
+            f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+        )
+    try:
+        cases = [line for line in output.read_text(encoding="utf-8").splitlines() if line]
+        if case_filter is not None:
+            cases = [case for case in cases if case_filter in case]
+        return cases
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"case collection wrote no nodeids for {bench_file}") from exc
+
+
 def _unrun_suite(rel: str) -> ET.Element:
     """Build a one-entry junit testsuite marking a file the budget never reached."""
+    if "::" in rel:
+        classname, name = rel.split("::", 1)
+        classname = classname.removesuffix(".py").replace(os.sep, ".")
+    else:
+        classname = rel[: -len(".py")].replace(os.sep, ".")
+        name = "whole_file"
     suite = ET.Element(
         "testsuite",
         {"name": "pytest", "tests": "1", "errors": "0", "failures": "0", "skipped": "1"},
     )
-    classname = rel[: -len(".py")].replace(os.sep, ".")
-    case = ET.SubElement(suite, "testcase", {"classname": classname, "name": "whole_file"})
+    case = ET.SubElement(suite, "testcase", {"classname": classname, "name": name})
     ET.SubElement(case, "skipped", {"message": f"{rel}: not run, sweep budget spent"})
     return suite
 
 
 def _synthetic_suite(bench_file: str, message: str, log_tail: str) -> ET.Element:
     """Build a one-entry junit testsuite standing in for a dead child's results."""
+    rel = os.path.relpath(bench_file)
+    if "::" in rel:
+        classname, name = rel.split("::", 1)
+        classname = classname.removesuffix(".py").replace(os.sep, ".")
+    else:
+        classname = rel[: -len(".py")].replace(os.sep, ".")
+        name = "whole_file"
     suite = ET.Element(
         "testsuite",
         {"name": "pytest", "tests": "1", "errors": "1", "failures": "0", "skipped": "0"},
     )
-    classname = os.path.relpath(bench_file)[: -len(".py")].replace(os.sep, ".")
-    case = ET.SubElement(suite, "testcase", {"classname": classname, "name": "whole_file"})
+    case = ET.SubElement(suite, "testcase", {"classname": classname, "name": name})
     error = ET.SubElement(case, "error", {"message": f"{os.path.relpath(bench_file)}: {message}"})
     error.text = log_tail
     return suite
@@ -233,6 +291,14 @@ def _synthetic_suite(bench_file: str, message: str, log_tail: str) -> ET.Element
 def _fragment_suites(fragment: Path) -> list[ET.Element]:
     root = ET.parse(fragment).getroot()
     return list(root) if root.tag == "testsuites" else [root]
+
+
+def _attach_error(suites: list[ET.Element], message: str) -> None:
+    """Attach a child-process teardown error without duplicating its testcase."""
+    for suite in suites:
+        for testcase in suite.findall("testcase"):
+            error = ET.SubElement(testcase, "error", {"message": message})
+            error.text = message
 
 
 def _collect_outcome(status_path: Path) -> str | None:
@@ -252,9 +318,9 @@ def _log_tail(log_path: Path) -> str:
     return "".join(log_path.read_text(errors="replace").splitlines(keepends=True)[-LOG_TAIL_LINES:])
 
 
-def _absorb_profile_log(parts: list[str]) -> None:
+def _absorb_profile_log(parts: list[str], not_before: float) -> None:
     report = Path("profile_run.log")
-    if report.exists():
+    if report.exists() and report.stat().st_mtime >= not_before:
         parts.append(report.read_text())
         report.unlink()
 
@@ -298,12 +364,31 @@ def main() -> int:
         default=4,
         help="upcoming files importing in advance while the current file runs",
     )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="stop after the first failed benchmark job",
+    )
+    parser.add_argument(
+        "--start-job",
+        type=int,
+        default=0,
+        help="start at this zero-based discovered job, leaving earlier jobs to the caller",
+    )
     args = parser.parse_args()
 
     dump_dir = Path(args.dump_dir)
     suites: list[ET.Element] = []
     profile_parts: list[str] = []
     failed: list[str] = []
+    profile_path = Path("profile_run.log")
+    profile_not_before = time.time()
+    if profile_path.exists():
+        profile_backup = Path(args.junit_xml).parent / "profile_run_previous.log"
+        if profile_backup.exists():
+            profile_backup = profile_backup.with_name(f"profile_run_previous_{time.time_ns()}.log")
+        profile_backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(profile_path), str(profile_backup))
 
     def mark_failed(rel: str) -> None:
         """Record a file once: it can both fail its tests and crash in teardown."""
@@ -321,11 +406,47 @@ def main() -> int:
         bench_files = _discover_bench_files(args.targets)
         if not bench_files:
             raise SystemExit("no benchmark files found")
-        print(f"discovered {len(bench_files)} benchmark files", flush=True)
+        jobs: list[tuple[str, str]] = []
+        for bench_file in bench_files:
+            filename = Path(bench_file).name
+            if filename in _MUSA_BENCHMARK_ISOLATE_CASES:
+                try:
+                    cases = _discover_bench_cases(
+                        bench_file,
+                        None,
+                        work_dir / f"{len(jobs):03d}.cases",
+                    )
+                except Exception as exc:
+                    rel = os.path.relpath(bench_file)
+                    message = f"case collection failed: {exc}"
+                    print(f"COLLECT: {rel}: {message}", flush=True)
+                    suites.append(_synthetic_suite(bench_file, message, str(exc)))
+                    mark_failed(rel)
+                    continue
+                jobs.extend((bench_file, case) for case in cases)
+            else:
+                jobs.append((bench_file, bench_file))
+        if not jobs:
+            merged = ET.Element("testsuites")
+            merged.extend(suites)
+            ET.ElementTree(merged).write(args.junit_xml, encoding="utf-8", xml_declaration=True)
+            print("no benchmark cases found after collection", flush=True)
+            return 1
+        if not 0 <= args.start_job <= len(jobs):
+            raise SystemExit(f"--start-job must be between 0 and {len(jobs)}, got {args.start_job}")
+        jobs = jobs[args.start_job :]
+        isolated_jobs = any(target != bench_file for bench_file, target in jobs)
+        print(
+            f"discovered {len(bench_files)} benchmark files, {len(jobs)} jobs"
+            + (" (case-isolated)" if isolated_jobs else ""),
+            flush=True,
+        )
 
         def spawn_at(index: int) -> Child:
             fragment = work_dir / f"{index:03d}.xml"
-            argv = ["-q", bench_files[index], f"--junit-xml={fragment}"]
+            bench_file, target = jobs[index]
+            argv = ["-q", target]
+            argv.append(f"--junit-xml={fragment}")
             return Child(
                 _CHILD,
                 argv,
@@ -341,7 +462,8 @@ def main() -> int:
 
         def top_up() -> None:
             nonlocal spawned
-            while len(pending) <= args.prewarm and spawned < len(bench_files):
+            prewarm = 0 if isolated_jobs else args.prewarm
+            while len(pending) < prewarm and spawned < len(jobs):
                 pending.append(spawn_at(spawned))
                 spawned += 1
 
@@ -355,14 +477,16 @@ def main() -> int:
 
         top_up()
         try:
-            for index, bench_file in enumerate(bench_files):
+            for index, (bench_file, target) in enumerate(jobs):
                 if budget_spent():
-                    unrun.extend(os.path.relpath(f) for f in bench_files[index:])
+                    unrun.extend(os.path.relpath(job_target) for _, job_target in jobs[index:])
                     break
-                child = current = pending.popleft()
+                child = current = pending.popleft() if pending else spawn_at(index)
+                if not pending:
+                    spawned = max(spawned, index + 1)
                 top_up()
-                rel = os.path.relpath(bench_file)
-                print(f"\n=== [{index + 1}/{len(bench_files)}] {rel} ===", flush=True)
+                rel = os.path.relpath(target)
+                print(f"\n=== [{index + 1}/{len(jobs)}] {rel} ===", flush=True)
                 fragment = work_dir / f"{index:03d}.xml"
                 log_path = work_dir / f"{index:03d}.log"
 
@@ -401,13 +525,13 @@ def main() -> int:
                         f"the {args.total_budget:.0f}s sweep budget is spent",
                         flush=True,
                     )
-                    unrun.extend(os.path.relpath(f) for f in bench_files[index:])
+                    unrun.extend(os.path.relpath(job_target) for _, job_target in jobs[index:])
                     break
 
                 if rc is None:
                     _, stalled_on = child.beat()
                     dump_dir.mkdir(parents=True, exist_ok=True)
-                    dump_path = dump_dir / f"{Path(bench_file).stem}.txt"
+                    dump_path = dump_dir / f"{index:03d}_{Path(bench_file).stem}.txt"
                     _dump_stack(child.proc.pid, dump_path)
                     child.kill()
                     sys.stdout.write(log_path.read_text(errors="replace"))
@@ -417,10 +541,11 @@ def main() -> int:
                         f"killed, stack dump at {dump_path}"
                     )
                     print(f"STALLED: {rel}: {message}", flush=True)
-                    suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
+                    suites.append(_synthetic_suite(target, message, _log_tail(log_path)))
                     mark_failed(rel)
                 else:
                     sys.stdout.write(log_path.read_text(errors="replace"))
+                    teardown = ""
                     if rc >= 0:
                         # A status-reported child still holds its CUDA context,
                         # and the card is in EXCLUSIVE_PROCESS mode: the next
@@ -429,28 +554,37 @@ def main() -> int:
                         # reaped by wait_result.
                         teardown = _reap_teardown(child, args.teardown_timeout)
                         current = None
-                        if teardown:
-                            note_teardown_anomaly(bench_file, teardown)
                     if rc < 0:
                         sig = signal.Signals(-rc)
                         message = f"killed by signal {sig.value} ({sig.name})"
                         print(f"CRASH: {rel}: {message}", flush=True)
-                        suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
+                        suites.append(_synthetic_suite(target, message, _log_tail(log_path)))
                         mark_failed(rel)
                     elif fragment.exists():
-                        suites.extend(_fragment_suites(fragment))
+                        fragment_suites = _fragment_suites(fragment)
+                        if teardown:
+                            print(f"TEARDOWN: {rel}: {teardown}", flush=True)
+                            _attach_error(fragment_suites, teardown)
+                            mark_failed(rel)
+                        suites.extend(fragment_suites)
                         # 0 = all passed, 5 = nothing collected (e.g. all skipped).
                         if rc not in (0, 5):
                             mark_failed(rel)
                     else:
-                        message = f"pytest exited with {rc} without writing results"
-                        suites.append(_synthetic_suite(bench_file, message, _log_tail(log_path)))
+                        if teardown:
+                            note_teardown_anomaly(target, teardown)
+                        else:
+                            message = f"pytest exited with {rc} without writing results"
+                            suites.append(_synthetic_suite(target, message, _log_tail(log_path)))
                         mark_failed(rel)
                 outcome = _collect_outcome(work_dir / f"{index:03d}.collect")
                 if outcome is not None:
                     collect_failed.append((rel, outcome))
                 print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
-                _absorb_profile_log(profile_parts)
+                _absorb_profile_log(profile_parts, profile_not_before)
+                if args.fail_fast and (rel in failed or outcome is not None):
+                    unrun.extend(os.path.relpath(job_target) for _, job_target in jobs[index + 1 :])
+                    break
         finally:
             # The file being run owns the card; an exception before its teardown
             # was awaited would leave that process holding it.
@@ -471,8 +605,8 @@ def main() -> int:
     if collect_failed:
         scope = (
             "every file"
-            if len(collect_failed) == len(bench_files)
-            else f"{len(collect_failed)} of {len(bench_files)} files"
+            if len(collect_failed) == len(jobs)
+            else f"{len(collect_failed)} of {len(jobs)} jobs"
         )
         print(f"\ncollection did not complete cleanly for {scope}:", flush=True)
         for rel, outcome in collect_failed:
@@ -484,9 +618,13 @@ def main() -> int:
         )
 
     if unrun:
+        reason = (
+            f"the {args.total_budget:.0f}s sweep budget ran out"
+            if args.total_budget is not None
+            else "fail-fast stopped the sweep"
+        )
         print(
-            f"\nthe {args.total_budget:.0f}s sweep budget ran out with "
-            f"{len(unrun)} of {len(bench_files)} file(s) not benchmarked:",
+            f"\n{reason} with {len(unrun)} of {len(jobs)} job(s) not benchmarked:",
             flush=True,
         )
         for rel in unrun:
@@ -499,7 +637,7 @@ def main() -> int:
 
     if failed or unrun:
         if failed:
-            print(f"\n{len(failed)} benchmark file(s) failed:", flush=True)
+            print(f"\n{len(failed)} benchmark job(s) failed:", flush=True)
             for rel in failed:
                 print(f"  {rel}", flush=True)
         return 1

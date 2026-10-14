@@ -17,6 +17,9 @@ from benchmarks.timing import (
     bench_kernel,
 )
 from tileops.manifest import load_workloads
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 
 @pytest.mark.smoke
@@ -220,7 +223,6 @@ def test_a_call_that_launched_nothing_does_not_spend_the_retries(monkeypatch):
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
     """A callable launching no CUDA kernel cannot be attributed by CUPTI."""
     monkeypatch.setenv("TILEOPS_ALLOW_CUDA_EVENTS_FALLBACK", "0")
@@ -228,11 +230,11 @@ def test_native_cupti_failure_fails_closed_by_default(monkeypatch):
         bench_kernel(lambda: sum(range(64)))
 
 
+@pytest.mark.skip(reason="requires CUDA")
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_a_copy_counts_only_where_the_case_asks_for_copies():
     """A copy counts as device work only where the case asks, and is reported otherwise."""
-    x = torch.empty(8 * 1024 * 1024, device="cuda", dtype=torch.float16)
+    x = torch.empty(8 * 1024 * 1024, device=DEVICE, dtype=torch.float16)
 
     def clone_then_scale():
         y = x.clone()
@@ -247,7 +249,6 @@ def test_a_copy_counts_only_where_the_case_asks_for_copies():
 
 
 @pytest.mark.smoke
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_kernel_runtime_error_propagates():
     """Genuine RuntimeErrors must reach the caller, not the fallback path."""
 

@@ -1,0 +1,8 @@
+project-includes = [
+  "src/**/*.py",
+  "workloads/**/*.py",
+  "benchmarks/**/*.py",
+  "tests/**/*.py",
+]
+
+search-path = [".", "src"]

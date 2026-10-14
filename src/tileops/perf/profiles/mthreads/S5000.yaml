@@ -1,0 +1,62 @@
+# GPU Profile scaffold: Moore Threads MTT S5000
+#
+# Status: scaffold
+# This profile is still partial: DDR, scalar FP32, and the FP32-as-TF32 tensor
+# entry below are backed by MP31 MCU/event probes, while FP16/BF16 roofs are not
+# yet measured.
+# Keep status=scaffold until every roof consumed by the report is calibrated.
+# A scaffold profile is ignored by find_profile().
+#
+# Units:
+#   hbm.theoretical                 bytes/s
+#   cuda_core/tensor_core.theoretical FLOP/s
+#   calibration                     measured/theoretical ratio in [0, 1]
+#   effective                       computed by load_profile(), never stored here
+#
+# Required evidence before changing status to ready:
+#   - GPU name from torch_musa/torch.cuda.get_device_name()
+#   - memory clock, benchmark command, repetitions, and board power state
+#   - HBM envelope (copy/triad/read/write where available)
+#   - compute dtype/unit, clock state, and sustained versus burst semantics
+
+gpu: MTT S5000
+status: scaffold
+# MUSA architecture identifier; do not use a CUDA compute capability here.
+# Fill only when a stable runtime architecture name is established.
+compute_capability: MP31
+
+# Compatibility note: MP31 uses DDR as its device memory.  The profile schema
+# currently calls this section `hbm`, so retain that key for Roofline readers.
+# Nominal roof: 20,000 MHz x 640-bit / 8 = 1,600 GB/s.
+# MCU collection (2026-09-04, MP31, 512 MiB, one-shot kernels, 3 independent
+# captures per mix) used the median ddr__bytes.sum.per_second.  The MCU report showed
+# ddr__bandwidth.avg=1.536e12 B/s and DDR frequency=1.20 GHz.
+hbm:
+  theoretical: 1600e9        # bytes/s, nominal DDR board formula
+  calibration: 0.8995        # max(calibration_mixes), read envelope
+  calibration_mixes: {copy: 0.8241, triad: 0.8519, read: 0.8995, write: 0.8716}
+
+# MP (MUSA Processor).  MCU exposes 28.672e12 as its MP31 fp32_peak derived
+# metric, but the corrected scalar FMA probe reaches about 14 TFLOP/s.  The
+# 28.672e12 value is exactly 2x the 14.336e12 scalar roof implied by the
+# MP31/TCE relationship (229.376e12 / 16) and is not a safe scalar-FP32
+# denominator for this instruction path.  The probe (ILP=32, 240 blocks, 5
+# runs x 50 event samples) measured 14.0009 TFLOP/s median; an iters sweep from
+# 1,000 to 20,000 stayed near 14 TFLOP/s with changing checksums.
+cuda_core:
+  fp32:
+    theoretical: 14.336e12
+    calibration: 0.9766
+
+# Float32 contractions are dispatched as TF32-labelled TCE kernels on this
+# stack, so the consumer key is tensor_core.tf32 (see
+# perf.profile.tensor_core_roof()).  MCU confirmed the
+# `musa_asm_tf32...tce...` kernel and reported
+# mp__tc_fp32_peak_throughput=229.376e12 FLOP/s.  A 12288^3 FP32 GEMM (8
+# warmups, 6 timed samples) measured 219.66 TFLOP/s median with MUSA events,
+# giving the sustained calibration.  The key follows the MCU/TCE mode label;
+# it does not assert that MP31 has NVIDIA's identical TF32 bit layout.
+tensor_core:
+  tf32:
+    theoretical: 229.376e12
+    calibration: 0.9576

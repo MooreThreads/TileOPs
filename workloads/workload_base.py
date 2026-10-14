@@ -10,12 +10,37 @@ Tolerances, check() and roofline numbers stay in tests/ and benchmarks/.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import contextlib
+import contextvars
 from typing import Any, Callable, TypeVar
 from zlib import crc32
 
 import torch
 
+from tileops.utils import get_backend_name
+
 _F = TypeVar("_F", bound=Callable[..., Any])
+
+DEVICE = get_backend_name()
+
+_BENCHMARK_COMPARE_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "benchmark_compare_active", default=False
+)
+
+
+def benchmark_compare_active() -> bool:
+    """Whether a workload reference is being called by ``bm.compare``."""
+    return _BENCHMARK_COMPARE_ACTIVE.get()
+
+
+@contextlib.contextmanager
+def benchmark_compare_context():
+    """Mark reference calls made by the benchmark comparison path."""
+    token = _BENCHMARK_COMPARE_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _BENCHMARK_COMPARE_ACTIVE.reset(token)
 
 WORKLOAD_SEED = 1235
 """The seed both conftests give the global RNG, and the base of every ``rng()``."""
@@ -51,7 +76,7 @@ class WorkloadBase(ABC):
         seeded generator, so two calls to one ``gen_inputs`` return equal
         inputs.
 
-        A draw on a CUDA tensor needs ``device="cuda"``: a generator only
+        A draw on a CUDA tensor needs ``device=DEVICE``: a generator only
         feeds draws on its own device.
         """
         seed = (WORKLOAD_SEED ^ crc32(f"{type(self).__name__}:{tag}".encode())) & 0xFFFFFFFF
@@ -66,7 +91,7 @@ class RandnWorkload(WorkloadBase):
         self.dtype = dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        x = torch.randn(*self.shape, dtype=self.dtype, device="cuda")
+        x = torch.randn(*self.shape, dtype=self.dtype, device=DEVICE)
         return (x,)
 
 

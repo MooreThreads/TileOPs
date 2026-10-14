@@ -1,0 +1,38 @@
+#!/bin/sh
+# Runs the hooks in `.pre-commit-config.yaml` against the staged files.
+#
+# Why this file exists instead of `pre-commit install`: what that command writes
+# into `.git/hooks` is not part of the repository, and it bakes in the absolute
+# path of whichever Python ran the install. A checkout used from more than one
+# container then has a hook that works in one of them and, in the others, either
+# reports ``pre-commit` not found` or dies on a cache directory it cannot create.
+# Point git at this directory instead, once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# `pre-commit` must be on PATH, its hook environments must already be in
+# `$PRE_COMMIT_HOME` (default `~/.cache/pre-commit`) because it downloads them
+# from GitHub, `$HOME` must be writable, and the `gitleaks` binary must be on
+# PATH -- the `gitleaks-system` hook there is `language: system`.
+#
+# A missing `pre-commit` is deliberately not a failure. CI covers part of this
+# set -- ruff over the files a change touches, and the five linters in
+# `scripts/lint/` over the whole tree -- so a checkout without the tool produces
+# an unchecked commit rather than a blocked one, and the rest surfaces in review.
+# A hook that fails for a reason its author cannot act on is a hook people learn
+# to pass `--no-verify` to, and that costs every check that would otherwise have
+# run.
+set -e
+
+if ! command -v pre-commit > /dev/null 2>&1; then
+    echo 'pre-commit is not on PATH, so this commit is not checked locally.' >&2
+    echo 'CI covers ruff and scripts/lint/; the other hooks run only here.' >&2
+    exit 0
+fi
+
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec pre-commit hook-impl \
+    --config=.pre-commit-config.yaml \
+    --hook-type=pre-commit \
+    --hook-dir "$hook_dir" \
+    -- "$@"

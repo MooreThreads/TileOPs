@@ -2,6 +2,14 @@ import functools
 
 import torch
 
+from .backend import (
+    current_device,
+    get_backend_name,
+    get_compute_capability,
+    get_device_name,
+    is_available,
+)
+
 # Lanes in a CUDA warp. Identical on every supported architecture (SM80-SM90)
 # and baked into TIR at build time (loop bounds, shuffle widths), so it is a
 # constant rather than a per-device query like the properties below.
@@ -14,6 +22,8 @@ str2dtype = {
     "int32": torch.int32,
 }
 
+dtype2str = {v: k for k, v in str2dtype.items()}
+
 
 # Device properties are cached per device index, never process-wide: one process
 # may drive several cards, and they need not be the same model or architecture.
@@ -23,12 +33,12 @@ str2dtype = {
 
 @functools.lru_cache(maxsize=16)
 def _device_name(index: int) -> str:
-    return torch.cuda.get_device_name(index)
+    return get_device_name(index).upper()
 
 
 @functools.lru_cache(maxsize=16)
 def _sm_version(index: int) -> int:
-    major, minor = torch.cuda.get_device_capability(index)
+    major, minor = get_compute_capability(index)
     return major * 10 + minor
 
 
@@ -54,14 +64,14 @@ def is_h200_name(device_name: str) -> bool:
 
 def is_h200(index: "int | None" = None) -> bool:
     """Whether the device is an H200; defaults to the current device."""
-    if not torch.cuda.is_available():
+    if not is_available():
         return False
-    return is_h200_name(_device_name(torch.cuda.current_device() if index is None else index))
+    return is_h200_name(_device_name(current_device() if index is None else index))
 
 
 def get_sm_version(index: "int | None" = None) -> int:
     """Architecture of the device as ``major * 10 + minor``; defaults to current."""
-    return _sm_version(torch.cuda.current_device() if index is None else index)
+    return _sm_version(current_device() if index is None else index)
 
 
 def get_sm_count(index: "int | None" = None) -> int:
@@ -73,8 +83,9 @@ def get_sm_count(index: "int | None" = None) -> int:
     stand-in for it decides a dispatch the caller cannot tell from a measured
     one.
     """
-    device = torch.cuda.current_device() if index is None else index
-    return torch.cuda.get_device_properties(device).multi_processor_count
+    device = current_device() if index is None else index
+    backend = getattr(torch, get_backend_name(), torch.cuda)
+    return backend.get_device_properties(device).multi_processor_count
 
 
 def forget_device_properties() -> None:
@@ -105,16 +116,17 @@ def device_busy_of(call, device: "torch.device", warmup: int = 5, rep: int = 20)
     owns the process's CUPTI subscription, and a second subscriber would break
     its kernel attribution for the rest of the process.
     """
-    with torch.cuda.device(device):
+    backend = getattr(torch, get_backend_name(), torch.cuda)
+    with backend.device(device):
         for _ in range(warmup):
             call()
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        torch.cuda._sleep(_BUSY_TIMING_SPIN_CYCLES)
+        backend.synchronize()
+        start = backend.Event(enable_timing=True)
+        end = backend.Event(enable_timing=True)
+        backend._sleep(_BUSY_TIMING_SPIN_CYCLES)
         start.record()
         for _ in range(rep):
             call()
         end.record()
-        torch.cuda.synchronize()
+        backend.synchronize()
         return start.elapsed_time(end) / rep

@@ -81,7 +81,8 @@ where = ["src"]
 tileops = ["**/*.h", "**/*.yaml"]
 
 [tool.codespell]
-ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
+# `thn` is an einsum subscript (token/head/n) in the MLA decode reference.
+ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA, thn"
 skip = [
     "build",
     "dist",

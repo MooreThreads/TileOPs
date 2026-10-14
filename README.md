@@ -26,18 +26,20 @@
 
 ```python
 import torch
+import torch_musa  # registers the "musa" device
 from tileops.gemm import GemmFwdOp
 
 gemm = GemmFwdOp()  # shapes and dtype are inferred at call time
 
-a = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
-b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
+a = torch.randn(1024, 512, device="musa", dtype=torch.float16)
+b = torch.randn(1024, 512, device="musa", dtype=torch.float16)
 
 d = gemm(a, b)  # equals a @ b.T
 ```
 
-Operators are auto-tuned on first use, CUDA-Graph compatible, and declare their
-`torch.compile(fullgraph=True)` support per op.
+Operators are auto-tuned on first use, MUSA Graph compatible, and declare their
+`torch.compile(fullgraph=True)` support per op. Upstream describes the same
+capture path as a CUDA graph; on this branch it is the MUSA graph.
 
 ## Built for agents
 
@@ -86,17 +88,18 @@ boundary between them.
 
 ## Installation
 
-TileOPs installs from source; a PyPI release lands with the first stable version. A
-CUDA-capable GPU is required.
+TileOPs installs from source; a PyPI release lands with the first stable version.
+This branch targets Moore Threads MUSA on MP31 (MTT S5000). Upstream's CUDA
+Toolkit 13.2 and SM90 prerequisites describe the NVIDIA build, not this one.
 
 **Prerequisites**
 
-- Python >= 3.10 (CI validates 3.12)
-- PyTorch >= 2.1, < 2.14 (CI validates 2.13)
-- CUDA Toolkit 13.2
-- A GPU of compute capability 9.0 (SM90)
-- [TileLang](https://github.com/tile-ai/tilelang) >= 0.1.9, < 0.2.0 (CI validates 0.1.11 at a
-  pinned main snapshot — see [development.md](docs/development.md#dev-docker-image))
+- Python >= 3.10
+- PyTorch 2.9.1 with the matching `torch_musa`
+- MUSA Toolkit 5.2
+- An MP31 GPU (MTT S5000)
+- The MUSA build of [TileLang](https://github.com/tile-ai/tilelang) shipped with the
+  S5000 image (0.1.12)
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
@@ -104,12 +107,14 @@ cd TileOPs
 pip install -e '.[dev]' -c constraints.txt   # constraints.txt pins what CI validates
 pre-commit install
 
-python -m pytest -q tests -m smoke           # verify; requires a CUDA GPU
+python -m pytest -q tests -m smoke           # verify; requires an MP31 MUSA GPU
 ```
 
-A prebuilt Docker image carries the whole stack and is the environment CI runs in — see
-[development.md](docs/development.md#dev-docker-image), along with test tiers, benchmarks, and
-build troubleshooting.
+The image this branch is run in is
+`sh-harbor.mthreads.com/ai-compiler/basesdk:ph1-5.2.0-torch2.9.1-triton3.6.0-tilelang0.12.0-v1.2.1`.
+[development.md](docs/development.md#dev-docker-image) still describes the upstream CUDA
+image; use the MUSA image above for this branch. That page also covers test tiers,
+benchmarks, and build troubleshooting.
 
 ## Documentation
 
