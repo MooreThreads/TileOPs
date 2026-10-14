@@ -8,6 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_backend_name
 
 from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs, conv_num_stages
 from .call_spec import Conv3dCall, conv3d_dense_region, conv3d_group_region, conv3d_ndhwc_region
@@ -392,6 +393,7 @@ def _conv3d_ndhwc_kernel(
     @tilelang.jit(
         out_idx=[5],
         compile_flags=["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.enable_async_copy": get_backend_name() != "musa"},
     )
     def _conv3d_ndhwc_func(
         block_m: int,
@@ -615,7 +617,7 @@ def _conv3d_ndhwc_kernel(
 
 class Conv3dKernel(Kernel):
     general = True
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
@@ -753,7 +755,7 @@ class Conv3dKernel(Kernel):
 
 
 class GroupConv3dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
@@ -937,7 +939,7 @@ class Conv3dNdhwcKernel(Kernel):
     transforms.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv3dCall) -> bool:
@@ -1050,7 +1052,7 @@ class Conv3dNdhwcKernel(Kernel):
     def default_config(self) -> dict:
         return {
             "block_m": 64,
-            "block_n": 256,
+            "block_n": 256 if self.c_out >= 256 else 128 if self.c_out >= 128 else 64,
             "block_k": 32,
             "num_stages": 3,
             "threads": 256,
@@ -1065,7 +1067,7 @@ class Conv3dNdhwcKernel(Kernel):
             block_k=[16, 32, 64, 128, 256],
             threads=[128],
         )
-        return [c for c in configs if self.c_in % c["block_k"] == 0]
+        return [c for c in configs if self.c_in % c["block_k"] == 0 and c["block_n"] <= self.c_out]
 
     def forward(
         self,

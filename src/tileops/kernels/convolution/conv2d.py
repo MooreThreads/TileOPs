@@ -10,7 +10,7 @@ import torch
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
-from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs
+from ._common import CONV_SWIZZLE_PANEL, _launch, conv_autotune_configs, fit_conv_config
 from .call_spec import (
     Conv2dCall,
     conv2d_dense_region,
@@ -694,7 +694,7 @@ def _conv2d_symmetric_kernel(
 
 
 class Conv2dSymmetricKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     # The m tiles this kernel builds. One tuple serves the region, the default
     # configuration and the autotune filter, so widening it cannot leave the three
@@ -846,7 +846,7 @@ class Conv2dSymmetricKernel(Kernel):
 
 class Conv2dKernel(Kernel):
     general = True
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
@@ -983,7 +983,7 @@ class Conv2dKernel(Kernel):
 
 
 class GroupConv2dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
@@ -1169,7 +1169,7 @@ class GroupConv2dKernel(Kernel):
 
 
 class Conv2d1x1Kernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv2dCall) -> bool:
@@ -1242,7 +1242,7 @@ class Conv2d1x1Kernel(Kernel):
     def default_config(self) -> dict:
         sm_version = get_sm_version()
         if sm_version in {80}:
-            return {
+            config = {
                 "block_m": 64,
                 "block_n": 64,
                 "block_k": 64,
@@ -1250,8 +1250,8 @@ class Conv2d1x1Kernel(Kernel):
                 "threads": 128,
                 "enable_rasterization": True,
             }
-        if sm_version in {90}:
-            return {
+        elif sm_version in {90}:
+            config = {
                 "block_m": 64,
                 "block_n": 128,
                 "block_k": 128,
@@ -1259,14 +1259,21 @@ class Conv2d1x1Kernel(Kernel):
                 "threads": 128,
                 "enable_rasterization": True,
             }
-        return {
-            "block_m": 64,
-            "block_n": 64,
-            "block_k": 64,
-            "num_stages": 1,
-            "threads": 128,
-            "enable_rasterization": True,
-        }
+        else:
+            config = {
+                "block_m": 64,
+                "block_n": 64,
+                "block_k": 64,
+                "num_stages": 1,
+                "threads": 128,
+                "enable_rasterization": True,
+            }
+        return fit_conv_config(
+            config,
+            block_m_limit=self.c_out,
+            block_n_limit=self.h * self.w,
+            block_k_limit=self.c_in,
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:

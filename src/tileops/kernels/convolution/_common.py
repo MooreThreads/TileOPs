@@ -6,7 +6,7 @@ from typing import Optional
 import torch
 
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_version
+from tileops.utils import get_backend_name, get_sm_version
 
 # Panel width handed to ``T.use_swizzle``: the number of blocks along the grid's fast
 # axis reordered together so their tiles share L2. A power of two, because the block
@@ -64,9 +64,41 @@ def conv_autotune_configs(
 
 
 def get_shared_memory_limit_bytes() -> int:
-    return torch.cuda.get_device_properties(
-        torch.cuda.current_device()
-    ).shared_memory_per_block_optin
+    backend = getattr(torch, get_backend_name())
+    return backend.get_device_properties(backend.current_device()).shared_memory_per_block_optin
+
+
+def _fit_block_k(block_k: int, limit: int) -> int:
+    for candidate in (128, 64, 32, 16, 8, 4, 2, 1):
+        if candidate <= block_k and candidate <= limit and limit % candidate == 0:
+            return candidate
+    return limit
+
+
+def _fit_block_n(block_n: int, limit: int) -> int:
+    for candidate in (256, 128, 64, 32, 16, 8):
+        if candidate <= block_n and candidate <= limit:
+            return candidate
+    return limit
+
+
+def fit_conv_config(
+    config: dict,
+    *,
+    block_m_limit: int,
+    block_n_limit: int,
+    block_k_limit: int,
+    block_m_alignment: int = 1,
+) -> dict:
+    fitted = dict(config)
+    fitted["block_m"] = min(fitted["block_m"], block_m_limit)
+    if fitted["block_m"] % block_m_alignment:
+        fitted["block_m"] = (
+            (fitted["block_m"] + block_m_alignment - 1) // block_m_alignment
+        ) * block_m_alignment
+    fitted["block_n"] = _fit_block_n(fitted["block_n"], block_n_limit)
+    fitted["block_k"] = _fit_block_k(fitted["block_k"], block_k_limit)
+    return fitted
 
 
 def conv_shared_memory_bytes(
@@ -110,7 +142,61 @@ def _launch(
             f"bias presence is part of what the program is compiled for, so the op layer "
             f"builds one kernel per side"
         )
-    config = kernel.config
+    name = type(kernel).__name__
+    if name in {"Conv1dKernel", "Conv1dPointwiseKernel"}:
+        config = fit_conv_config(
+            kernel.config,
+            block_m_limit=kernel.c_out,
+            block_n_limit=kernel.out_l,
+            block_k_limit=kernel.k_total,
+        )
+    elif name == "GroupConv1dKernel":
+        out_l = (
+            kernel.l_in
+            + kernel.pad_left
+            + kernel.pad_right
+            - kernel.dilation_l * (kernel.kernel_l - 1)
+            - 1
+        ) // kernel.stride_l + 1
+        config = fit_conv_config(
+            kernel.config,
+            block_m_limit=kernel.c_out_g,
+            block_n_limit=out_l,
+            block_k_limit=kernel.c_in_g * kernel.kernel_l,
+            block_m_alignment=16 if not kernel.use_direct else 1,
+        )
+    elif name == "Conv2dSymmetricKernel":
+        config = fit_conv_config(
+            kernel.config,
+            block_m_limit=kernel.m,
+            block_n_limit=kernel.c_out,
+            block_k_limit=kernel.k_total,
+        )
+    elif name == "Conv2d1x1Kernel":
+        config = fit_conv_config(
+            kernel.config,
+            block_m_limit=kernel.c_out,
+            block_n_limit=kernel.h * kernel.w,
+            block_k_limit=kernel.c_in,
+        )
+    elif name in {"Conv2dKernel", "GroupConv2dKernel"}:
+        config = fit_conv_config(
+            kernel.config,
+            block_m_limit=kernel.c_out_g if name == "GroupConv2dKernel" else kernel.c_out,
+            block_n_limit=kernel.out_h * kernel.out_w,
+            block_k_limit=kernel.k_total,
+            block_m_alignment=8 if name == "GroupConv2dKernel" and not kernel.use_direct else 1,
+        )
+    elif name in {"Conv3dKernel", "GroupConv3dKernel"}:
+        config = fit_conv_config(
+            kernel.config,
+            block_m_limit=kernel.c_out_g if name == "GroupConv3dKernel" else kernel.c_out,
+            block_n_limit=kernel.out_d * kernel.out_h * kernel.out_w,
+            block_k_limit=kernel.k_total,
+            block_m_alignment=8 if name == "GroupConv3dKernel" else 1,
+        )
+    else:
+        config = kernel.config
     program = kernel.kernel(
         config["block_m"],
         config["block_n"],

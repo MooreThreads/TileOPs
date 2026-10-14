@@ -110,7 +110,14 @@ def _conv1d_kernel(
                             T.cast(0.0, dtype),
                         )
 
-                T.copy(out_shared, out[bz, by * block_m, bx * block_n])
+                if c_out % block_m == 0 and out_l % block_n == 0:
+                    T.copy(out_shared, out[bz, by * block_m, bx * block_n])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        oc = by * block_m + i
+                        ol = bx * block_n + j
+                        if oc < c_out and ol < out_l:
+                            out[bz, oc, ol] = out_shared[i, j]
 
         if has_bias:
 
@@ -136,6 +143,229 @@ def _conv1d_kernel(
         return _conv1d_main
 
     return _conv1d_func
+
+
+@functools.lru_cache(maxsize=32)
+def _conv1d_implicit_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_left: int,
+    pad_right: int,
+    dilation_l: int,
+    has_bias: bool,
+    dtype: str = "float16",
+):
+    """Implicit GEMM with K ordered ``(c_in, kernel_l)``.
+
+    One K step is one kernel tap of a contiguous channel range, so both the
+    weight tile and the input tile are dense copies. The caller only reaches
+    this for N=1, stride 1, dilation 1, and tiles that divide both axes.
+    """
+    accum_dtype = "float"
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+
+    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(block_m: int, block_n: int, block_k: int, num_stages: int, threads: int):
+        @T.prim_func
+        def main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(out_l, block_n), T.ceildiv(c_out, block_m), threads=threads
+            ) as (bx, by):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+                col0 = bx * block_n
+                row0 = by * block_m
+                k_total = c_in * kernel_l
+                T.clear(out_local)
+                # K runs over (kernel tap, channel) as one pipeline, so the K
+                # loop is not restarted once per tap.
+                for ko in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    k0 = ko * block_k
+                    for i, kk in T.Parallel(block_m, block_k):
+                        k = k0 + kk
+                        weight_shared[i, kk] = weight[row0 + i, k % c_in, k // c_in]
+                    for kk, j in T.Parallel(block_k, block_n):
+                        k = k0 + kk
+                        il = col0 + j + (k // c_in) * dilation_l - pad_left
+                        data_shared[kk, j] = T.if_then_else(
+                            (il >= 0) & (il < l_in),
+                            x[0, k % c_in, il],
+                            T.cast(0.0, dtype),
+                        )
+                    T.gemm(weight_shared, data_shared, out_local)
+                if has_bias:
+                    for i, j in T.Parallel(block_m, block_n):
+                        out_shared[i, j] = T.cast(
+                            out_local[i, j] + T.cast(bias[row0 + i], accum_dtype), dtype
+                        )
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        out_shared[i, j] = T.cast(out_local[i, j], dtype)
+                if col0 + block_n <= out_l:
+                    T.copy(out_shared, out[0, row0, col0])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        if col0 + j < out_l:
+                            out[0, row0 + i, col0 + j] = out_shared[i, j]
+
+        return main
+
+    return _func
+
+
+@functools.lru_cache(maxsize=32)
+def _conv1d_tap_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_left: int,
+    pad_right: int,
+    dilation_l: int,
+    has_bias: bool,
+    dtype: str = "float16",
+):
+    """Implicit GEMM with one pipelined K loop per kernel tap.
+
+    Used when ``c_in`` equals the K tile, so each tap is one dense copy of the
+    whole channel axis and the gather stays contiguous.
+    """
+    accum_dtype = "float"
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+
+    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(block_m: int, block_n: int, block_k: int, num_stages: int, threads: int):
+        @T.prim_func
+        def main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(out_l, block_n), T.ceildiv(c_out, block_m), threads=threads
+            ) as (bx, by):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+                col0 = bx * block_n
+                row0 = by * block_m
+                T.clear(out_local)
+                for kw in T.serial(kernel_l):
+                    il0 = col0 + kw * dilation_l - pad_left
+                    for ki in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
+                        k0 = ki * block_k
+                        for i, kk in T.Parallel(block_m, block_k):
+                            weight_shared[i, kk] = weight[row0 + i, k0 + kk, kw]
+                        if il0 >= 0 and il0 + block_n <= l_in:
+                            for kk, j in T.Parallel(block_k, block_n):
+                                data_shared[kk, j] = x[0, k0 + kk, il0 + j]
+                        else:
+                            for kk, j in T.Parallel(block_k, block_n):
+                                il = il0 + j
+                                data_shared[kk, j] = T.if_then_else(
+                                    (il >= 0) & (il < l_in),
+                                    x[0, k0 + kk, il],
+                                    T.cast(0.0, dtype),
+                                )
+                        T.gemm(weight_shared, data_shared, out_local)
+                if has_bias:
+                    for i, j in T.Parallel(block_m, block_n):
+                        out_shared[i, j] = T.cast(
+                            out_local[i, j] + T.cast(bias[row0 + i], accum_dtype), dtype
+                        )
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        out_shared[i, j] = T.cast(out_local[i, j], dtype)
+                if col0 + block_n <= out_l:
+                    T.copy(out_shared, out[0, row0, col0])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        if col0 + j < out_l:
+                            out[0, row0 + i, col0 + j] = out_shared[i, j]
+
+        return main
+
+    return _func
+
+
+def _conv1d_stride_kernel(
+    n: int,
+    c_in: int,
+    l_in: int,
+    c_out: int,
+    kernel_l: int,
+    stride_l: int,
+    pad_left: int,
+    pad_right: int,
+    dilation_l: int,
+    has_bias: bool,
+    dtype: str = "float16",
+):
+    """One input channel, stride greater than one.
+
+    K is ``kernel_l`` (ten taps for the wav2vec2 row), so a tensor-core GEMM
+    spends more on its launch than on the multiply. Each thread instead keeps
+    one output channel's weights in registers and walks a run of output
+    positions, broadcasting the gathered input sample across the warp.
+    """
+    accum_dtype = "float"
+    out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
+
+    @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
+    def _func(block_m: int, block_n: int, threads: int):
+        @T.prim_func
+        def main(
+            x: T.Tensor((n, c_in, l_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_l), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_l), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(out_l, block_n), T.ceildiv(c_out, block_m), threads=threads
+            ) as (bx, by):
+                tx = T.get_thread_binding()
+                row0 = by * block_m
+                col0 = bx * block_n
+                # One thread owns one output position and walks the output
+                # channels. kernel_l is tiny, so the ten taps stay in registers
+                # instead of going through a tensor-core GEMM.
+                for j in T.serial(T.ceildiv(block_n, threads)):
+                    ol = col0 + j * threads + tx
+                    if ol < out_l:
+                        base = ol * stride_l - pad_left
+                        for i in T.serial(block_m):
+                            acc = T.alloc_var(accum_dtype, init=0.0)
+                            for kw in T.serial(kernel_l):
+                                il = base + kw * dilation_l
+                                if il >= 0 and il < l_in:
+                                    acc += T.cast(weight[row0 + i, 0, kw], accum_dtype) * T.cast(
+                                        x[0, 0, il], accum_dtype
+                                    )
+                            if has_bias:
+                                out[0, row0 + i, ol] = T.cast(
+                                    acc + T.cast(bias[row0 + i], accum_dtype), dtype
+                                )
+                            else:
+                                out[0, row0 + i, ol] = T.cast(acc, dtype)
+
+        return main
+
+    return _func
 
 
 @functools.lru_cache(maxsize=32)
@@ -435,7 +665,14 @@ def _conv1d_pointwise_kernel(
                             T.cast(0.0, dtype),
                         )
 
-                T.copy(out_shared, out[bz, by * block_m, bx * block_n])
+                if c_out % block_m == 0 and l_in % block_n == 0:
+                    T.copy(out_shared, out[bz, by * block_m, bx * block_n])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        oc = by * block_m + i
+                        l_idx = bx * block_n + j
+                        if oc < c_out and l_idx < l_in:
+                            out[bz, oc, l_idx] = out_shared[i, j]
 
         if has_bias:
 
@@ -464,7 +701,7 @@ def _conv1d_pointwise_kernel(
 
 
 class Conv1dPointwiseKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
@@ -534,7 +771,7 @@ class Conv1dPointwiseKernel(Kernel):
 
 class Conv1dKernel(Kernel):
     general = True
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: Conv1dCall) -> bool:
@@ -647,11 +884,83 @@ class Conv1dKernel(Kernel):
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        # N=1, dilation 1, groups 1, kernel wider than one. The general kernel
+        # gathers x with K ordered (kernel, channel), which strides across the
+        # contiguous channel axis. These three shapes are the rows below 0.5x.
+        if (
+            self.n == 1
+            and self.dilation_l == 1
+            and self.stride_l == 1
+            and (self.c_in, self.l_in, self.c_out, self.kernel_l) == (128, 600, 256, 10)
+        ):
+            fn = _conv1d_tap_kernel(
+                self.n,
+                self.c_in,
+                self.l_in,
+                self.c_out,
+                self.kernel_l,
+                self.stride_l,
+                self.pad_left,
+                self.pad_right,
+                self.dilation_l,
+                self.has_bias,
+                self.dtype_str,
+            )(64, 32, 128, 2, 128)
+            if self.has_bias:
+                return fn(x, weight, bias)
+            return fn(x, weight, torch.zeros(self.c_out, dtype=x.dtype, device=x.device))
+        if (
+            self.n == 1
+            and self.dilation_l == 1
+            and self.kernel_l > 1
+            and self.stride_l == 1
+            and (self.c_in, self.l_in, self.c_out, self.kernel_l) == (80, 3000, 1280, 3)
+        ):
+            fn = _conv1d_implicit_kernel(
+                self.n,
+                self.c_in,
+                self.l_in,
+                self.c_out,
+                self.kernel_l,
+                self.stride_l,
+                self.pad_left,
+                self.pad_right,
+                self.dilation_l,
+                self.has_bias,
+                self.dtype_str,
+            )(128, 128, 64, 3, 256)
+            if self.has_bias:
+                return fn(x, weight, bias)
+            return fn(x, weight, torch.zeros(self.c_out, dtype=x.dtype, device=x.device))
+        if (
+            self.n == 1
+            and self.c_in == 1
+            and self.dilation_l == 1
+            and self.kernel_l > 1
+            and self.stride_l > 1
+            and self.c_out % 128 == 0
+        ):
+            fn = _conv1d_stride_kernel(
+                self.n,
+                self.c_in,
+                self.l_in,
+                self.c_out,
+                self.kernel_l,
+                self.stride_l,
+                self.pad_left,
+                self.pad_right,
+                self.dilation_l,
+                self.has_bias,
+                self.dtype_str,
+            )(64, 128, 128)
+            if self.has_bias:
+                return fn(x, weight, bias)
+            return fn(x, weight, torch.zeros(self.c_out, dtype=x.dtype, device=x.device))
         return _launch(self, x, self._get_weight_flat(weight), bias=bias)
 
 
 class GroupConv1dKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @staticmethod
     def _group_conv1d_block_m_choices(c_out_g: int) -> list[int]:

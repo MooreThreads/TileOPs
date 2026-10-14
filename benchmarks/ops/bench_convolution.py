@@ -32,9 +32,14 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
+from tileops.utils.backend import get_backend_name
 
-# Bench-local: autotuning is benchmark infrastructure, not a workload property.
-_TUNE = True
+# TileLang MUSA's parallel Conv autotuner currently aborts the whole process
+# while several candidates are in semantic checking.  Profile the validated
+# stable preset on MUSA and retain autotuning on backends where the tuner is
+# process-safe.  The report must label these rows as preset, not tuned.
+_DEVICE = get_backend_name()
+_TUNE = _DEVICE != "musa"
 
 # flag_gems' aten-level convolutions, by spatial rank.
 _FLAGGEMS_CONV = {1: "conv1d", 2: "conv2d", 3: "conv3d"}
@@ -102,17 +107,17 @@ def _conv_inputs(
 ) -> tuple[torch.Tensor, ...]:
     """Generate ``(input, weight[, bias])`` for a convolution workload."""
     c_in = input_shape[1]
-    x = torch.randn(input_shape, device="cuda", dtype=dtype).contiguous()
+    x = torch.randn(input_shape, device=_DEVICE, dtype=dtype).contiguous()
     weight = torch.randn(
         c_out,
         c_in // groups,
         *kernel_size,
-        device="cuda",
+        device=_DEVICE,
         dtype=dtype,
     ).contiguous()
     if not with_bias:
         return x, weight
-    bias = torch.zeros(c_out, device="cuda", dtype=dtype).contiguous()
+    bias = torch.zeros(c_out, device=_DEVICE, dtype=dtype).contiguous()
     return x, weight, bias
 
 
@@ -218,15 +223,16 @@ def _run_conv(
         rtol=_BASELINE_RTOL,
         atol=_BASELINE_ATOL,
     )
+    baselines = {
+        FLAGGEMS_TAG: flaggems,
+        "torch": baseline,
+        TORCH_COMPILE_TAG: compiled_reference(baseline),
+    }
     _profile_conv(
         op,
         bm,
         inputs,
-        {
-            FLAGGEMS_TAG: flaggems,
-            "torch": baseline,
-            TORCH_COMPILE_TAG: compiled_reference(baseline),
-        },
+        baselines,
         static_weight=static_weight,
     )
 
@@ -258,7 +264,7 @@ def _profile_conv(
         bm.compare(
             {
                 "tileops": op_with_static_weight,
-                **{tag: bind_static_weight(fn) for tag, fn in baselines.items()},
+                **{tag: bind_static_weight(fn) for tag, fn in baselines.items() if fn is not None},
             },
             x,
         )
