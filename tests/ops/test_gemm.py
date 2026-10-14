@@ -19,7 +19,10 @@ from tileops.kernels.gemm.heuristics import (
     small_m_splitk_config,
 )
 from tileops.ops import GemmFp8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.utils import get_backend_name
 from workloads.gemm import GemmFp8Workload, GemmW4A16Workload, GemmWorkload, quantize_weight_int4
+
+DEVICE = get_backend_name()
 
 
 class GemmTest(GemmWorkload, TestBase):
@@ -569,9 +572,9 @@ def test_gemm_w4a16_gemv_preserves_fp32_scale(k_index: int) -> None:
     expected = (centered * scale[:, group]).half()[None, :]
     # These scales distinguish the contract from rounding scales to A16 first.
     assert not torch.equal(expected[0], (centered * scale[:, group].half().float()).half())
-    activation = torch.zeros((1, k), device="cuda", dtype=torch.float16)
+    activation = torch.zeros((1, k), device=DEVICE, dtype=torch.float16)
     activation[0, k_index] = 1
-    actual = GemmW4A16FwdOp()(activation, packed.cuda(), scale.cuda(), zero.cuda())
+    actual = GemmW4A16FwdOp()(activation, packed.to(DEVICE), scale.to(DEVICE), zero.to(DEVICE))
     torch.testing.assert_close(actual.cpu(), expected, atol=0, rtol=0)
 
 
@@ -639,7 +642,16 @@ def test_gemm_fp8_block128_default_config(
         out_dtype=torch.bfloat16,
     )
 
-    assert (kernel.config["block_n"], kernel.config["num_stages"]) == expected
+    if DEVICE == "musa":
+        assert kernel.config == {
+            "block_m": 128,
+            "block_n": 128,
+            "block_k": 128,
+            "num_stages": 3,
+            "threads": 256,
+        }
+    else:
+        assert (kernel.config["block_n"], kernel.config["num_stages"]) == expected
 
 
 @pytest.mark.smoke
@@ -653,16 +665,16 @@ def test_gemm_fp8_rejects_unsupported_scale_grids() -> None:
         op(
             a,
             b,
-            torch.ones((1, k // 128), device="cuda", dtype=torch.float32),
-            torch.ones((1, k // 128), device="cuda", dtype=torch.float32),
+            torch.ones((1, k // 128), device=DEVICE, dtype=torch.float32),
+            torch.ones((1, k // 128), device=DEVICE, dtype=torch.float32),
         )
 
     with pytest.raises(ValueError, match="supports scale shapes"):
         op(
             a,
             b,
-            torch.ones((m, 1), device="cuda", dtype=torch.float32),
-            torch.ones((n, 1), device="cuda", dtype=torch.float32),
+            torch.ones((m, 1), device=DEVICE, dtype=torch.float32),
+            torch.ones((n, 1), device=DEVICE, dtype=torch.float32),
         )
 
 
@@ -735,7 +747,7 @@ def test_lhs_rows_band_dispatch() -> None:
     """
     from tileops.utils import get_sm_version
 
-    if get_sm_version() not in (GemvKernel.supported_archs or []):
+    if get_sm_version() != 90:
         pytest.skip("the bandwidth-bound band is SM90-only")
 
     nt = GemmFwdOp(trans_a=False, trans_b=True)
@@ -762,7 +774,7 @@ def test_gemv_bands_build_their_own_body_and_config() -> None:
     """
     from tileops.utils import get_sm_count, get_sm_version
 
-    if get_sm_version() not in (GemvKernel.supported_archs or []):
+    if get_sm_version() != 90:
         pytest.skip("the bandwidth-bound band is SM90-only")
 
     fp = torch.float16
@@ -866,8 +878,8 @@ def test_gemm_revalidates_cached_signature_dtypes() -> None:
     fp16 kernel and failed inside TileLang. ``_validate_dtypes`` is the only
     dtype gate an op has, and it runs per call.
     """
-    a = torch.randn(256, 128, dtype=torch.float16, device="cuda")
-    b = torch.randn(512, 128, dtype=torch.float16, device="cuda")
+    a = torch.randn(256, 128, dtype=torch.float16, device=DEVICE)
+    b = torch.randn(512, 128, dtype=torch.float16, device=DEVICE)
     op = GemmFwdOp()
     op(a, b)
 
@@ -886,7 +898,7 @@ def test_gemm_refuses_non_matrix_operands_before_building_anything() -> None:
     failed TileLang's argument check.
     """
     op = GemmFwdOp()
-    a = torch.empty(4, 16, 64, dtype=torch.float16, device="cuda")
+    a = torch.empty(4, 16, 64, dtype=torch.float16, device=DEVICE)
 
     with pytest.raises(ValueError, match=r"contracts two matrices.*a\.ndim=3"):
         op(a, a)
@@ -1033,8 +1045,8 @@ def test_small_m_splitk_config_selects_a_shape_band() -> None:
 @pytest.mark.smoke
 def test_dense_splitk_interfaces_match_reference() -> None:
     m, n, k = 32, 112, 512
-    a = torch.randn(m, k, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(n, k, dtype=torch.bfloat16, device="cuda")
+    a = torch.randn(m, k, dtype=torch.bfloat16, device=DEVICE)
+    b = torch.randn(n, k, dtype=torch.bfloat16, device=DEVICE)
     basic_config = {
         "block_m": m,
         "block_n": n,
@@ -1046,7 +1058,7 @@ def test_dense_splitk_interfaces_match_reference() -> None:
     actual = GemmCpAsyncKernel(m, n, k, torch.bfloat16, basic_config, trans_b=True)(a, b)
     torch.testing.assert_close(actual.float(), a.float() @ b.float().T, rtol=2e-2, atol=1e-1)
 
-    gated_b = torch.randn(2 * n, k, dtype=torch.bfloat16, device="cuda")
+    gated_b = torch.randn(2 * n, k, dtype=torch.bfloat16, device=DEVICE)
     gated_config = {
         "block_m": 64,
         "block_n": n,
@@ -1079,8 +1091,8 @@ def test_gemm_cp_async_kernel_k_tail_padding() -> None:
     """
     for k in (2, 8, 24):
         kern = GemmCpAsyncKernel(m=32, n=64, k=k, dtype=torch.bfloat16, trans_b=True)
-        a = torch.randn(32, k, dtype=torch.bfloat16, device="cuda") * 0.05
-        b = torch.randn(64, k, dtype=torch.bfloat16, device="cuda") * 0.05
+        a = torch.randn(32, k, dtype=torch.bfloat16, device=DEVICE) * 0.05
+        b = torch.randn(64, k, dtype=torch.bfloat16, device=DEVICE) * 0.05
         out = kern(a, b)
         ref = a.float() @ b.float().t()
         torch.testing.assert_close(out.float(), ref, atol=1e-2, rtol=1e-2)

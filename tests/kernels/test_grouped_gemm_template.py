@@ -13,6 +13,9 @@ from tileops.kernels.grouped_gemm.heuristics import (
     spec_from_config,
 )
 from tileops.kernels.grouped_gemm.template import GemmTemplate, GemmType, Major
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 pytestmark = pytest.mark.sm90
 
@@ -20,10 +23,10 @@ pytestmark = pytest.mark.sm90
 def _batched_operands(g, m, n, k, major_a="k", major_b="k", dtype=torch.bfloat16):
     """Logical ``a[G, M, K]`` and ``b[G, N, K]``; an MN-major one is a transposed view."""
     torch.manual_seed(0)
-    a = torch.randn(g, m, k, device="cuda", dtype=dtype)
+    a = torch.randn(g, m, k, device=DEVICE, dtype=dtype)
     if major_a == "mn":
         a = a.transpose(1, 2).contiguous().transpose(1, 2)
-    b = torch.randn(g, n, k, device="cuda", dtype=dtype)
+    b = torch.randn(g, n, k, device=DEVICE, dtype=dtype)
     if major_b == "mn":
         b = b.transpose(1, 2).contiguous().transpose(1, 2)
     return a, b
@@ -176,7 +179,7 @@ def test_dynamic_m_shares_one_spec():
     """M is dynamic by default: two row counts resolve to one spec, hence one compiled kernel."""
     kernel = GemmTemplate(GemmType.BATCHED, num_groups=2, config=dict(block_m=128, block_n=128))
     a1, b = _batched_operands(2, 1024, 1024, 1024)
-    a2 = torch.randn(2, 1000, 1024, device="cuda", dtype=torch.bfloat16)
+    a2 = torch.randn(2, 1000, 1024, device=DEVICE, dtype=torch.bfloat16)
     spec1, spec2 = kernel.spec_for(a1, b), kernel.spec_for(a2, b)
     assert spec1 == spec2 and spec1.shape_m == 0
     _assert_gemm(kernel(a1, b), _bmm_ref(a1, b))
@@ -203,12 +206,12 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
     total = row + alignment if layout == "per_row" else row
     if layout == "aligned":
         total = math.ceil(total / alignment) * alignment
-    a = torch.randn(total, k, device="cuda", dtype=dtype)
-    b = torch.randn(groups, n, k, device="cuda", dtype=dtype)
+    a = torch.randn(total, k, device=DEVICE, dtype=dtype)
+    b = torch.randn(groups, n, k, device=DEVICE, dtype=dtype)
     if major_b == "mn":
         b = b.transpose(1, 2).contiguous().transpose(1, 2)
-    ref = torch.zeros(total, n, dtype=torch.float32, device="cuda")
-    valid = torch.zeros(total, dtype=torch.bool, device="cuda")
+    ref = torch.zeros(total, n, dtype=torch.float32, device=DEVICE)
+    valid = torch.zeros(total, dtype=torch.bool, device=DEVICE)
     for g in range(groups):
         ref[starts[g] : ends[g]] = a[starts[g] : ends[g]].float() @ b[g].float().T
         valid[starts[g] : ends[g]] = True
@@ -218,7 +221,7 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
             metadata[starts[g] : starts[g] + math.ceil(sizes[g] / alignment) * alignment] = g
     else:
         metadata = torch.tensor(ends, dtype=torch.int32)
-    return a, b, metadata.cuda(), ref, valid
+    return a, b, metadata.to(DEVICE), ref, valid
 
 
 @pytest.mark.smoke
@@ -407,8 +410,8 @@ def test_m_grouped_tight_per_row_recovers_the_psum_schedule():
     sizes = [100, 0, 300, 128, 7, 64]
     a, b, ends, ref, _ = _grouped_operands(sizes, 2048, 1024, "tight")
     ids = torch.repeat_interleave(
-        torch.arange(len(sizes), dtype=torch.int32, device="cuda"),
-        torch.tensor(sizes, device="cuda"),
+        torch.arange(len(sizes), dtype=torch.int32, device=DEVICE),
+        torch.tensor(sizes, device=DEVICE),
     )
     per_row = GemmTemplate(GemmType.M_GROUPED_TIGHT_PER_ROW, num_groups=len(sizes))
     out = per_row(a, b, grouped_layout=ids)
@@ -545,18 +548,18 @@ def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfl
     """
     torch.manual_seed(0)
     sum_k = sum(sizes)
-    a = torch.randn(m, sum_k, device="cuda", dtype=dtype)
+    a = torch.randn(m, sum_k, device=DEVICE, dtype=dtype)
     if major_a == "mn":
         a = a.T.contiguous().T
-    b = torch.randn(n, sum_k, device="cuda", dtype=dtype)
+    b = torch.randn(n, sum_k, device=DEVICE, dtype=dtype)
     if major_b == "mn":
         b = b.T.contiguous().T
-    ref = torch.zeros(len(sizes), m, n, device="cuda")
+    ref = torch.zeros(len(sizes), m, n, device=DEVICE)
     start = 0
     for g, size in enumerate(sizes):
         ref[g] = a[:, start : start + size].float() @ b[:, start : start + size].float().T
         start += size
-    return a, b, torch.tensor(sizes, dtype=torch.int32, device="cuda"), ref
+    return a, b, torch.tensor(sizes, dtype=torch.int32, device=DEVICE), ref
 
 
 @pytest.mark.smoke

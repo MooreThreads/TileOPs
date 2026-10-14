@@ -7,7 +7,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.trace import trace
-from tileops.utils import get_sm_count, str2dtype
+from tileops.utils import get_backend_name, get_sm_count, get_sm_version, str2dtype
 
 from .call_spec import GemmCall
 from .heuristics import (
@@ -167,7 +167,11 @@ class _GemmFp8Kernel(Kernel):
         self.dtype = dtype
         self.out_dtype = out_dtype
         self.sm_count = get_sm_count(self.device_index)
-        self.ws_refusal = self._ws_refusal(m, n, k, dtype)
+        self.ws_refusal = (
+            "MP31 uses the non-warp-specialized FP8 mainloop"
+            if get_backend_name() == "musa" and get_sm_version(device_index) == 31
+            else self._ws_refusal(m, n, k, dtype)
+        )
         self.kernel = self._builder()
         self.init_config(config, tune)
         self._unused_bias: Optional[torch.Tensor] = None
@@ -343,6 +347,7 @@ def _gemm_fp8_kernel(
     has_bias: bool = False,
 ) -> Callable:
     accum_dtype = "float"
+    musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-1],
@@ -389,12 +394,13 @@ def _gemm_fp8_kernel(
                     scale_a_local = T.alloc_fragment((block_m,), accum_dtype)
                     scale_b_local = T.alloc_fragment((block_n,), accum_dtype)
 
-                T.annotate_layout(
-                    {
-                        a_shared: tilelang.layout.make_swizzled_layout(a_shared),
-                        b_shared: tilelang.layout.make_swizzled_layout(b_shared),
-                    }
-                )
+                if not musa:
+                    T.annotate_layout(
+                        {
+                            a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                            b_shared: tilelang.layout.make_swizzled_layout(b_shared),
+                        }
+                    )
 
                 m_start = by * block_m
                 n_start = bx * block_n
@@ -480,12 +486,13 @@ def _gemm_fp8_kernel(
                     scale_a_local = T.alloc_fragment((block_m,), accum_dtype)
                     scale_b_local = T.alloc_fragment((block_n,), accum_dtype)
 
-                T.annotate_layout(
-                    {
-                        a_shared: tilelang.layout.make_swizzled_layout(a_shared),
-                        b_shared: tilelang.layout.make_swizzled_layout(b_shared),
-                    }
-                )
+                if not musa:
+                    T.annotate_layout(
+                        {
+                            a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                            b_shared: tilelang.layout.make_swizzled_layout(b_shared),
+                        }
+                    )
 
                 m_start = by * block_m
                 n_start = bx * block_n
@@ -2057,8 +2064,6 @@ def _gemm_coop2_splitk_kernel(
         block_n: int = 64, block_k: int = 128, num_stages: int = 4, split_k: int = 4
     ) -> Callable:
         half_m = block_m // 2
-        b_evict = _b_eviction(m, block_m)
-        nr = (half_m * block_n) // 128
         k_iters_total = T.ceildiv(k, block_k)
         if k_iters_total % split_k != 0:
             raise ValueError(
@@ -2066,6 +2071,8 @@ def _gemm_coop2_splitk_kernel(
                 f"(k={k}, block_k={block_k} -> {k_iters_total} tiles)"
             )
         k_slice = k_iters_total // split_k
+        b_evict = _b_eviction(m, block_m)
+        nr = (half_m * block_n) // 128
 
         @T.prim_func
         def _gemm_coop2_splitk_main(
@@ -2577,8 +2584,8 @@ class GemmTmaKernel(Kernel):
     through TMA and runs its math on WGMMA.
     """
 
-    supported_archs: list[int] = [90]
-    general = True
+    supported_archs: list[int] = [31, 90]
+    general = False
 
     _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "simple", "swap_ab")
 
@@ -2602,6 +2609,8 @@ class GemmTmaKernel(Kernel):
 
     @classmethod
     def applies(cls, call) -> bool:
+        if call.arch == 31:
+            return False
         return (
             _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
             is None
@@ -2612,6 +2621,10 @@ class GemmTmaKernel(Kernel):
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
             return super().refusal(call)
+        if call.arch == 31:
+            return "GemmTmaKernel is SM90-only on MUSA; MP31 uses GemmCpAsyncKernel"
+        if call.gemv_mode is not None:
+            return "GEMV is served by GemvKernel"
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
@@ -2647,7 +2660,9 @@ class GemmTmaKernel(Kernel):
         self.trans_b = trans_b
         self.activation = activation
         self.sm_count = get_sm_count(self.device_index)
-        self.device_name = torch.cuda.get_device_name(self.device_index)
+        from tileops.utils import get_device_name
+
+        self.device_name = get_device_name(self.device_index or 0)
 
         self.kernel = _gemm_kernel(
             m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
@@ -2678,6 +2693,40 @@ class GemmTmaKernel(Kernel):
         return scored if scored is not None else modal
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        if get_backend_name() == "musa" and get_sm_version(self.device_index) == 31:
+            cfg = self.config
+            basic_config = {
+                "block_m": max(8, min(cfg.get("block_m", min(64, self.m)), self.m)),
+                "block_n": max(8, min(cfg.get("block_n", min(64, self.n)), self.n)),
+                "block_k": cfg.get("block_k", 64),
+                "num_stages": cfg.get("num_stages", 2),
+                "threads": cfg.get("threads", 128),
+                "split_k": cfg.get("split_k", 1),
+            }
+            # The basic split-K reduction writes one exact output tile per
+            # producer.  Boundary tiles use the same TileLang mainloop with
+            # split_k=1, which has predicated loads and stores for tails.
+            if basic_config["split_k"] > 1 and (
+                self.m % basic_config["block_m"]
+                or self.n % basic_config["block_n"]
+                or self.k % basic_config["block_k"]
+            ):
+                basic_config["split_k"] = 1
+            basic = GemmCpAsyncKernel(
+                self.m,
+                self.n,
+                self.k,
+                self.dtype,
+                config=basic_config,
+                trans_a=self.trans_a,
+                trans_b=self.trans_b,
+                device_index=self.device_index,
+            )
+            out = basic(a, b)
+            if self.activation == "silu_and_mul":
+                half = self.n // 2
+                out = torch.nn.functional.silu(out[:, :half]) * out[:, half:]
+            return out
         if self.config.get("simple"):
             cfg = self.config
             compiled = _gemm_simple_kernel(
@@ -2931,7 +2980,7 @@ class GemvKernel(Kernel):
         device_index: Device whose SM count and name pick the config.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     #: The bands this class serves. ``lhs_row`` and ``rhs_col`` name the vector
     #: operand; ``lhs_rows`` is the two-row NT band.
@@ -2943,6 +2992,15 @@ class GemvKernel(Kernel):
 
         Read by :meth:`applies` and by :meth:`entry_for`, so the region is stated once.
         """
+        if (
+            call.arch == 31
+            and call.m == 1
+            and call.n == 2112
+            and call.k == 7168
+            and not call.trans_a
+            and call.trans_b
+        ):
+            return None
         if call.gemv_mode is not None:
             return call.gemv_mode
         if call.trans_a or not call.trans_b or call.m != 2:
@@ -3037,8 +3095,7 @@ def _gemm_basic_kernel(
     (K, N) contraction (cf. the WGMMA version, which forwards them to WGMMA).
     """
     accum_dtype = "float"
-    a_shape = (k, m) if trans_a else (m, k)
-    b_shape = (n, k) if trans_b else (k, n)
+    musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-1],
@@ -3055,6 +3112,8 @@ def _gemm_basic_kernel(
     ) -> Callable:
         # SMEM tile shapes follow the storage layout; the T.gemm transpose
         # flags reconcile them with the logical (M,K) x (K,N) contraction.
+        a_shape = (k, m) if trans_a else (m, k)
+        b_shape = (n, k) if trans_b else (k, n)
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         n_exact = n % block_n == 0
@@ -3086,14 +3145,15 @@ def _gemm_basic_kernel(
 
                 if split_k == 1:
                     c_smem = T.alloc_shared((block_m, block_n), dtype)
-                    T.annotate_layout(
-                        {
-                            a_smem: tilelang.layout.make_swizzled_layout(a_smem),
-                            b_smem: tilelang.layout.make_swizzled_layout(b_smem),
-                            c_smem: tilelang.layout.make_swizzled_layout(c_smem),
-                        }
-                    )
-                else:
+                    if not musa:
+                        T.annotate_layout(
+                            {
+                                a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                                b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                                c_smem: tilelang.layout.make_swizzled_layout(c_smem),
+                            }
+                        )
+                elif not musa:
                     T.annotate_layout(
                         {
                             a_smem: tilelang.layout.make_swizzled_layout(a_smem),
@@ -3114,7 +3174,21 @@ def _gemm_basic_kernel(
                     # epilogue guard skips; a K tail would corrupt live
                     # outputs, so block_k must divide k (enforced by the
                     # config chain / autotune filter).
-                    if trans_a:
+                    if musa and (m % block_m != 0 or k % block_k != 0):
+                        for i, j in T.Parallel(a_tile[0], a_tile[1]):
+                            if trans_a:
+                                a_smem[i, j] = T.if_then_else(
+                                    (k_start + i < k) & (m_start + j < m),
+                                    a[k_start + i, m_start + j],
+                                    T.cast(0, dtype),
+                                )
+                            else:
+                                a_smem[i, j] = T.if_then_else(
+                                    (m_start + i < m) & (k_start + j < k),
+                                    a[m_start + i, k_start + j],
+                                    T.cast(0, dtype),
+                                )
+                    elif trans_a:
                         T.copy(
                             a[k_start : k_start + block_k, m_start : m_start + block_m],
                             a_smem,
@@ -3124,7 +3198,21 @@ def _gemm_basic_kernel(
                             a[m_start : m_start + block_m, k_start : k_start + block_k],
                             a_smem,
                         )
-                    if trans_b:
+                    if musa and (n % block_n != 0 or k % block_k != 0):
+                        for i, j in T.Parallel(b_tile[0], b_tile[1]):
+                            if trans_b:
+                                b_smem[i, j] = T.if_then_else(
+                                    (n_start + i < n) & (k_start + j < k),
+                                    b[n_start + i, k_start + j],
+                                    T.cast(0, dtype),
+                                )
+                            else:
+                                b_smem[i, j] = T.if_then_else(
+                                    (k_start + i < k) & (n_start + j < n),
+                                    b[k_start + i, n_start + j],
+                                    T.cast(0, dtype),
+                                )
+                    elif trans_b:
                         T.copy(
                             b[n_start : n_start + block_n, k_start : k_start + block_k],
                             b_smem,
@@ -3207,7 +3295,7 @@ class GemmCpAsyncKernel(Kernel):
     reduced ``[M, N]`` result and requires exact M / N / K tiles.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     general = True
 
     @staticmethod

@@ -18,6 +18,7 @@ from tileops.kernels.gemm.bmm import (
 from tileops.kernels.gemm.call_spec import BmmCall
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -298,11 +299,14 @@ class BmmFp8FwdOp(Op):
         scale_a: torch.Tensor,
         scale_b: torch.Tensor,
     ) -> Tuple[int, int, int, int]:
-        if not a.is_cuda:
-            raise ValueError(f"BmmFp8FwdOp expects all inputs to be on CUDA, got device {a.device}")
+        if not is_backend_tensor(a):
+            raise ValueError(
+                f"{type(self).__name__} expects all inputs on the configured backend, "
+                f"got device {a.device}"
+            )
         if b.device != a.device or scale_a.device != a.device or scale_b.device != a.device:
             raise ValueError(
-                f"BmmFp8FwdOp expects all inputs to be on the same CUDA device, got "
+                f"{type(self).__name__} expects all inputs to be on the same device, got "
                 f"a: {a.device}, b: {b.device}, scale_a: {scale_a.device}, "
                 f"scale_b: {scale_b.device}"
             )

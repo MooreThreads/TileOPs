@@ -12,7 +12,7 @@ import torch
 
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count
+from tileops.utils import get_backend_name, get_sm_count, get_tilelang_target
 
 from .heuristics import (
     ACTIVATIONS,
@@ -67,12 +67,17 @@ def _make_prim_func(
     swizzle_group_m: int,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
+    use_musa = get_backend_name() == "musa"
+    if use_musa:
+        # One whole CTA uses synchronous copies/MMA; no producer/consumer ring.
+        num_math_wgs = 1
+        num_stages = 1
     dtype = ab_dtype
     accum_dtype = "float"
     gtype = GemmType(gemm_type)
     tma_threads = 128
     math_threads = 128 * num_math_wgs
-    threads = tma_threads + math_threads
+    threads = 128 if use_musa else tma_threads + math_threads
     wg_rows = block_m // num_math_wgs
     math_warps = math_threads // 32
     blocks_per_group = (
@@ -398,17 +403,32 @@ def _make_prim_func(
 
     @T.macro
     def store_tile(C, C_src, C_up, C_s, group, row0, col0, rows, wg):
-        """Stage and store one warp-group's rows of a tile."""
+        """Stage and store one warp-group's rows of a tile.
+
+        On MUSA there is no TMA store, so each staged chunk is written back from
+        shared memory with row-predicated element stores.
+        """
         for chunk in range(epilogue_chunks):
             chunk_col = chunk * staged_n
-            if batched_async_store and T.get_thread_binding() % 128 == 0:
-                T.tma_store_wait(0)
-            T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+            if use_musa:
+                T.sync_threads()
+            else:
+                if batched_async_store and T.get_thread_binding() % 128 == 0:
+                    T.tma_store_wait(0)
+                T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
             if fused:
                 gate_multiply(C_src, C_up, C_s)
             else:
                 T.copy(C_src[:, chunk_col : chunk_col + staged_n], C_s)
-            if tight and rows < T.int32(wg_rows):
+            if use_musa:
+                T.sync_threads()
+                for i, j in T.Parallel(wg_rows, staged_n):
+                    if i < rows and row0 + i < m and col0 + chunk_col + j < c_cols:
+                        if c_has_group:
+                            C[group, row0 + i, col0 + chunk_col + j] = C_s[i, j]
+                        else:
+                            C[row0 + i, col0 + chunk_col + j] = C_s[i, j]
+            elif tight and rows < T.int32(wg_rows):
                 T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
                 if rows > 0:
                     for i, j in T.Parallel(wg_rows, staged_n):
@@ -579,11 +599,13 @@ def _make_prim_func(
             if num_math_wgs > 1:
                 swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
                 swizzled[C_s1] = tilelang.layout.make_swizzled_layout(C_s1)
-            T.annotate_layout(swizzled)
+            if not use_musa:
+                T.annotate_layout(swizzled)
 
             # full tracks producer arrivals; empty tracks consumer releases.
-            full = T.alloc_barrier([tma_threads] * num_stages)
-            empty = T.alloc_barrier([math_warps] * num_stages)
+            if not use_musa:
+                full = T.alloc_barrier([tma_threads] * num_stages)
+                empty = T.alloc_barrier([math_warps] * num_stages)
 
             num_m_blocks = T.ceildiv(m, block_m)
             num_n_blocks = T.ceildiv(c_cols, c_tile_n)
@@ -613,7 +635,117 @@ def _make_prim_func(
                 num_blocks = num_m_blocks * num_n_blocks
             num_waves = T.ceildiv(num_blocks, num_sms)
 
-            if tx < tma_threads:
+            if use_musa:
+                t_group = T.alloc_local((1,), "int32")
+                t_row0 = T.alloc_local((1,), "int32")
+                t_col0 = T.alloc_local((1,), "int32")
+                t_rows = T.alloc_local((1,), "int32")
+                t_k0 = T.alloc_local((1,), "int32")
+                t_klen = T.alloc_local((1,), "int32")
+                t_khead = T.alloc_local((1,), "int32")
+                for w in T.serial(num_waves):
+                    block_idx = w * T.int32(num_sms) + pid
+                    if block_idx < num_blocks:
+                        resolve_tile(
+                            block_idx,
+                            grouped_layout,
+                            s_ends if tight_per_row else grouped_layout,
+                            s_cum,
+                            num_m_blocks,
+                            num_n_blocks,
+                            t_group,
+                            t_row0,
+                            t_col0,
+                            t_rows,
+                            t_k0,
+                            t_klen,
+                            t_khead,
+                        )
+                        T.clear(C_l0)
+                        for ki in T.serial(tile_k_iters(t_klen)):
+                            k0 = t_k0[0] + ki * T.int32(block_k)
+                            for i, kk in T.Parallel(wg_rows, block_k):
+                                if a_k_major:
+                                    if a_has_group:
+                                        A_s0[0, i, kk] = T.if_then_else(
+                                            i < t_rows[0] and t_row0[0] + i < m and k0 + kk < k,
+                                            A[t_group[0], t_row0[0] + i, k0 + kk],
+                                            0,
+                                        )
+                                    else:
+                                        A_s0[0, i, kk] = T.if_then_else(
+                                            i < t_rows[0] and t_row0[0] + i < m and k0 + kk < k,
+                                            A[t_row0[0] + i, k0 + kk],
+                                            0,
+                                        )
+                                else:
+                                    if a_has_group:
+                                        A_s0[0, kk, i] = T.if_then_else(
+                                            i < t_rows[0] and t_row0[0] + i < m and k0 + kk < k,
+                                            A[t_group[0], k0 + kk, t_row0[0] + i],
+                                            0,
+                                        )
+                                    else:
+                                        A_s0[0, kk, i] = T.if_then_else(
+                                            i < t_rows[0] and t_row0[0] + i < m and k0 + kk < k,
+                                            A[k0 + kk, t_row0[0] + i],
+                                            0,
+                                        )
+                            if fused:
+                                for j, kk in T.Parallel(half_n, block_k):
+                                    B_s[0, j, kk] = T.if_then_else(
+                                        t_col0[0] + j < c_cols and k0 + kk < k,
+                                        B[t_group[0], t_col0[0] + j, k0 + kk],
+                                        0,
+                                    )
+                                    B_s[0, half_n + j, kk] = T.if_then_else(
+                                        t_col0[0] + j < c_cols and k0 + kk < k,
+                                        B[t_group[0], c_cols + t_col0[0] + j, k0 + kk],
+                                        0,
+                                    )
+                            else:
+                                for j, kk in T.Parallel(block_n, block_k):
+                                    if b_k_major:
+                                        if b_has_group:
+                                            B_s[0, j, kk] = T.if_then_else(
+                                                t_col0[0] + j < n and k0 + kk < k,
+                                                B[t_group[0], t_col0[0] + j, k0 + kk],
+                                                0,
+                                            )
+                                        else:
+                                            B_s[0, j, kk] = T.if_then_else(
+                                                t_col0[0] + j < n and k0 + kk < k,
+                                                B[t_col0[0] + j, k0 + kk],
+                                                0,
+                                            )
+                                    else:
+                                        if b_has_group:
+                                            B_s[0, kk, j] = T.if_then_else(
+                                                t_col0[0] + j < n and k0 + kk < k,
+                                                B[t_group[0], k0 + kk, t_col0[0] + j],
+                                                0,
+                                            )
+                                        else:
+                                            B_s[0, kk, j] = T.if_then_else(
+                                                t_col0[0] + j < n and k0 + kk < k,
+                                                B[k0 + kk, t_col0[0] + j],
+                                                0,
+                                            )
+                            if k_grouped:
+                                lo = T.if_then_else(ki == 0, t_khead[0], T.int32(0))
+                                hi = t_klen[0] - ki * T.int32(block_k)
+                                mask_k(A_s0, B_s, 0, lo, hi)
+                            T.gemm(
+                                A_s0[0, :, :],
+                                B_s[0, :, :],
+                                C_l0,
+                                transpose_A=not a_k_major,
+                                transpose_B=b_k_major,
+                            )
+                        store_tile(
+                            C, C_l0, C_up0, C_s0, t_group[0], t_row0[0], t_col0[0], t_rows[0], 0
+                        )
+            elif tx < tma_threads:
                 # ── TMA warp-group ──
                 T.dec_max_nreg(tma_regs)
                 gi = T.alloc_var("int32", init=0)
@@ -735,13 +867,23 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     activation = spec.activation
     epilogue_stage_n = spec.epilogue_stage_n
     swizzle_group_m = spec.swizzle_group_m
+    pass_configs = {
+        tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+        "tl.disable_warp_specialized": True,
+    }
+    if get_backend_name() == "musa":
+        pass_configs.update(
+            {
+                tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: False,
+                tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+                tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: False,
+            }
+        )
 
     @tilelang.jit(
         out_idx=[],
-        pass_configs={
-            tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
-            "tl.disable_warp_specialized": True,
-        },
+        target=get_tilelang_target(),
+        pass_configs=pass_configs,
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func():
@@ -804,7 +946,7 @@ class GemmTemplate(Kernel):
         ```
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     @staticmethod
     def _torch_dtype_str(dtype: torch.dtype) -> str:

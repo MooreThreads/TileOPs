@@ -10,10 +10,12 @@ from tileops.kernels.gemm.dense import (
     GemmTmaKernel,
     GemvKernel,
 )
+from tileops.kernels.gemm.mp31 import Mp31GemmKernel
 from tileops.kernels.gemm.w4a16 import GROUP_SIZE, GemmW4A16Kernel
 from tileops.kernels.gemm.w4a16_gemv import GemmW4A16GemvKernel
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -63,6 +65,7 @@ class GemmFwdOp(Op):
     @property
     def default_kernel_map(self) -> Dict[str, Kernel]:
         return {
+            "mp31_gemm_kernel": Mp31GemmKernel,
             "gemm_tma_kernel": GemmTmaKernel,
             "gemm_cp_async_kernel": GemmCpAsyncKernel,
             "gemv_kernel": GemvKernel,
@@ -210,6 +213,16 @@ class GemmFp8FwdOp(Op):
         scale_b: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> None:
+        if not is_backend_tensor(a):
+            raise ValueError(backend_tensor_error("a"))
+        if not is_backend_tensor(b):
+            raise ValueError(backend_tensor_error("b"))
+        if not is_backend_tensor(scale_a):
+            raise ValueError(backend_tensor_error("scale_a"))
+        if not is_backend_tensor(scale_b):
+            raise ValueError(backend_tensor_error("scale_b"))
+        if bias is not None and not is_backend_tensor(bias):
+            raise ValueError(backend_tensor_error("bias"))
         if a.dtype != torch.float8_e4m3fn:
             raise ValueError(f"GemmFp8FwdOp only supports torch.float8_e4m3fn, got {a.dtype}")
         if b.dtype != a.dtype:

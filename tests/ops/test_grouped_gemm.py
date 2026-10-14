@@ -4,7 +4,7 @@ import torch
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.grouped_gemm import GroupedGemmCall, GroupedGemmKernel
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
-from tileops.utils import get_sm_version
+from tileops.utils import get_backend_name, get_sm_version
 from workloads.grouped_gemm import (
     GroupedGemmWorkload,
 )
@@ -192,4 +192,6 @@ def test_selection_prefers_the_template_where_tma_can_address_the_operands(
         transpose_a=transpose_a,
         transpose_b=transpose_b,
     )
+    if call.arch != 90:
+        expected = "GroupedGemmKernel"
     assert op.select_kernel(call).__name__ == expected

@@ -13,6 +13,7 @@ from .dense import (
     GemmTmaKernel,
     GemvKernel,
 )
+from .mp31 import Mp31GemmKernel
 from .w4a16 import GemmW4A16Kernel
 from .w4a16_gemv import GemmW4A16GemvKernel
 
@@ -27,6 +28,7 @@ __all__ = [
     "GemmFp8BlockScaleKernel",
     "GemmFp8TensorScaleKernel",
     "GemmTmaKernel",
+    "Mp31GemmKernel",
     "GemmW4A16GemvKernel",
     "GemmW4A16Kernel",
     "GemvKernel",

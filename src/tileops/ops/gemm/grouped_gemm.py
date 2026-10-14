@@ -9,7 +9,7 @@ from tileops.kernels.grouped_gemm import (
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.perf.profile import tensor_core_roof
-from tileops.utils import get_sm_version
+from tileops.utils import get_sm_version, is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -76,8 +76,8 @@ class GroupedGemmFwdOp(Op):
         batch_offsets: torch.Tensor,
         batch_padded_offsets: torch.Tensor,
     ) -> tuple[int, int, int, int, torch.dtype, int | None]:
-        if not a.is_cuda or not b.is_cuda:
-            raise ValueError("a and b must be CUDA tensors")
+        if not is_backend_tensor(a) or not is_backend_tensor(b):
+            raise ValueError("a and b must be backend tensors")
         if a.dtype != b.dtype:
             raise ValueError(f"a and b must have the same dtype, got {a.dtype} and {b.dtype}")
         if a.dtype not in (torch.float16, torch.bfloat16):

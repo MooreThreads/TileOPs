@@ -13,7 +13,7 @@ import torch
 from tileops.kernels.grouped_gemm.heuristics import GemmType
 from tileops.kernels.grouped_gemm.template import GemmTemplate
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_sm_count, is_h200
+from tileops.utils import get_backend_name, get_sm_count, get_sm_version, is_h200
 
 from .call_spec import BmmCall
 
@@ -51,6 +51,7 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
         a full manifest scan on H20-3e showed it never won a shape.
     """
     accum_dtype = "float"
+    musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-1],
@@ -80,13 +81,14 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
                 c_smem = T.alloc_shared((block_m, block_n), dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.annotate_layout(
-                    {
-                        a_smem: tilelang.layout.make_swizzled_layout(a_smem),
-                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
-                        c_smem: tilelang.layout.make_swizzled_layout(c_smem),
-                    }
-                )
+                if not musa:
+                    T.annotate_layout(
+                        {
+                            a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                            b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                            c_smem: tilelang.layout.make_swizzled_layout(c_smem),
+                        }
+                    )
 
                 # L2 rasterization: reshape the (bx, by) traversal order into
                 # panels of ``panel_size`` blocks along N so neighbouring waves
@@ -99,14 +101,30 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
 
                 for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
                     k_start = ki * block_k
-                    T.copy(
-                        a[bz, m_start : m_start + block_m, k_start : k_start + block_k],
-                        a_smem,
-                    )
-                    T.copy(
-                        b[bz, k_start : k_start + block_k, n_start : n_start + block_n],
-                        b_smem,
-                    )
+                    if musa and (m % block_m or k % block_k):
+                        for i, j in T.Parallel(block_m, block_k):
+                            a_smem[i, j] = T.if_then_else(
+                                (m_start + i < m) & (k_start + j < k),
+                                a[bz, m_start + i, k_start + j],
+                                T.cast(0, dtype),
+                            )
+                    else:
+                        T.copy(
+                            a[bz, m_start : m_start + block_m, k_start : k_start + block_k],
+                            a_smem,
+                        )
+                    if musa and (n % block_n or k % block_k):
+                        for i, j in T.Parallel(block_k, block_n):
+                            b_smem[i, j] = T.if_then_else(
+                                (k_start + i < k) & (n_start + j < n),
+                                b[bz, k_start + i, n_start + j],
+                                T.cast(0, dtype),
+                            )
+                    else:
+                        T.copy(
+                            b[bz, k_start : k_start + block_k, n_start : n_start + block_n],
+                            b_smem,
+                        )
                     T.gemm(a_smem, b_smem, c_local, policy=T.GemmWarpPolicy.FullRow)
 
                 # Epilogue: stage fp32 accum through SMEM before GMEM store.
@@ -132,12 +150,13 @@ def _bmm_fp8_kernel(
     out_dtype: str,
 ) -> Callable:
     accum_dtype = "float"
+    musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            "tl.disable_warp_specialized": False,
+            "tl.disable_warp_specialized": musa,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -172,13 +191,14 @@ def _bmm_fp8_kernel(
                 c_shared = T.alloc_shared((block_m, block_n), out_dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.annotate_layout(
-                    {
-                        a_shared: tilelang.layout.make_swizzled_layout(a_shared),
-                        b_shared: tilelang.layout.make_swizzled_layout(b_shared),
-                        c_shared: tilelang.layout.make_swizzled_layout(c_shared),
-                    }
-                )
+                if not musa:
+                    T.annotate_layout(
+                        {
+                            a_shared: tilelang.layout.make_swizzled_layout(a_shared),
+                            b_shared: tilelang.layout.make_swizzled_layout(b_shared),
+                            c_shared: tilelang.layout.make_swizzled_layout(c_shared),
+                        }
+                    )
 
                 m_start = by * block_m
                 n_start = bx * block_n
@@ -599,6 +619,8 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
         A ``(block, threads)`` builder returning the compiled ``prim_func``.
     """
 
+    musa = get_backend_name() == "musa"
+
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3"])
     def _bmm_fp8_transpose_func(block: int = 64, threads: int = 128) -> Callable:
         exact = rows % block == 0 and cols % block == 0
@@ -611,24 +633,33 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
             with T.Kernel(
                 T.ceildiv(cols, block), T.ceildiv(rows, block), batch, threads=threads
             ) as (bx, by, bz):
-                # The store below reads the tile down a column, which conflicts on
-                # shared-memory banks unless the layout is swizzled.
-                tile = T.alloc_shared((block, block), dtype)
-                T.annotate_layout({tile: tilelang.layout.make_swizzled_layout(tile)})
                 r0, c0 = by * block, bx * block
-                if exact:
-                    T.copy(src[bz, r0 : r0 + block, c0 : c0 + block], tile)
+                if musa:
+                    # MUSA's FP8 datacast path rejects the shared-memory
+                    # staging copy for partial tiles.  The direct predicated
+                    # movement keeps the operation a TileLang kernel while
+                    # avoiding that unsupported FP8 shared-memory conversion.
+                    for j, i in T.Parallel(block, block):
+                        if (c0 + j < cols) and (r0 + i < rows):
+                            dst[bz, c0 + j, r0 + i] = src[bz, r0 + i, c0 + j]
                 else:
-                    for i, j in T.Parallel(block, block):
-                        tile[i, j] = T.if_then_else(
-                            (r0 + i < rows) & (c0 + j < cols),
-                            src[bz, r0 + i, c0 + j],
-                            T.cast(0, dtype),
-                        )
-                # ``i`` innermost keeps the store coalesced: ``dst`` is rows-innermost.
-                for j, i in T.Parallel(block, block):
-                    if (c0 + j < cols) and (r0 + i < rows):
-                        dst[bz, c0 + j, r0 + i] = tile[i, j]
+                    # The store below reads the tile down a column, which conflicts on
+                    # shared-memory banks unless the layout is swizzled.
+                    tile = T.alloc_shared((block, block), dtype)
+                    T.annotate_layout({tile: tilelang.layout.make_swizzled_layout(tile)})
+                    if exact:
+                        T.copy(src[bz, r0 : r0 + block, c0 : c0 + block], tile)
+                    else:
+                        for i, j in T.Parallel(block, block):
+                            tile[i, j] = T.if_then_else(
+                                (r0 + i < rows) & (c0 + j < cols),
+                                src[bz, r0 + i, c0 + j],
+                                T.cast(0, dtype),
+                            )
+                    # ``i`` innermost keeps the store coalesced: ``dst`` is rows-innermost.
+                    for j, i in T.Parallel(block, block):
+                        if (c0 + j < cols) and (r0 + i < rows):
+                            dst[bz, c0 + j, r0 + i] = tile[i, j]
 
         return _bmm_fp8_transpose_main
 
@@ -661,7 +692,7 @@ class BmmKernel(Kernel):
     ``blockIdx.z`` so all batches run in a single kernel launch.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
     general = True
 
     @classmethod
@@ -828,7 +859,7 @@ class BmmPersistentKernel(Kernel):
 
 
 class BmmFp8Kernel(Kernel):
-    supported_archs: list[int] = [89, 90]
+    supported_archs: list[int] = [31, 89, 90]
 
     def __init__(
         self,
@@ -844,14 +875,16 @@ class BmmFp8Kernel(Kernel):
     ) -> None:
         super().__init__()
         if device is None:
-            device = torch.device(torch.cuda.current_device())
-        cc = torch.cuda.get_device_capability(device)
-        if cc[0] < 9 and cc != (8, 9):
+            device_index = None
+        else:
+            device_index = device.index
+        arch = get_sm_version(device_index)
+        if get_backend_name() != "musa" and arch < 90 and arch != 89:
             # Fail fast with a clear message instead of a downstream
             # nvcc / PTX error at JIT time.
             raise NotImplementedError(
                 f"BmmFp8Kernel requires FP8 tensor cores (sm89+); "
-                f"got sm{cc[0]}{cc[1]} on the current device"
+                f"got sm{arch} on the current device"
             )
         if k % 32 != 0:
             raise ValueError(
@@ -872,8 +905,8 @@ class BmmFp8Kernel(Kernel):
         #      unvalidated there);
         #   3) classic 3D grid (handles arbitrary M/N tails; plain T.gemm,
         #      runs on any FP8 tensor-core target, sm89+).
-        self._sm_count = torch.cuda.get_device_properties(device).multi_processor_count
-        self._is_sm90 = cc[0] == 9
+        self._sm_count = get_sm_count(device_index)
+        self._is_sm90 = arch == 90
         self._use_ws = self._is_sm90 and self._ws_eligible(batch, m, n, k, self._sm_count)
         self._use_persistent = self._is_sm90 and (
             self._use_ws or self._persistent_eligible(m, n, k, self._use_ws)
@@ -956,6 +989,11 @@ class BmmFp8Kernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        # MP31 has one validated classic-grid FP8 configuration.  The wider
+        # CUDA-oriented autotune grid can leave MUSA's runtime in a sticky
+        # barrier error, so keep tuning deterministic on this backend.
+        if get_backend_name() == "musa":
+            return [self.default_config]
         if self._use_ws:
             SMEM_BUDGET_BYTES = 228 * 1024  # SM90 shared-memory cap
             configs = []

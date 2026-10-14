@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from workloads.workload_base import WorkloadBase
+from workloads.workload_base import DEVICE, WorkloadBase
 
 
 def _generate_batch_sizes(batch_sum: int, batch_count: int):
@@ -52,7 +52,7 @@ class GroupedGemmWorkload(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         batch_sizes_list = self.batch_sizes_list
         N, K = self.N, self.K
-        device = "cuda"
+        device = DEVICE
         dtype = self.dtype
         batch_sum = sum(batch_sizes_list)
         batch_count = len(batch_sizes_list)

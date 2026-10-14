@@ -41,7 +41,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from tileops.utils import is_h200_name
+from tileops.utils import get_backend_name, is_h200_name
 
 __all__ = [
     "SWAP_AB_MPAD",
@@ -53,7 +53,10 @@ __all__ = [
     "swap_ab_grid_underfills",
 ]
 
-_SMEM_BUDGET = 227 * 1024
+# The per-block dynamic SMEM a tile may claim: Hopper's opt-in is 227KB, MUSA's
+# is 192KB. Sizing the rings against the target's real cap keeps the selector
+# from picking a tile the device cannot launch.
+_SMEM_BUDGET = 192 * 1024 if get_backend_name() == "musa" else 227 * 1024
 _MAX_ACCUM_REGS = 200
 
 TINY_M_BLOCK_N = 128
@@ -93,6 +96,23 @@ class _Calibration:
 #: reports. A board absent here is not ranked; see :func:`best_config`.
 _CALIBRATIONS = {
     "NVIDIA H200": _Calibration(
+        l1_tbps=33.0,
+        l2_tbps=17.5,
+        reduce_tbps=1.5,
+        launch_us=2.25,
+        issue_ns=150.0,
+        tensor_core_tflops=(
+            ("basic", 420.0),
+            ("coop2", 525.0),
+            ("coop2s", 600.0),
+            ("coop2_splitk", 525.0),
+            ("simple", 500.0),
+            ("splitk", 420.0),
+        ),
+    ),
+    # MUSA boards rank the same structures as the Hopper entry above; re-fit the
+    # throughputs once MUSA numbers are measured.
+    "MTT S5000": _Calibration(
         l1_tbps=33.0,
         l2_tbps=17.5,
         reduce_tbps=1.5,

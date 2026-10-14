@@ -7,6 +7,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.quantize_utils import _tir_packed_to_unsigned_convert
+from tileops.utils import get_backend_name
 
 from .call_spec import GemmCall
 
@@ -69,23 +70,30 @@ def _gemm_w4a16_kernel(
                 weight_zero_shared = T.alloc_shared((block_n,), "uint8")
                 output_local = T.alloc_fragment((block_m, block_n), "float")
                 packed_local = T.alloc_local((4,), "uint8")
-                dequantized_local = T.alloc_local((8,), dtype)
-                scale_local = T.alloc_local((1,), dtype)
+                dequantized_local = T.alloc_local((8,), "float32")
+                scale_local = T.alloc_local((1,), "float32")
                 zero_local = T.alloc_local((1,), dtype)
 
-                T.annotate_layout(
-                    {
-                        activation_shared: tilelang.layout.make_swizzled_layout(activation_shared),
-                        weight_shared: tilelang.layout.make_swizzled_layout(weight_shared),
-                    }
-                )
+                if get_backend_name() != "musa":
+                    T.annotate_layout(
+                        {
+                            activation_shared: tilelang.layout.make_swizzled_layout(
+                                activation_shared
+                            ),
+                            weight_shared: tilelang.layout.make_swizzled_layout(weight_shared),
+                        }
+                    )
 
                 m_start = by * block_m
                 n_start = bx * block_n
                 tx = T.get_thread_binding(0)
                 T.clear(output_local)
 
-                for kk in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+                for kk in (
+                    T.serial(T.ceildiv(k, block_k))
+                    if get_backend_name() == "musa"
+                    else T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages)
+                ):
                     k_start = kk * block_k
 
                     for i, j in T.Parallel(block_m, block_k):
@@ -123,7 +131,7 @@ def _gemm_w4a16_kernel(
                     for chunk in T.serial(block_n * block_k // 2 // (threads * 4)):
                         packed_base = chunk * threads * 4 + tx * 4
                         scale_row = packed_base // (block_k // 2)
-                        scale_local[0] = T.cast(weight_scale_shared[scale_row], dtype)
+                        scale_local[0] = weight_scale_shared[scale_row]
                         zero_local[0] = T.cast(weight_zero_shared[scale_row], dtype)
 
                         for v in T.vectorized(4):
@@ -140,11 +148,11 @@ def _gemm_w4a16_kernel(
                                         4,
                                         packed_local[v // 2],
                                         v % 2,
-                                        dtype,
+                                        "float32",
                                     ),
-                                    dtype,
+                                    "float32",
                                 )
-                                - zero_local[0]
+                                - T.cast(zero_local[0], "float32")
                             ) * scale_local[0]
 
                         for v in T.vectorized(8):
@@ -152,8 +160,9 @@ def _gemm_w4a16_kernel(
                             weight_shared[
                                 output_index // block_k,
                                 output_index % block_k,
-                            ] = dequantized_local[v]
+                            ] = T.cast(dequantized_local[v], dtype)
 
+                    T.sync_threads()
                     T.gemm(
                         activation_shared,
                         weight_shared,
@@ -212,18 +221,24 @@ class GemmW4A16Kernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        if self.m <= 128 and self.n <= 256 and self.k <= 256:
-            # Short reductions cannot amortize pipeline setup. Smaller output
-            # tiles also provide more CTAs for these small matrices.
+        if self.m == 128 and self.n == 256 and self.k == 256:
             return {
-                "block_m": 16,
+                "block_m": 64,
                 "block_n": 32,
+                "block_k": 128,
+                "num_stages": 1,
+                "threads": 256,
+            }
+        if self.m <= 128 and self.n <= 256 and self.k <= 256:
+            return {
+                "block_m": 64,
+                "block_n": 64,
                 "block_k": 128,
                 "num_stages": 0,
                 "threads": 128,
             }
         return {
-            "block_m": 64,
+            "block_m": 16 if get_backend_name() == "musa" and self.m <= 16 else 64,
             "block_n": 64,
             "block_k": 64,
             "num_stages": 2,

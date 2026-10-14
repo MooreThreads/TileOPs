@@ -12,6 +12,7 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import ManifestBenchmark, fields, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops import BmmFp8FwdOp, BmmFwdOp
+from tileops.utils import get_backend_name
 from workloads.bmm import BmmFp8Workload, BmmWorkload
 
 
@@ -110,15 +111,12 @@ def test_bmm_bench(batch: int, m: int, n: int, k: int, dtype: torch.dtype) -> No
     flaggems_bmm = flaggems_op("bmm")
     assert_matches_reference(flaggems_bmm, torch.bmm, a, b, **reference_tolerance(a.dtype))
 
-    bm.compare(
-        {
-            "tileops": op,
-            FLAGGEMS_TAG: flaggems_bmm,
-            "torch-cublas": torch.bmm,
-        },
-        a,
-        b,
-    )
+    functors = {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_bmm,
+        "torch-cublas": torch.bmm,
+    }
+    bm.compare(functors, a, b)
 
 
 @pytest.mark.parametrize(

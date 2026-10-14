@@ -11,6 +11,7 @@ from tileops.kernels.grouped_gemm.call import GroupedGemmCall
 from tileops.kernels.grouped_gemm.grouped_gemm_persistent import grouped_gemm_entry
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.utils import get_backend_name
 
 __all__ = [
     "GroupedGemmKernel",
@@ -20,11 +21,11 @@ __all__ = [
 _DEFAULT_CONFIGS = {
     (False, True): {"block_m": 64, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 128},
     (False, False): {
-        "block_m": 128,
-        "block_n": 128,
-        "block_k": 32,
+        "block_m": 256,
+        "block_n": 256,
+        "block_k": 64,
         "num_stages": 2,
-        "threads": 128,
+        "threads": 256,
     },
     (True, False): {"block_m": 32, "block_n": 128, "block_k": 128, "num_stages": 2, "threads": 128},
     (True, True): {"block_m": 64, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 128},
@@ -35,11 +36,30 @@ _DEFAULT_CONFIGS = {
 def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b, dtype="float16"):
     accum_dtype = "float"
 
+    # Region copies lower to the dense GEMM TMA only with these passes. The
+    # same passes split a guarded element copy across warps, so they stay off
+    # unless this exact shape takes the region path.
+    rows_per_group, row_rem = divmod(batch_sum, batch_count)
+    region_tma_passes = (
+        get_backend_name() == "musa"
+        and not transpose_b
+        and row_rem == 0
+        and (
+            (not transpose_a and rows_per_group % 256 == 0 and N % 256 == 0 and K % 64 == 0)
+            or (transpose_a and rows_per_group % 128 == 0 and N % 128 == 0 and K % 64 == 0)
+        )
+    )
+    pass_configs = {
+        tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: get_backend_name() != "musa",
+    }
+    if region_tma_passes:
+        pass_configs[tilelang.PassConfigKey.TL_ENABLE_MUSA_TMA_PREFETCH] = False
+        pass_configs[tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC] = True
+
     @tilelang.jit(
         out_idx=[2],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-        },
+        pass_configs=pass_configs,
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _grouped_gemm_func(block_m, block_n, block_k, num_stages, threads):
@@ -92,27 +112,58 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                         actual_cols = T.min(block_n, N - n_start)
                         T.clear(C_local)
 
+                        # NN groups are contiguous [K, N] matrices. A full tile
+                        # copied as a region lowers to the same TMA the dense
+                        # GEMM uses; the guarded element copy does not. The
+                        # predicate has to be a Python constant: a TIR compare
+                        # stays inside the copy and the TMA lowering bails out.
+                        nn_tma = (
+                            get_backend_name() == "musa"
+                            and (not transpose_b)
+                            and batch_sum % batch_count == 0
+                            and (batch_sum // batch_count) % block_m == 0
+                            and N % block_n == 0
+                            and K % block_k == 0
+                        )
                         for k in T.Pipelined(T.ceildiv(K, block_k), num_stages=num_stages):
-                            for i, j in T.Parallel(block_m, block_k):
-                                A_shared[i, j] = T.if_then_else(
-                                    i < actual_rows and j < K - k * block_k,
-                                    A[m_start + i, k * block_k + j],
-                                    0,
+                            if nn_tma:
+                                # The group index has to come from the block index.
+                                # A value decoded into a local is copied into the
+                                # producer warp uninitialized, so the B TMA reads
+                                # the wrong group.
+                                T.copy(
+                                    A[m_start : m_start + block_m, k * block_k : (k + 1) * block_k],
+                                    A_shared,
                                 )
-                            if transpose_b:
-                                for i, j in T.Parallel(block_n, block_k):
-                                    B_shared[i, j] = T.if_then_else(
-                                        j < K - k * block_k and i < actual_cols,
-                                        B[cur_batch_idx[0], n_start + i, k * block_k + j],
-                                        0,
-                                    )
+                                T.copy(
+                                    B[
+                                        pid // _num_pid_n,
+                                        k * block_k : (k + 1) * block_k,
+                                        n_start : n_start + block_n,
+                                    ],
+                                    B_shared,
+                                )
                             else:
-                                for i, j in T.Parallel(block_k, block_n):
-                                    B_shared[i, j] = T.if_then_else(
-                                        i < K - k * block_k and j < actual_cols,
-                                        B[cur_batch_idx[0], k * block_k + i, n_start + j],
+                                for i, j in T.Parallel(block_m, block_k):
+                                    A_shared[i, j] = T.if_then_else(
+                                        i < actual_rows and j < K - k * block_k,
+                                        A[m_start + i, k * block_k + j],
                                         0,
                                     )
+                                if transpose_b:
+                                    for i, j in T.Parallel(block_n, block_k):
+                                        B_shared[i, j] = T.if_then_else(
+                                            j < K - k * block_k and i < actual_cols,
+                                            B[cur_batch_idx[0], n_start + i, k * block_k + j],
+                                            0,
+                                        )
+                                else:
+                                    for i, j in T.Parallel(block_k, block_n):
+                                        B_shared[i, j] = T.if_then_else(
+                                            i < K - k * block_k and j < actual_cols,
+                                            B[cur_batch_idx[0], k * block_k + i, n_start + j],
+                                            0,
+                                        )
                             T.gemm(A_shared, B_shared, C_local, transpose_B=transpose_b)
                         for i, j in T.Parallel(block_m, block_n):
                             if i < actual_rows and j < actual_cols:
@@ -157,23 +208,49 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                     batch_start = batch_offsets[bx]
                     batch_size = batch_sizes[bx]
 
+                    # TN groups are contiguous [rows, N] and [rows, K]. A full
+                    # tile copied as a region lowers to the same TMA a dense
+                    # A^T @ B uses. The predicate is a Python constant so the
+                    # TMA lowering sees a complete tile instead of a compare.
+                    tn_tma = (
+                        get_backend_name() == "musa"
+                        and (not transpose_b)
+                        and batch_sum % batch_count == 0
+                        and (batch_sum // batch_count) % block_m == 0
+                        and N % block_n == 0
+                        and K % block_k == 0
+                    )
                     for m in T.Pipelined(T.ceildiv(batch_size, block_m), num_stages=num_stages):
                         m_start = batch_start + m * block_m
                         actual_rows = T.min(block_m, batch_size - m * block_m)
-                        for i, j in T.Parallel(block_m, block_n):
-                            A_shared[i, j] = T.if_then_else(
-                                i < actual_rows and j < actual_N, A[m_start + i, n_start + j], 0
+                        if tn_tma:
+                            T.copy(
+                                A[m_start : m_start + block_m, n_start : n_start + block_n],
+                                A_shared,
                             )
-                        if transpose_b:
-                            for i, j in T.Parallel(block_k, block_m):
-                                B_shared[i, j] = T.if_then_else(
-                                    i < actual_K and j < actual_rows, B[k_start + i, m_start + j], 0
-                                )
+                            T.copy(
+                                B[m_start : m_start + block_m, k_start : k_start + block_k],
+                                B_shared,
+                            )
                         else:
-                            for i, j in T.Parallel(block_m, block_k):
-                                B_shared[i, j] = T.if_then_else(
-                                    i < actual_rows and j < actual_K, B[m_start + i, k_start + j], 0
+                            for i, j in T.Parallel(block_m, block_n):
+                                A_shared[i, j] = T.if_then_else(
+                                    i < actual_rows and j < actual_N, A[m_start + i, n_start + j], 0
                                 )
+                            if transpose_b:
+                                for i, j in T.Parallel(block_k, block_m):
+                                    B_shared[i, j] = T.if_then_else(
+                                        i < actual_K and j < actual_rows,
+                                        B[k_start + i, m_start + j],
+                                        0,
+                                    )
+                            else:
+                                for i, j in T.Parallel(block_m, block_k):
+                                    B_shared[i, j] = T.if_then_else(
+                                        i < actual_rows and j < actual_K,
+                                        B[m_start + i, k_start + j],
+                                        0,
+                                    )
                         T.gemm(
                             A_shared, B_shared, C_local, transpose_A=True, transpose_B=transpose_b
                         )
@@ -187,7 +264,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
 
 
 class GroupedGemmKernel(Kernel):
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
     general: bool = True
 
     @classmethod
@@ -280,6 +357,28 @@ class GroupedGemmKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        if get_backend_name() == "musa":
+            # The full grid is thousands of tiles and most fail to compile on
+            # MP31. Each layout gets the tile measured for it. The 64x128x64
+            # tile wins TN but faults the device on NN, so it stays there only.
+            if self.transpose_a and not self.transpose_b:
+                # Region TMA. 128x128x64 stages 2 was the fastest correct tile
+                # on the 16x256x4096x256 TN shape.
+                return [
+                    {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 2, "threads": 256}
+                ]
+            if not self.transpose_a and not self.transpose_b:
+                return [
+                    {"block_m": 256, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 256}
+                ]
+            if not self.transpose_a and self.transpose_b:
+                # NT's measured tile. 4 stages overflowed shared memory here,
+                # so it keeps 2; the 128x256x64 shape is what won the layout.
+                return [
+                    {"block_m": 128, "block_n": 256, "block_k": 64, "num_stages": 2, "threads": 256}
+                ]
+            return [dict(self.default_config)]
+
         block_m = [32, 64, 128, 256]
         block_n = [32, 64, 128, 256]
         block_k = [32, 64, 128, 256]

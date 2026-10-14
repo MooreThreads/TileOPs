@@ -8,6 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name, get_tilelang_target
 
 from .call_spec import GemmCall
 from .w4a16 import GROUP_SIZE
@@ -167,6 +168,126 @@ def _gemm_w4a16_gemv_kernel(n: int, k: int, dtype: str) -> Callable:
     return build
 
 
+@functools.lru_cache(maxsize=32)
+def _gemm_w4a16_gemv_kernel_musa(n: int, k: int, dtype: str, rev: int = 17) -> Callable:
+    del rev
+
+    @tilelang.jit(
+        target=get_tilelang_target(),
+        out_idx=[-1],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def build(
+        block_n: int = 1,
+        block_k: int = 512,
+        threads: int = 128,
+        num_stages: int = 1,
+    ) -> Callable:
+        del block_n, block_k, num_stages
+        vec = 8
+        warp = 32
+        rows_per_warp = 2
+        warps = threads // warp
+
+        @T.prim_func
+        def main(
+            activation: T.Tensor((1, k), dtype),  # type: ignore
+            packed_weight: T.Tensor((n, k // 2), "uint8"),  # type: ignore
+            weight_scale: T.Tensor((n, k // GROUP_SIZE), "float32"),  # type: ignore
+            weight_zero: T.Tensor((n, k // GROUP_SIZE), "uint8"),  # type: ignore
+            output: T.Tensor((1, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(T.ceildiv(T.ceildiv(n, rows_per_warp), warps), threads=threads) as bx:
+                tx = T.get_thread_binding()
+                warp_id = tx // warp
+                lane = tx % warp
+                tile_k = 4096 if k % 4096 == 0 else 1280
+                act_shared = T.alloc_shared((tile_k,), dtype)
+                row0 = (bx * warps + warp_id) * rows_per_warp
+                acc = T.alloc_local((rows_per_warp,), "float")
+                for r in T.serial(rows_per_warp):
+                    acc[r] = 0.0
+                for tile in T.serial(T.ceildiv(k, tile_k)):
+                    tile_base = tile * tile_k
+                    span = T.min(tile_k, k - tile_base)
+                    for step in T.serial(T.ceildiv(tile_k, threads * 8)):
+                        base = (step * threads + tx) * 8
+                        if base < span:
+                            act_vec = T.alloc_local((8,), dtype)
+                            T.copy(activation[0, tile_base + base], act_vec, coalesced_width=8)
+                            for b in T.serial(8):
+                                if base + b < span:
+                                    act_shared[base + b] = act_vec[b]
+                    T.sync_threads()
+                    byte_base = tile_base // 2
+                    byte_span = span // 2
+                    for step in T.serial(T.ceildiv(tile_k // 2, warp * vec)):
+                        base = (step * warp + lane) * vec
+                        if base < byte_span:
+                            act_vec = T.alloc_local((16,), dtype)
+                            act_base = base * 2
+                            for b in T.serial(16):
+                                act_vec[b] = act_shared[act_base + b]
+                            group = (byte_base + base) // (GROUP_SIZE // 2)
+                            if n % (warps * rows_per_warp) == 0 or row0 + 1 < n:
+                                for r in T.unroll(rows_per_warp):
+                                    row = row0 + r
+                                    packed_vec = T.alloc_local((vec,), "uint8")
+                                    T.copy(
+                                        packed_weight[row, byte_base + base],
+                                        packed_vec,
+                                        coalesced_width=8,
+                                    )
+                                    scale = weight_scale[row, group]
+                                    zero = T.cast(weight_zero[row, group], "float")
+                                    for b in T.serial(vec):
+                                        packed = T.cast(packed_vec[b], "int32")
+                                        acc[r] += (
+                                            (T.cast(packed % 16, "float") - zero)
+                                            * scale
+                                            * T.cast(act_vec[b * 2], "float")
+                                        )
+                                        acc[r] += (
+                                            (T.cast(packed // 16, "float") - zero)
+                                            * scale
+                                            * T.cast(act_vec[b * 2 + 1], "float")
+                                        )
+                            elif row0 < n:
+                                packed_vec = T.alloc_local((vec,), "uint8")
+                                T.copy(
+                                    packed_weight[row0, byte_base + base],
+                                    packed_vec,
+                                    coalesced_width=8,
+                                )
+                                scale = weight_scale[row0, group]
+                                zero = T.cast(weight_zero[row0, group], "float")
+                                for b in T.serial(vec):
+                                    packed = T.cast(packed_vec[b], "int32")
+                                    acc[0] += (
+                                        (T.cast(packed % 16, "float") - zero)
+                                        * scale
+                                        * T.cast(act_vec[b * 2], "float")
+                                    )
+                                    acc[0] += (
+                                        (T.cast(packed // 16, "float") - zero)
+                                        * scale
+                                        * T.cast(act_vec[b * 2 + 1], "float")
+                                    )
+                    T.sync_threads()
+                for offset in T.serial(5):
+                    for r in T.serial(rows_per_warp):
+                        acc[r] += T.shfl_down(acc[r], 1 << offset, width=warp)
+                if lane == 0:
+                    for r in T.serial(rows_per_warp):
+                        row = row0 + r
+                        if row < n:
+                            output[0, row] = T.cast(acc[r], dtype)
+
+        return main
+
+    return build
+
+
 class GemmW4A16GemvKernel(Kernel):
     """Fuse nibble unpacking, affine dequantization, and the M=1 GEMV."""
 
@@ -174,11 +295,11 @@ class GemmW4A16GemvKernel(Kernel):
     # ``k // block_k``.
     autotune_accepts_random_int_inputs: bool = True
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     @classmethod
     def applies(cls, call: GemmCall) -> bool:
-        return call.m == 1
+        return get_backend_name() == "musa" and call.m == 1
 
     @classmethod
     def entry_for(cls, call: GemmCall) -> tuple:
@@ -215,7 +336,10 @@ class GemmW4A16GemvKernel(Kernel):
         self.k = k
         self.dtype = dtype
         self.group_size = group_size
-        self.kernel = _gemm_w4a16_gemv_kernel(n, k, self.dtype_str)
+        if get_backend_name() == "musa":
+            self.kernel = _gemm_w4a16_gemv_kernel_musa(n, k, self.dtype_str)
+        else:
+            self.kernel = _gemm_w4a16_gemv_kernel(n, k, self.dtype_str)
         self.init_config(config, tune)
         # block_k must tile K exactly; K is a multiple of GROUP_SIZE, so halving
         # a power-of-two block_k always lands on a divisor.
@@ -248,5 +372,8 @@ class GemmW4A16GemvKernel(Kernel):
         weight_scale: torch.Tensor,
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
-        compiled = _gemm_w4a16_gemv_kernel(self.n, self.k, self.dtype_str)(**self.config)
+        if get_backend_name() == "musa":
+            compiled = _gemm_w4a16_gemv_kernel_musa(self.n, self.k, self.dtype_str)()
+        else:
+            compiled = _gemm_w4a16_gemv_kernel(self.n, self.k, self.dtype_str)(**self.config)
         return compiled(activation, packed_weight, weight_scale, weight_zero)
