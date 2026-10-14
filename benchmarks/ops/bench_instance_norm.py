@@ -60,17 +60,11 @@ def test_instance_norm_bench(
     assert_matches_reference(
         flaggems_fn, baseline_fn, x, None, None, weight, bias, **reference_tolerance(dtype)
     )
+    functors = {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
-    bm.compare(
-        {
-            "tileops": op,
-            FLAGGEMS_TAG: flaggems_fn,
-            "torch": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        x,
-        None,
-        None,
-        weight,
-        bias,
-    )
+    bm.compare(functors, x, None, None, weight, bias)

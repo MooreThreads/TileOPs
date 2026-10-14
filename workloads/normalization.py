@@ -3,7 +3,10 @@
 import torch
 import torch.nn.functional as F
 
+from tileops.utils import get_backend_name
 from workloads.workload_base import WorkloadBase
+
+DEVICE = get_backend_name()
 
 
 class RMSNormWorkload(WorkloadBase):
@@ -14,8 +17,8 @@ class RMSNormWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        weight = torch.randn(self.n, dtype=self.dtype, device=DEVICE)
         return x, weight
 
     def ref_program(self, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -32,9 +35,9 @@ class LayerNormWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
-        bias = torch.randn(self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        weight = torch.randn(self.n, dtype=self.dtype, device=DEVICE)
+        bias = torch.randn(self.n, dtype=self.dtype, device=DEVICE)
         return x, weight, bias
 
     def ref_program(
@@ -58,9 +61,9 @@ class FusedAddRMSNormWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        residual = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        residual = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        weight = torch.randn(self.n, dtype=self.dtype, device=DEVICE)
         return x, residual, weight
 
     def ref_program(
@@ -84,10 +87,10 @@ class FusedAddLayerNormWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        residual = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.n, dtype=self.dtype, device="cuda")
-        bias = torch.randn(self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        residual = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        weight = torch.randn(self.n, dtype=self.dtype, device=DEVICE)
+        bias = torch.randn(self.n, dtype=self.dtype, device=DEVICE)
         return x, residual, weight, bias
 
     def ref_program(
@@ -116,9 +119,9 @@ class AdaLayerNormWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        scale = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        shift = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        scale = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        shift = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
         return x, scale, shift
 
     def ref_program(
@@ -144,10 +147,10 @@ class AdaLayerNormZeroWorkload(WorkloadBase):
         self.eps = eps
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        scale = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        shift = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
-        gate = torch.randn(self.m, self.n, dtype=self.dtype, device="cuda")
+        x = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        scale = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        shift = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
+        gate = torch.randn(self.m, self.n, dtype=self.dtype, device=DEVICE)
         return x, scale, shift, gate
 
     def ref_program(
@@ -182,9 +185,9 @@ class GroupNormWorkload(WorkloadBase):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         shape = (self.n, self.c, *self.spatial)
-        x = torch.randn(shape, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.c, dtype=self.dtype, device="cuda")
-        bias = torch.randn(self.c, dtype=self.dtype, device="cuda")
+        x = torch.randn(shape, dtype=self.dtype, device=DEVICE)
+        weight = torch.randn(self.c, dtype=self.dtype, device=DEVICE)
+        bias = torch.randn(self.c, dtype=self.dtype, device=DEVICE)
         return x, weight, bias
 
     def ref_program(
@@ -214,9 +217,9 @@ class InstanceNormWorkload(WorkloadBase):
         workload exercises the affine call, so they are ``None``.
         """
         shape = (self.n, self.c, *self.spatial)
-        x = torch.randn(shape, dtype=self.dtype, device="cuda")
-        weight = torch.randn(self.c, dtype=self.dtype, device="cuda")
-        bias = torch.randn(self.c, dtype=self.dtype, device="cuda")
+        x = torch.randn(shape, dtype=self.dtype, device=DEVICE)
+        weight = torch.randn(self.c, dtype=self.dtype, device=DEVICE)
+        bias = torch.randn(self.c, dtype=self.dtype, device=DEVICE)
         return x, None, None, weight, bias
 
     def ref_program(
@@ -232,7 +235,7 @@ class InstanceNormWorkload(WorkloadBase):
         ).to(x.dtype)
 
 
-def _make_tensors(N, C, spatial, dtype, device="cuda"):
+def _make_tensors(N, C, spatial, dtype, device=DEVICE):
     shape = (N, C, *spatial)
     x = torch.randn(*shape, device=device, dtype=dtype)
     weight = torch.randn(C, device=device, dtype=torch.float32)
@@ -245,12 +248,26 @@ def _make_tensors(N, C, spatial, dtype, device="cuda"):
 def batch_norm_fwd_ref(
     x, weight, bias, running_mean, running_var, training, momentum=0.1, eps=1e-5
 ):
-    """Reference: torch.nn.functional.batch_norm (float32 upcast)."""
+    """Reference batch normalization with float32 accumulation."""
     x32 = x.float()
     rm = running_mean.clone()
     rv = running_var.clone()
-    y32 = torch.nn.functional.batch_norm(
-        x32, rm, rv, weight.float(), bias.float(), training=training, momentum=momentum, eps=eps
+    if training:
+        reduce_dims = (0, *range(2, x.ndim))
+        mean = x32.mean(dim=reduce_dims)
+        centered = x32 - mean.reshape(1, -1, *([1] * (x.ndim - 2)))
+        var = centered.square().mean(dim=reduce_dims)
+        count = x.numel() // x.shape[1]
+        rm.copy_((1 - momentum) * rm + momentum * mean)
+        rv.copy_((1 - momentum) * rv + momentum * var * count / (count - 1))
+    else:
+        mean = rm
+        var = rv
+        centered = x32 - mean.reshape(1, -1, *([1] * (x.ndim - 2)))
+    y32 = centered / torch.sqrt(
+        var.reshape(1, -1, *([1] * (x.ndim - 2))) + eps
+    ) * weight.float().reshape(1, -1, *([1] * (x.ndim - 2))) + bias.float().reshape(
+        1, -1, *([1] * (x.ndim - 2))
     )
     return y32.to(x.dtype), rm, rv
 

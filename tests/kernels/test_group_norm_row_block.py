@@ -13,8 +13,11 @@ import torch
 import torch.nn.functional as F
 
 from tileops.kernels.norm import GroupNormKernel, GroupNormNoAffineKernel
+from tileops.utils import get_backend_name
 
 pytestmark = pytest.mark.smoke
+
+DEVICE = get_backend_name()
 
 _ATOL = _RTOL = 1e-3  # fp16, matching the norm op tests
 
@@ -33,9 +36,9 @@ def test_affine_multi_row_block(n: int, c: int, spatial: tuple, g: int, block_m:
     dtype = torch.float16
     cpg = c // g
     d = cpg * math.prod(spatial)
-    x = torch.randn((n, c, *spatial), dtype=dtype, device="cuda")
-    weight = torch.randn(c, dtype=dtype, device="cuda")
-    bias = torch.randn(c, dtype=dtype, device="cuda")
+    x = torch.randn((n, c, *spatial), dtype=dtype, device=DEVICE)
+    weight = torch.randn(c, dtype=dtype, device=DEVICE)
+    bias = torch.randn(c, dtype=dtype, device=DEVICE)
 
     kernel = GroupNormKernel(
         d,
@@ -68,7 +71,7 @@ def test_affine_multi_row_block(n: int, c: int, spatial: tuple, g: int, block_m:
 def test_no_affine_multi_row_block(m: int, d: int, block_m: int) -> None:
     """No-affine rows stay correct when a row block runs past M."""
     dtype = torch.float16
-    x = torch.randn((m, d), dtype=dtype, device="cuda")
+    x = torch.randn((m, d), dtype=dtype, device=DEVICE)
 
     kernel = GroupNormNoAffineKernel(
         d,

@@ -36,6 +36,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ._config import (
     NARROW_ROW,
@@ -79,7 +80,7 @@ class _RowNormKernel(Kernel):
         tune: If True, autotune tile config.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     # Columns one thread carries, for a row held in register fragments. Below the
     # floor it has too few accesses in flight to cover the row's latency; above
@@ -181,6 +182,92 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group):
 
     @tilelang.jit(out_idx=[3])
     def _func(block_m, threads):
+        if get_backend_name() == "musa":
+            vec_size = 4 if dtype == "float32" else 8
+
+            @T.prim_func
+            def main_musa(
+                x: T.Tensor[(M, D), dtype],
+                weight: T.Tensor[(C,), dtype],
+                bias: T.Tensor[(C,), dtype],
+                y: T.Tensor[(M, D), dtype],
+            ):
+                with T.Kernel(M, threads=threads) as pid_m:
+                    tx = T.get_thread_binding()
+                    x_vec = T.alloc_local((vec_size,), dtype)
+                    shift = T.alloc_local((1,), "float32")
+                    sum_centered = T.alloc_local((1,), "float32")
+                    sumsq_centered = T.alloc_local((1,), "float32")
+                    reduced_sum = T.alloc_local((1,), "float32")
+                    reduced_sumsq = T.alloc_local((1,), "float32")
+                    mean_val = T.alloc_local((1,), "float32")
+                    rstd = T.alloc_local((1,), "float32")
+
+                    shift[0] = T.cast(x[pid_m, 0], "float32")
+                    T.clear(sum_centered)
+                    T.clear(sumsq_centered)
+                    for chunk in T.serial(T.ceildiv(D, threads * vec_size)):
+                        for v in T.vectorized(vec_size):
+                            j = chunk * threads * vec_size + tx * vec_size + v
+                            x_vec[v] = T.if_then_else(j < D, x[pid_m, j], T.cast(0.0, dtype))
+                        for v in T.serial(vec_size):
+                            j = chunk * threads * vec_size + tx * vec_size + v
+                            if j < D:
+                                centered = T.cast(x_vec[v], "float32") - shift[0]
+                                sum_centered[0] += centered
+                                sumsq_centered[0] += centered * centered
+
+                    with T.attr(
+                        T.comm_reducer(
+                            lambda lhs0, lhs1, rhs0, rhs1: (
+                                lhs0 + rhs0,
+                                lhs1 + rhs1,
+                            ),
+                            [
+                                T.cast(0.0, "float32"),
+                                T.cast(0.0, "float32"),
+                            ],
+                        ),
+                        "reduce_scope",
+                        T.reinterpret(T.uint64(0), dtype="handle"),
+                    ):
+                        T.evaluate(
+                            T.tvm_thread_allreduce(
+                                T.uint32(2),
+                                sum_centered[0],
+                                sumsq_centered[0],
+                                True,
+                                reduced_sum[0],
+                                reduced_sumsq[0],
+                                tx,
+                                dtype="handle",
+                            )
+                        )
+
+                    mean_val[0] = shift[0] + reduced_sum[0] / float(D)
+                    rstd[0] = T.rsqrt(
+                        reduced_sumsq[0] / float(D)
+                        - (reduced_sum[0] / float(D)) * (reduced_sum[0] / float(D))
+                        + eps
+                    )
+
+                    for chunk in T.serial(T.ceildiv(D, threads * vec_size)):
+                        for v in T.vectorized(vec_size):
+                            j = chunk * threads * vec_size + tx * vec_size + v
+                            if j < D:
+                                c = _channel_of(
+                                    pid_m,
+                                    j,
+                                    num_groups,
+                                    channels_per_group,
+                                    spatial_size,
+                                )
+                                y[pid_m, j] = (T.cast(x[pid_m, j], "float32") - mean_val[0]) * rstd[
+                                    0
+                                ] * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
+
+            return main_musa
+
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
         # One channel owns the whole row exactly when a group holds one channel.
@@ -423,6 +510,84 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype):
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
+        if get_backend_name() == "musa":
+            vec_size = 4 if dtype == "float32" else 8
+
+            @T.prim_func
+            def main_musa(
+                x: T.Tensor[(M, D), dtype],
+                y: T.Tensor[(M, D), dtype],
+            ):
+                with T.Kernel(M, threads=threads) as pid_m:
+                    tx = T.get_thread_binding()
+                    x_vec = T.alloc_local((vec_size,), dtype)
+                    shift = T.alloc_local((1,), "float32")
+                    sum_centered = T.alloc_local((1,), "float32")
+                    sumsq_centered = T.alloc_local((1,), "float32")
+                    reduced_sum = T.alloc_local((1,), "float32")
+                    reduced_sumsq = T.alloc_local((1,), "float32")
+                    mean_val = T.alloc_local((1,), "float32")
+                    rstd = T.alloc_local((1,), "float32")
+
+                    shift[0] = T.cast(x[pid_m, 0], "float32")
+                    T.clear(sum_centered)
+                    T.clear(sumsq_centered)
+                    for chunk in T.serial(T.ceildiv(D, threads * vec_size)):
+                        for v in T.vectorized(vec_size):
+                            j = chunk * threads * vec_size + tx * vec_size + v
+                            x_vec[v] = T.if_then_else(j < D, x[pid_m, j], T.cast(0.0, dtype))
+                        for v in T.serial(vec_size):
+                            j = chunk * threads * vec_size + tx * vec_size + v
+                            if j < D:
+                                centered = T.cast(x_vec[v], "float32") - shift[0]
+                                sum_centered[0] += centered
+                                sumsq_centered[0] += centered * centered
+
+                    with T.attr(
+                        T.comm_reducer(
+                            lambda lhs0, lhs1, rhs0, rhs1: (
+                                lhs0 + rhs0,
+                                lhs1 + rhs1,
+                            ),
+                            [
+                                T.cast(0.0, "float32"),
+                                T.cast(0.0, "float32"),
+                            ],
+                        ),
+                        "reduce_scope",
+                        T.reinterpret(T.uint64(0), dtype="handle"),
+                    ):
+                        T.evaluate(
+                            T.tvm_thread_allreduce(
+                                T.uint32(2),
+                                sum_centered[0],
+                                sumsq_centered[0],
+                                True,
+                                reduced_sum[0],
+                                reduced_sumsq[0],
+                                tx,
+                                dtype="handle",
+                            )
+                        )
+
+                    mean_val[0] = shift[0] + reduced_sum[0] / float(D)
+                    rstd[0] = T.rsqrt(
+                        reduced_sumsq[0] / float(D)
+                        - (reduced_sum[0] / float(D)) * (reduced_sum[0] / float(D))
+                        + eps
+                    )
+
+                    for chunk in T.serial(T.ceildiv(D, threads * vec_size)):
+                        for v in T.vectorized(vec_size):
+                            j = chunk * threads * vec_size + tx * vec_size + v
+                            if j < D:
+                                y[pid_m, j] = T.cast(
+                                    (T.cast(x[pid_m, j], "float32") - mean_val[0]) * rstd[0],
+                                    dtype,
+                                )
+
+            return main_musa
+
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
         register_direct = _holds_row_in_registers(D, D_padded)

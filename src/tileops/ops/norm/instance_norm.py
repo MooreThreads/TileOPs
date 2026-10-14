@@ -23,7 +23,10 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.kernels.norm import InstanceNormKernel, InstanceNormNoAffineKernel
+from tileops.kernels.norm import (
+    InstanceNormKernel,
+    InstanceNormNoAffineKernel,
+)
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op

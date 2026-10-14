@@ -12,6 +12,10 @@ from __future__ import annotations
 import pytest
 import torch
 
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
+
 
 @pytest.mark.smoke
 def test_rms_norm_accepts_normalized_shape() -> None:
@@ -36,16 +40,13 @@ def test_rms_norm_accepts_tuple_normalized_shape_runtime() -> None:
     """Multi-axis ``normalized_shape`` is the manifest contract; reduction
     runs over the trailing ``len(normalized_shape)`` axes and ``weight``
     must match ``tuple(normalized_shape)``."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
-
     from tileops.ops.norm.rms_norm import RMSNormFwdOp
 
     op = RMSNormFwdOp(normalized_shape=(2, 3))
     assert op.N == 6
     assert op.normalized_shape == (2, 3)
-    x = torch.randn(4, 2, 3, dtype=torch.float16, device="cuda")
-    w = torch.randn(2, 3, dtype=torch.float16, device="cuda")
+    x = torch.randn(4, 2, 3, dtype=torch.float16, device=DEVICE)
+    w = torch.randn(2, 3, dtype=torch.float16, device=DEVICE)
     y = op(x, w)
     assert y.shape == x.shape
 
@@ -54,17 +55,14 @@ def test_rms_norm_accepts_tuple_normalized_shape_runtime() -> None:
 def test_layer_norm_accepts_tuple_normalized_shape_runtime() -> None:
     """Multi-axis ``normalized_shape`` is the manifest contract; weight/bias
     must match ``tuple(normalized_shape)``."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for forward call")
-
     from tileops.ops.norm.layer_norm import LayerNormFwdOp
 
     op = LayerNormFwdOp(normalized_shape=(2, 3))
     assert op.N == 6
     assert op.normalized_shape == (2, 3)
-    x = torch.randn(4, 2, 3, dtype=torch.float16, device="cuda")
-    w = torch.randn(2, 3, dtype=torch.float16, device="cuda")
-    b = torch.randn(2, 3, dtype=torch.float16, device="cuda")
+    x = torch.randn(4, 2, 3, dtype=torch.float16, device=DEVICE)
+    w = torch.randn(2, 3, dtype=torch.float16, device=DEVICE)
+    b = torch.randn(2, 3, dtype=torch.float16, device=DEVICE)
     y = op(x, w, b)
     assert y.shape == x.shape
 

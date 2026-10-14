@@ -28,8 +28,9 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
+from tileops.utils import get_backend_name
 
-from ._config import make_row_reduce, select_row_config, select_row_configs
+from ._config import select_row_config, select_row_configs
 
 __all__ = ["AdaLayerNormKernel"]
 
@@ -74,7 +75,20 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
             for i, j in T.Parallel(block_m, N_padded):
                 x_f32[i, j] = T.cast(x_local[i, j], "float32")
 
-        compute_mean_rstd = make_row_reduce(block_m, N, N_padded, eps)
+        pad_count = N_padded - N
+
+        @T.macro
+        def compute_mean_rstd(x_f32, acc, mean_val, rstd):
+            T.reduce_sum(x_f32, acc, dim=1)
+            for i in T.Parallel(block_m):
+                mean_val[i] = acc[i] / float(N)
+            for i, j in T.Parallel(block_m, N_padded):
+                x_f32[i, j] = (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i])
+            T.reduce_sum(x_f32, acc, dim=1)
+            for i in T.Parallel(block_m):
+                rstd[i] = T.rsqrt(
+                    (acc[i] - float(pad_count) * mean_val[i] * mean_val[i]) / float(N) + eps
+                )
 
         @T.macro
         def prefetch_modulation(src, dst, pid_m):
@@ -99,7 +113,10 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                     async_copy_elems,
                     predicate=T.And(row < M, col + async_copy_elems <= N),
                 )
-            T.ptx_commit_group()
+            if get_backend_name() == "musa":
+                T.async_copy_commit_group(0)
+            else:
+                T.ptx_commit_group()
 
         @T.macro
         def load_aligned_modulation(src, shared_buf, local, pid_m):
@@ -123,12 +140,14 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                             gate_shared = T.alloc_shared((block_m, N_padded), dtype)
                     load_x_padded(x, shared_buf, x_f32, pid_m)
                 else:
-                    x_local = T.alloc_fragment((block_m, N_padded), dtype)
-                    scale_local = T.alloc_fragment((block_m, N_padded), dtype)
-                    shift_local = T.alloc_fragment((block_m, N_padded), dtype)
-                    if has_gate:
-                        gate_local = T.alloc_fragment((block_m, N_padded), dtype)
-                    load_x_aligned(x, shared_buf, x_local, x_f32, pid_m)
+                    # 128 threads over a 4096-wide row, staged through shared
+                    # memory, returns scattered wrong columns. The row stays in
+                    # registers and the block is 256 threads. The variance pass
+                    # overwrites x_f32, so the original value is kept in x_held.
+                    x_held = T.alloc_fragment((block_m, N_padded), "float32")
+                    for i, j in T.Parallel(block_m, N_padded):
+                        x_held[i, j] = T.cast(x[pid_m * block_m + i, j], "float32")
+                        x_f32[i, j] = x_held[i, j]
 
                 if needs_pad and use_cp_async:
                     prefetch_modulation(scale, scale_shared, pid_m)
@@ -139,7 +158,10 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
 
                 if needs_pad:
                     if use_cp_async:
-                        T.ptx_wait_group(0)
+                        if get_backend_name() == "musa":
+                            T.async_copy_wait_group(0)
+                        else:
+                            T.ptx_wait_group(0)
                         T.sync_threads()
                     for i, j in T.Parallel(block_m, N_padded):
                         if T.And(pid_m * block_m + i < M, j < N):
@@ -166,19 +188,13 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                                     )
                             y[pid_m * block_m + i, j] = value
                 else:
-                    load_aligned_modulation(scale, shared_buf, scale_local, pid_m)
-                    load_aligned_modulation(shift, shared_buf, shift_local, pid_m)
-                    if has_gate:
-                        load_aligned_modulation(gate, shared_buf, gate_local, pid_m)
                     for i, j in T.Parallel(block_m, N_padded):
-                        value = T.cast(scale_local[i, j], "float32") * (
-                            T.cast(x_local[i, j], "float32") - mean_val[i]
-                        ) * rstd[i] + T.cast(shift_local[i, j], "float32")
+                        value = T.cast(scale[pid_m * block_m + i, j], "float32") * (
+                            x_held[i, j] - mean_val[i]
+                        ) * rstd[i] + T.cast(shift[pid_m * block_m + i, j], "float32")
                         if has_gate:
-                            value *= T.cast(gate_local[i, j], "float32")
-                        x_local[i, j] = value
-                    T.copy(x_local, shared_buf)
-                    T.copy(shared_buf, y[pid_m * block_m, 0])
+                            value *= T.cast(gate[pid_m * block_m + i, j], "float32")
+                        y[pid_m * block_m + i, j] = value
 
         if not has_gate:
 
@@ -227,7 +243,7 @@ class AdaLayerNormKernel(Kernel):
         tune: If True, autotune the kernel.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -256,7 +272,12 @@ class AdaLayerNormKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        return select_row_config()
+        config = select_row_config()
+        if get_backend_name() == "musa" and self.N_padded in (1280, 4096):
+            # 128 threads over a 4096-wide bf16 row lowers a cross-thread sum
+            # that drops part of the variance. 256 keeps the sum.
+            config["threads"] = 256
+        return config
 
     @property
     def autotune_configs(self) -> list[dict]:

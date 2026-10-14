@@ -22,7 +22,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import get_sm_count
+from tileops.utils import get_backend_name, get_sm_count, get_tilelang_target
 
 from ._config import select_row_config, select_row_configs
 
@@ -33,9 +33,9 @@ __all__ = ["LayerNormKernel"]
 def _layer_norm_kernel(M, N, eps, dtype, partial_min_elements, sm_count):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N
-    pad_count = N_padded - N  # number of zero-padded elements per row
+    pad_count = N_padded - N
 
-    @tilelang.jit(out_idx=[3])
+    @tilelang.jit(target=get_tilelang_target(), out_idx=[3])
     def _func(block_m, threads):
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
@@ -182,7 +182,7 @@ class LayerNormKernel(Kernel):
     path holds the row in a register fragment from the load through the store.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     # Row elements a thread must own before the walk pays. Two reductions here,
     # so two walks, so twice the row RMSNorm needs.
@@ -215,7 +215,10 @@ class LayerNormKernel(Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return select_row_configs(self.N_padded, self.dtype)
+        configs = select_row_configs(self.N_padded, self.dtype)
+        if get_backend_name() == "musa":
+            return [config for config in configs if config["block_m"] == 1]
+        return configs
 
     def forward(self, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.

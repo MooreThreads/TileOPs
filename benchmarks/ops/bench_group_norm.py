@@ -52,18 +52,14 @@ def test_group_norm_bench(
     assert_matches_reference(
         flaggems_fn, baseline_fn, x, weight, bias, **reference_tolerance(dtype)
     )
+    functors = {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
-    bm.compare(
-        {
-            "tileops": op,
-            FLAGGEMS_TAG: flaggems_fn,
-            "torch": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        x,
-        weight,
-        bias,
-    )
+    bm.compare(functors, x, weight, bias)
 
 
 @pytest.mark.parametrize("n, c, spatial, num_groups, dtype, tune", _NO_AFFINE_PARAMS)
@@ -81,13 +77,11 @@ def test_group_norm_no_affine_bench(
 
     flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), num_groups, 1e-5)
     assert_matches_reference(flaggems_fn, baseline_no_affine, x, **reference_tolerance(dtype))
+    functors = {
+        "tileops": op,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_no_affine,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_no_affine),
+    }
 
-    bm.compare(
-        {
-            "tileops": op,
-            FLAGGEMS_TAG: flaggems_fn,
-            "torch": baseline_no_affine,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_no_affine),
-        },
-        x,
-    )
+    bm.compare(functors, x)

@@ -8,7 +8,10 @@ from tileops.kernels.norm.ada_layer_norm import (
     _should_use_cp_async,
 )
 from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
+from tileops.utils import get_backend_name
 from workloads.normalization import AdaLayerNormWorkload
+
+DEVICE = get_backend_name()
 
 
 class AdaLayerNormTest(AdaLayerNormWorkload, TestBase):
@@ -166,9 +169,9 @@ class AdaLayerNorm3DFixture(FixtureBase):
 @AdaLayerNorm3DFixture
 def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    scale = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    shift = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
+    scale = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
+    shift = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
 
     op = AdaLayerNormFwdOp()
 

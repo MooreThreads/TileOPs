@@ -27,7 +27,7 @@ import torch.nn.functional as F
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, get_tilelang_target
 
 from ._config import select_row_config, select_row_configs
 
@@ -42,7 +42,7 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     N_padded = align_up(N, ALIGNMENT)
     pad_count = N_padded - N
 
-    @tilelang.jit(out_idx=[4, 5])
+    @tilelang.jit(target=get_tilelang_target(), out_idx=[4, 5])
     def _func(block_m, threads):
         # A tail row block runs past the end unless every index is guarded.
         row_guard = M % block_m != 0
@@ -144,7 +144,7 @@ class FusedAddLayerNormKernel(Kernel):
     register fragment from the load through the store.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -247,7 +247,7 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
     N_padded = align_up(N, ALIGNMENT)
     chunk = N_padded // splits
 
-    @tilelang.jit(out_idx=[3, 4])
+    @tilelang.jit(target=get_tilelang_target(), out_idx=[3, 4])
     def _func(threads):
         own = chunk // (threads * _VEC)  # accesses this CTA reduces and writes
         rest = (N_padded - chunk) // (threads * _VEC)  # accesses it only reduces
@@ -351,7 +351,7 @@ class FusedAddRMSNormKernel(Kernel):
     settles.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     # Rows at or below which a row-per-CTA call takes the narrow block: while the shared
     # park is small a narrow block keeps more CTAs resident on an SM, and past this width

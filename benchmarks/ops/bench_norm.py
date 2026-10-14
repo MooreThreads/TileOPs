@@ -13,15 +13,14 @@ import torch.nn.functional as F
 
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
-    FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
-    VLLM_TAG,
+    # VLLM_TAG,
     assert_matches_reference,
     compiled_reference,
     flaggems_op,
     flashinfer_op,
     reference_tolerance,
-    vllm_op,
+    # vllm_op,
 )
 from benchmarks.benchmark_base import ManifestBenchmark, workload_params
 from tileops.manifest import load_workloads
@@ -56,20 +55,20 @@ def _flashinfer_rms_norm(eps: float):
     return baseline_fn
 
 
-def _vllm_rms_norm(x: torch.Tensor, eps: float):
-    """vllm's kernel writes into a caller-allocated tensor, so allocate it here.
-
-    Allocating inside the callable would charge the tag for an ``empty_like`` the
-    other tags never pay.
-    """
-    fn = vllm_op("rms_norm")
-    out = torch.empty_like(x)
-
-    def baseline_fn(x_i, weight):
-        fn(out, x_i, weight, eps)
-        return out
-
-    return baseline_fn
+# def _vllm_rms_norm(x: torch.Tensor, eps: float):
+#     """vllm's kernel writes into a caller-allocated tensor, so allocate it here.
+#
+#     Allocating inside the callable would charge the tag for an ``empty_like`` the
+#     other tags never pay.
+#     """
+#     fn = vllm_op("rms_norm")
+#     out = torch.empty_like(x)
+#
+#     def baseline_fn(x_i, weight):
+#         fn(out, x_i, weight, eps)
+#         return out
+#
+#     return baseline_fn
 
 
 def _in_place_fused_add(fn, args: tuple, eps: float):
@@ -118,11 +117,12 @@ def test_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     bm = ManifestBenchmark(op, test)
 
     tolerance = reference_tolerance(dtype)
-    library = {
-        FLAGGEMS_TAG: _flaggems_rms_norm(n, test.eps),
-        FLASHINFER_TAG: _flashinfer_rms_norm(test.eps),
-        VLLM_TAG: _vllm_rms_norm(inputs[0], test.eps),
-    }
+    library = {}
+    flaggems_fn = _flaggems_rms_norm(n, test.eps)
+    if flaggems_fn is not None:
+        library[FLAGGEMS_TAG] = flaggems_fn
+    # FLASHINFER_TAG: _flashinfer_rms_norm(test.eps),
+    # VLLM_TAG: _vllm_rms_norm(inputs[0], test.eps),
     for baseline_fn in library.values():
         assert_matches_reference(baseline_fn, test.ref_program, *inputs, **tolerance)
 
@@ -156,8 +156,8 @@ def test_fused_add_rms_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool
 
     tolerance = reference_tolerance(dtype)
     fused_kernels = {
-        FLASHINFER_TAG: flashinfer_op("fused_add_rmsnorm"),
-        VLLM_TAG: vllm_op("fused_add_rms_norm"),
+        # FLASHINFER_TAG: flashinfer_op("fused_add_rmsnorm"),
+        # VLLM_TAG: vllm_op("fused_add_rms_norm"),
     }
     functors = {"tileops": op}
     for tag, fn in fused_kernels.items():
@@ -184,29 +184,23 @@ def test_layer_norm_bench(m: int, n: int, dtype: torch.dtype, tune: bool) -> Non
         return F.layer_norm(x, (n,), weight=weight, bias=bias, eps=1e-5)
 
     flaggems_layer_norm = flaggems_op("layer_norm")
-    flashinfer_layer_norm = flashinfer_op("layernorm")
+    # flashinfer_layer_norm = flashinfer_op("layernorm")
 
     def flaggems_fn(x, weight, bias):
         # Returns (output, mean, rstd); the row reports the output.
         return flaggems_layer_norm(x, [n], weight, bias, 1e-5)[0]
 
-    def flashinfer_fn(x, weight, bias):
-        return flashinfer_layer_norm(x, weight, bias, 1e-5)
-
     tolerance = reference_tolerance(dtype)
-    for library_fn in (flaggems_fn, flashinfer_fn):
-        assert_matches_reference(library_fn, baseline_fn, *inputs, **tolerance)
+    assert_matches_reference(flaggems_fn, baseline_fn, *inputs, **tolerance)
+    functors = {
+        "tileops": op,
+        # FLASHINFER_TAG: flashinfer_fn,
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
 
-    bm.compare(
-        {
-            "tileops": op,
-            FLAGGEMS_TAG: flaggems_fn,
-            FLASHINFER_TAG: flashinfer_fn,
-            "torch": baseline_fn,
-            TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
-        },
-        *inputs,
-    )
+    bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize(

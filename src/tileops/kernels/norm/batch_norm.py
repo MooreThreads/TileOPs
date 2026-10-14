@@ -743,7 +743,7 @@ class BatchNormFwdTrainKernel(Kernel):
             Defaults to *L*, correct when the batch size is one.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,
@@ -1119,7 +1119,7 @@ class BatchNormFwdInferKernel(Kernel):
             Defaults to *L*, correct when the batch size is one.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     # Elements one block covers, and its width. Each block pays the whole
     # per-channel table as a prologue, so the span fixes the block count and the
@@ -1342,7 +1342,7 @@ class BatchNormBwdKernel(Kernel):
         tune: If True, autotune tile config.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,

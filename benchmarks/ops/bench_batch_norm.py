@@ -21,10 +21,13 @@ from benchmarks.baselines import (
 from benchmarks.benchmark_base import ManifestBenchmark, backward_of, workload_params
 from tileops.manifest import load_workloads
 from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
+from tileops.utils import get_backend_name
 from workloads.normalization import BatchNormBwdWorkload, BatchNormFwdWorkload
 
+DEVICE = get_backend_name()
 
-def _make_inputs(N, C, spatial, dtype, device="cuda"):
+
+def _make_inputs(N, C, spatial, dtype, device=DEVICE):
     shape = (N, C, *spatial)
     x = torch.randn(*shape, device=device, dtype=dtype)
     weight = torch.randn(C, device=device, dtype=torch.float32)
@@ -34,7 +37,7 @@ def _make_inputs(N, C, spatial, dtype, device="cuda"):
     return x, weight, bias, running_mean, running_var
 
 
-def _make_bwd_inputs(N, C, spatial, dtype, device="cuda"):
+def _make_bwd_inputs(N, C, spatial, dtype, device=DEVICE):
     x, weight, bias, running_mean, running_var = _make_inputs(N, C, spatial, dtype, device)
     grad_out = torch.randn_like(x)
     L = N * math.prod(spatial) if spatial else N
@@ -134,16 +137,14 @@ def test_batch_norm_fwd_bench(N, C, spatial, dtype, training, tune):
     flaggems_fn = _flaggems_bn_fwd(running_mean, running_var)
     # cuDNN and Triton both reduce over N*H*W in fp32; agreement is at fp32 strength.
     assert_matches_reference(flaggems_fn, torch_fn, *inputs, rtol=1e-4, atol=1e-4)
+    functors = {
+        "tileops": lambda *a: op(*a),
+        FLAGGEMS_TAG: flaggems_fn,
+        "torch-cudnn": torch_fn,
+        TORCH_COMPILE_TAG: compiled_reference(torch_fn),
+    }
 
-    bm.compare(
-        {
-            "tileops": lambda *a: op(*a),
-            FLAGGEMS_TAG: flaggems_fn,
-            "torch-cudnn": torch_fn,
-            TORCH_COMPILE_TAG: compiled_reference(torch_fn),
-        },
-        *inputs,
-    )
+    bm.compare(functors, *inputs)
 
 
 @pytest.mark.parametrize(

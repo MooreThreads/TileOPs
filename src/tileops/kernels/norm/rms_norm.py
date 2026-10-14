@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.tiling import ALIGNMENT, align_up
-from tileops.utils import get_sm_count
+from tileops.utils import get_sm_count, is_backend_tensor
 
 from ._config import select_row_config, select_row_configs
 
@@ -121,7 +121,7 @@ class RMSNormKernel(Kernel):
     is held in a register fragment from the load through the store.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     # Row elements a thread must own before the walk pays. One reduction here,
     # so one walk.
@@ -172,10 +172,10 @@ class RMSNormKernel(Kernel):
         Raises:
             ValueError: Either input is not on a CUDA device.
         """
-        if not (x.is_cuda and weight.is_cuda):
+        if not (is_backend_tensor(x) and is_backend_tensor(weight)):
             raise ValueError(
-                f"{type(self).__name__} is a CUDA kernel; got x on {x.device} and weight on "
-                f"{weight.device}. Another target's backend serves other devices."
+                f"{type(self).__name__} requires backend tensors; got x on {x.device} and weight "
+                f"on {weight.device}."
             )
 
         original_shape = x.shape

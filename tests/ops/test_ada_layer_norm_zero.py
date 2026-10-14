@@ -5,7 +5,10 @@ import torch.nn.functional as F
 from tests.test_base import FixtureBase, TestBase
 from tileops.kernels.norm.ada_layer_norm import AdaLayerNormKernel
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
+from tileops.utils import get_backend_name
 from workloads.normalization import AdaLayerNormZeroWorkload
+
+DEVICE = get_backend_name()
 
 
 class AdaLayerNormZeroTest(AdaLayerNormZeroWorkload, TestBase):
@@ -108,10 +111,10 @@ class AdaLayerNormZero3DFixture(FixtureBase):
 @AdaLayerNormZero3DFixture
 def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
     """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    scale = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    shift = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
-    gate = torch.randn(batch, seq, hidden, dtype=dtype, device="cuda")
+    x = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
+    scale = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
+    shift = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
+    gate = torch.randn(batch, seq, hidden, dtype=dtype, device=DEVICE)
 
     op = AdaLayerNormZeroFwdOp()
 
