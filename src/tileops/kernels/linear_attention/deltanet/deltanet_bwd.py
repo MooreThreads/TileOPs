@@ -22,6 +22,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 __all__ = [
     "DeltaNetBwdKernel",
@@ -52,11 +53,13 @@ def _bwd_parallel_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-6, -5, -4, -3, -2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TIR_DISABLE_VECTORIZE: use_musa,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -111,7 +114,12 @@ def _bwd_parallel_tl(
 
                 # Recompute forward: v_new_c, o_part, attn (no exp(g) scaling)
                 T.clear(ws_frag)
-                T.gemm(w_c, h_c, ws_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        for d in T.Serial(dim_k):
+                            ws_frag[i, j] += w_c[i, d] * h_c[d, j]
+                else:
+                    T.gemm(w_c, h_c, ws_frag)
                 for i, j in T.Parallel(block_C, dim_v):
                     v_new_c[i, j] = u_c[i, j] - ws_frag[i, j]
 
@@ -123,12 +131,22 @@ def _bwd_parallel_tl(
                 )
 
                 T.clear(ws_frag)
-                T.gemm(q_c, h_c, ws_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        for d in T.Serial(dim_k):
+                            ws_frag[i, j] += q_c[i, d] * h_c[d, j]
+                else:
+                    T.gemm(q_c, h_c, ws_frag)
                 for i, j in T.Parallel(block_C, dim_v):
                     o_part[i, j] = ws_frag[i, j]
 
                 T.clear(attn_frag)
-                T.gemm(q_c, k_c, attn_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for d in T.Serial(dim_k):
+                            attn_frag[i, j] += q_c[i, d] * k_c[j, d]
+                else:
+                    T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     attn[i, j] = T.if_then_else(i >= j, attn_frag[i, j], T.float32(0.0))
 
@@ -136,38 +154,78 @@ def _bwd_parallel_tl(
 
                 # Step 2: d_v_new_c = attn^T @ do_c (partial du)
                 T.clear(d_v_new_frag)
-                T.gemm(attn, do_c, d_v_new_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        for m in T.Serial(block_C):
+                            d_v_new_frag[i, j] += attn[m, i] * do_c[m, j]
+                else:
+                    T.gemm(attn, do_c, d_v_new_frag, transpose_A=True)
                 T.copy(d_v_new_frag, d_v_new_c)
 
                 # d_attn = do_c @ v_new_c^T (causal masked)
                 T.clear(d_attn_frag)
-                T.gemm(do_c, v_new_c, d_attn_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for m in T.Serial(dim_v):
+                            d_attn_frag[i, j] += do_c[i, m] * v_new_c[j, m]
+                else:
+                    T.gemm(do_c, v_new_c, d_attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     d_attn[i, j] = T.if_then_else(i >= j, d_attn_frag[i, j], T.float32(0.0))
 
                 # Step 3: dq from h, dh from q (no exp(g) scaling, no dg)
                 T.clear(d_q_c_frag)
                 # dq from inter-chunk: do * q @ h -> dq += do @ h^T
-                T.gemm(do_c, h_c, d_q_c_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(dim_v):
+                            d_q_c_frag[i, j] += do_c[i, m] * h_c[j, m]
+                else:
+                    T.gemm(do_c, h_c, d_q_c_frag, transpose_B=True)
                 # dh from q: q^T @ do
-                T.gemm(q_c, do_c, dh_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(dim_k, dim_v):
+                        for m in T.Serial(block_C):
+                            dh_frag[i, j] += q_c[m, i] * do_c[m, j]
+                else:
+                    T.gemm(q_c, do_c, dh_frag, transpose_A=True)
 
                 # Step 4: dq/dk from d_attn (no Gamma weighting)
-                T.gemm(d_attn, k_c, d_q_c_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(block_C):
+                            d_q_c_frag[i, j] += d_attn[i, m] * k_c[m, j]
+                else:
+                    T.gemm(d_attn, k_c, d_q_c_frag)
                 T.copy(d_q_c_frag, d_q_c)
 
                 T.clear(d_k_c_frag)
-                T.gemm(d_attn, q_c, d_k_c_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(block_C):
+                            d_k_c_frag[i, j] += d_attn[m, i] * q_c[m, j]
+                else:
+                    T.gemm(d_attn, q_c, d_k_c_frag, transpose_A=True)
                 T.copy(d_k_c_frag, d_k_c)
 
                 # Step 5: dh from w/v_new, dw (no exp scaling)
                 T.clear(dP_frag)
-                T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(dim_v):
+                            dP_frag[i, j] += d_v_new_c[i, m] * h_c[j, m]
+                else:
+                    T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, dim_k):
                     dP[i, j] = -dP_frag[i, j]
                 dh_sub_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
                 T.clear(dh_sub_frag)
-                T.gemm(w_c, d_v_new_c, dh_sub_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(dim_k, dim_v):
+                        for m in T.Serial(block_C):
+                            dh_sub_frag[i, j] += w_c[m, i] * d_v_new_c[m, j]
+                else:
+                    T.gemm(w_c, d_v_new_c, dh_sub_frag, transpose_A=True)
                 for i, j in T.Parallel(dim_k, dim_v):
                     dh_frag[i, j] -= dh_sub_frag[i, j]
                 # dw = -dP (since v_new = u - w @ h, dw = -(dv_new @ h^T))
@@ -229,11 +287,13 @@ def _dh_recurrence_bwd_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TIR_DISABLE_VECTORIZE: use_musa,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -264,7 +324,7 @@ def _dh_recurrence_bwd_tl(
                 for i, j in T.Parallel(dim_k, dim_v):
                     dh_fp32[i, j] = T.float32(0.0)
 
-                for t in T.Pipelined(num_chunks, num_stages=num_stages):
+                for t in T.Pipelined(num_chunks, num_stages=0 if use_musa else num_stages):
                     t_bwd = num_chunks - 1 - t
                     T.copy(
                         k[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
@@ -287,7 +347,12 @@ def _dh_recurrence_bwd_tl(
 
                     # du_corr = k @ dh_buf; also save for wk_dh
                     T.clear(du_corr_frag)
-                    T.gemm(k_c, dh_buf, du_corr_frag)
+                    if use_musa:
+                        for i, j in T.Parallel(block_C, dim_v):
+                            for m in T.Serial(dim_k):
+                                du_corr_frag[i, j] += k_c[i, m] * dh_buf[m, j]
+                    else:
+                        T.gemm(k_c, dh_buf, du_corr_frag)
                     T.copy(
                         du_corr_frag,
                         du_corr[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
@@ -297,7 +362,12 @@ def _dh_recurrence_bwd_tl(
 
                     # dk_corr = v_new @ dh_buf^T
                     T.clear(dP_frag)
-                    T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
+                    if use_musa:
+                        for i, j in T.Parallel(block_C, dim_k):
+                            for m in T.Serial(dim_v):
+                                dP_frag[i, j] += v_new_c[i, m] * dh_buf[j, m]
+                    else:
+                        T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
                     T.copy(dP_frag, dP)
                     for n, kk in T.Parallel(block_C, dim_k):
                         dk_corr[bid, hid, t_bwd * block_C + n, kk] = dP[n, kk]
@@ -431,7 +501,7 @@ class DeltaNetBwdKernel(Kernel):
       5. merge: dk = dk_partial + dk_correction + dk_wu
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,

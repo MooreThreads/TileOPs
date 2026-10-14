@@ -31,6 +31,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils.backend import get_backend_name
 
 __all__ = [
     "GatedDeltaNetDecodeFP32Kernel",
@@ -152,6 +153,7 @@ def _gated_deltanet_decode_tl(
     dtype: str = "float32",
 ):
     accum_dtype = "float32"
+    disable_tma = get_backend_name() == "musa" and dtype == "bfloat16" and dim_k == dim_v == 128
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
 
@@ -222,7 +224,7 @@ def _gated_deltanet_decode_tl(
                 # new_state = alpha * S + outer(k, v_new)
                 # Reuses h_tile for pipelined state prefetch.
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=disable_tma)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             alpha * T.cast(h_tile[kk, j], accum_dtype)
@@ -257,7 +259,7 @@ class GatedDeltaNetDecodeKernel(Kernel):
     decode numerics aligned with the fp32 reference.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
     general = True
 
     def __init__(
@@ -562,7 +564,7 @@ class GatedDeltaNetDecodeFP32Kernel(Kernel):
     decode.  Intended for fp32 dtype only.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     @classmethod
     def applies(cls, call) -> bool:

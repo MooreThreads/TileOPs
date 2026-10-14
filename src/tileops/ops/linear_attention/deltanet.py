@@ -8,6 +8,7 @@ from tileops.kernels.linear_attention.deltanet import (
     DeltaNetFwdKernel,
 )
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
@@ -101,8 +102,8 @@ class DeltaNetFwdOp(Op):
         v: torch.Tensor,
         beta: torch.Tensor,
     ) -> None:
-        if not all(tensor.is_cuda for tensor in (q, k, v, beta)):
-            raise ValueError("q, k, v, and beta must be CUDA tensors")
+        if not all(is_backend_tensor(tensor) for tensor in (q, k, v, beta)):
+            raise ValueError("q, k, v, and beta must be backend tensors")
         if q.ndim != 4:
             raise ValueError("q must have shape [batch, heads, seq_len, dim_k]")
         batch, heads, seq_len, dim_k = q.shape
@@ -260,7 +261,7 @@ class DeltaNetBwdOp(Op):
     def _bind_from_inputs(self, inputs: "tuple[torch.Tensor, ...]") -> None:
         """Validate the ten declared inputs, then bind the kernel they select."""
         do, q, k, v, beta, S, Aw, Au, w, u = inputs
-        if not all(tensor.is_cuda for tensor in (do, q, k, v, beta)):
+        if not all(is_backend_tensor(tensor) for tensor in (do, q, k, v, beta)):
             raise ValueError("do, q, k, v, and beta must be CUDA tensors")
         if q.ndim != 4:
             raise ValueError("q must have shape [batch, heads, seq_len, dim_k]")
@@ -453,8 +454,8 @@ class DeltaNetAutogradOp(Op):
         v: torch.Tensor,
         beta: torch.Tensor,
     ) -> Tuple[Kernel, Kernel]:
-        if not all(tensor.is_cuda for tensor in (q, k, v, beta)):
-            raise ValueError("q, k, v, and beta must be CUDA tensors")
+        if not all(is_backend_tensor(tensor) for tensor in (q, k, v, beta)):
+            raise ValueError("q, k, v, and beta must be backend tensors")
         batch, heads, seq_len, dim_k = q.shape
         if k.shape != (batch, heads, seq_len, dim_k):
             raise ValueError("k must match q shape")

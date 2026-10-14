@@ -18,7 +18,7 @@ import math
 import tilelang
 import tilelang.language as T
 
-__all__ = ["fused_prepare_compute_w_u_tl"]
+__all__ = ["fused_prepare_compute_w_u_musa_tl", "fused_prepare_compute_w_u_tl"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -139,5 +139,105 @@ def fused_prepare_compute_w_u_tl(
             _fused_body(k, v, beta, Aw, Au, w, u)
 
         return fused_prepare_compute_w_u
+
+    return _fused_func
+
+
+@functools.lru_cache(maxsize=32)
+def fused_prepare_compute_w_u_musa_tl(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str = "float32",
+):
+    accum_dtype = "float32"
+    block_C = chunk_size
+    num_rounds = int(math.ceil(math.log2(chunk_size))) if chunk_size > 1 else 0
+
+    @tilelang.jit(
+        out_idx=[-4, -3, -2, -1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TIR_DISABLE_VECTORIZE: True,
+        },
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _fused_func(num_stages, threads=128):
+        @T.prim_func
+        def fused_prepare_compute_w_u_musa(
+            k: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            v: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            beta: T.Tensor([batch, head, seq_len], dtype),
+            Aw: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+            Au: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+            w: T.Tensor([batch, head, seq_len, dim_k], dtype),
+            u: T.Tensor([batch, head, seq_len, dim_v], dtype),
+        ):
+            with T.Kernel(batch, head, seq_len // block_C, threads=threads) as (bid, hid, cid):
+                k_s = T.alloc_shared([block_C, dim_k], dtype)
+                v_s = T.alloc_shared([block_C, dim_v], dtype)
+                beta_s = T.alloc_shared([block_C], dtype)
+                p_s = T.alloc_shared([block_C, block_C], accum_dtype)
+                p_next = T.alloc_shared([block_C, block_C], accum_dtype)
+                s_s = T.alloc_shared([block_C, block_C], accum_dtype)
+                t_s = T.alloc_shared([block_C, block_C], accum_dtype)
+                base = cid * block_C
+                T.copy(k[bid, hid, base : base + block_C, :], k_s, disable_tma=True)
+                T.copy(v[bid, hid, base : base + block_C, :], v_s, disable_tma=True)
+                T.copy(beta[bid, hid, base : base + block_C], beta_s, disable_tma=True)
+
+                for i, j in T.Parallel(block_C, block_C):
+                    dot = T.alloc_var(T.float32)
+                    dot = T.float32(0.0)
+                    for d in T.Serial(dim_k):
+                        dot += T.cast(k_s[i, d], accum_dtype) * T.cast(k_s[j, d], accum_dtype)
+                    p_s[i, j] = T.if_then_else(
+                        i > j, -dot * T.cast(beta_s[i], accum_dtype), T.float32(0.0)
+                    )
+                    s_s[i, j] = T.if_then_else(i == j, T.float32(1.0), T.float32(0.0))
+
+                for _ in T.Serial(num_rounds):
+                    for i, j in T.Parallel(block_C, block_C):
+                        acc_ps = T.alloc_var(T.float32)
+                        acc_pp = T.alloc_var(T.float32)
+                        acc_ps = T.float32(0.0)
+                        acc_pp = T.float32(0.0)
+                        for m in T.Serial(block_C):
+                            acc_ps += p_s[i, m] * s_s[m, j]
+                            acc_pp += p_s[i, m] * p_s[m, j]
+                        t_s[i, j] = acc_ps
+                        p_next[i, j] = acc_pp
+                    for i, j in T.Parallel(block_C, block_C):
+                        p_s[i, j] = p_next[i, j]
+                        s_s[i, j] = s_s[i, j] + t_s[i, j]
+
+                for i, j in T.Parallel(block_C, block_C):
+                    Aw[bid, hid, base + i, j] = T.cast(s_s[i, j], dtype)
+                    Au[bid, hid, base + i, j] = T.cast(s_s[i, j], dtype)
+                for i, d in T.Parallel(block_C, dim_k):
+                    acc = T.alloc_var(T.float32)
+                    acc = T.float32(0.0)
+                    for m in T.Serial(block_C):
+                        acc += (
+                            s_s[i, m]
+                            * T.cast(k_s[m, d], accum_dtype)
+                            * T.cast(beta_s[m], accum_dtype)
+                        )
+                    w[bid, hid, base + i, d] = T.cast(acc, dtype)
+                for i, d in T.Parallel(block_C, dim_v):
+                    acc = T.alloc_var(T.float32)
+                    acc = T.float32(0.0)
+                    for m in T.Serial(block_C):
+                        acc += (
+                            s_s[i, m]
+                            * T.cast(v_s[m, d], accum_dtype)
+                            * T.cast(beta_s[m], accum_dtype)
+                        )
+                    u[bid, hid, base + i, d] = T.cast(acc, dtype)
+
+        return fused_prepare_compute_w_u_musa
 
     return _fused_func

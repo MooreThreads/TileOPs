@@ -21,6 +21,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ..autotune import (
     default_h_block_v,
@@ -28,7 +29,10 @@ from ..autotune import (
     tune_delta_rule_fwd,
 )
 from ..v_tile import resolve_block_v
-from .fused_prepare_compute_w_u import fused_prepare_compute_w_u_tl
+from .fused_prepare_compute_w_u import (
+    fused_prepare_compute_w_u_musa_tl,
+    fused_prepare_compute_w_u_tl,
+)
 
 __all__ = ["DeltaNetFwdKernel"]
 
@@ -231,6 +235,50 @@ def _deltanet_fwd_run(
     v: torch.Tensor,
     beta: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if get_backend_name() == "musa":
+        from tileops.kernels.linear_attention.gated_deltanet.gated_deltanet_prefill import (
+            _prefill_h_recurrence_bthd_musa_scalar_tl,
+            _prefill_output_o_bthd_musa_scalar_tl,
+        )
+
+        fused_fn = fused_prepare_compute_w_u_musa_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(fused_num_stages, fused_threads)
+        k_bthd = k.permute(0, 2, 1, 3).contiguous()
+        beta_bthd = beta.permute(0, 2, 1).contiguous()
+        g_bthd = torch.zeros_like(beta_bthd)
+        Aw, Au, w, u = fused_fn(k, v, beta)
+        w_bthd = w.permute(0, 2, 1, 3).contiguous()
+        u_bthd = u.permute(0, 2, 1, 3).contiguous()
+        h_fn = _prefill_h_recurrence_bthd_musa_scalar_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(h_num_stages, h_threads)
+        S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
+        S_buf, v_new = h_fn(k_bthd, g_bthd, w_bthd, u_bthd, S_0)
+        o_fn = _prefill_output_o_bthd_musa_scalar_tl(
+            batch,
+            head,
+            seq_len,
+            chunk_size,
+            dim_k,
+            dim_v,
+            dtype,
+        )(o_threads)
+        o_bthd = o_fn(q.permute(0, 2, 1, 3).contiguous(), k_bthd, g_bthd, S_buf, v_new)
+        return o_bthd.permute(0, 2, 1, 3).contiguous(), S_buf, Aw, Au, w, u
+
     fused_fn = fused_prepare_compute_w_u_tl(
         batch,
         head,
@@ -296,7 +344,7 @@ def _deltanet_fwd_run_fake(
 
 
 class DeltaNetFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -337,9 +385,14 @@ class DeltaNetFwdKernel(Kernel):
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Tune the three sub-kernels independently and merge the winners."""
+        fused_builder = (
+            fused_prepare_compute_w_u_musa_tl
+            if get_backend_name() == "musa"
+            else fused_prepare_compute_w_u_tl
+        )
         self.config = tune_delta_rule_fwd(
             self,
-            fused_builder=fused_prepare_compute_w_u_tl,
+            fused_builder=fused_builder,
             h_builder=_h_recurrence_tl,
             o_builder=_output_o_tl,
             warmup=warmup,

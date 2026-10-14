@@ -8,6 +8,9 @@ from tests.ops.gla_test_utils import (
 )
 from tests.test_base import FixtureBase
 from tileops.ops import GLAFwdOp
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 try:
     from fla.ops.gla import chunk_gla
@@ -47,16 +50,16 @@ def test_gla_fwd(
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
     scale = K**-0.5
 
-    q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
+    q = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype) * 0.1
+    g = -torch.rand(B, T, H, K, device=DEVICE, dtype=dtype)
 
     # --- Torch reference ---
     ref_o = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale)
 
     # --- FLA reference (if available) ---
-    if chunk_gla is not None:
+    if chunk_gla is not None and DEVICE != "musa":
         fla_o, _ = chunk_gla(q.float(), k.float(), v.float(), g.float(), scale=scale)
         cos = cosine_sim(ref_o, fla_o)
         print(f"  FLA vs ref o: cosine={cos:.6f}")
@@ -80,7 +83,7 @@ def test_gla_fwd(
     )
 
     # --- TileOPs vs FLA ---
-    if chunk_gla is not None:
+    if chunk_gla is not None and DEVICE != "musa":
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         assert cos > 0.99, f"TileOPs vs FLA o cosine too low: {cos:.6f}"

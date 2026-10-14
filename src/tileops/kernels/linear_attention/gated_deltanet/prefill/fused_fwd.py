@@ -1,6 +1,6 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
 # Licensed under the MIT License.
-# Adapted and modified for TileOps GatedDeltaNet prefill integration.
+# Adapted and modified for TileOPs GatedDeltaNet prefill integration.
 
 import functools
 import os
@@ -10,10 +10,15 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E
+from tileops.utils import get_backend_name
 
 from .utils import prepare_chunk_offsets
 
-MULTI_PROCESSOR_COUNT = torch.cuda.get_device_properties().multi_processor_count
+_backend = getattr(torch, get_backend_name())
+if get_backend_name() == "musa":
+    MULTI_PROCESSOR_COUNT = _backend.get_device_properties(0).multi_processor_count
+else:
+    MULTI_PROCESSOR_COUNT = torch.cuda.get_device_properties().multi_processor_count
 TARGET_NUM_CTAS = int(MULTI_PROCESSOR_COUNT * 0.7)
 
 

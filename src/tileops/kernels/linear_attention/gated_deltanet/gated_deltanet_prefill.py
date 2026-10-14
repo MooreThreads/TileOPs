@@ -22,6 +22,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ..v_tile import resolve_block_v
 from .gated_deltanet_fwd import (
@@ -29,6 +30,8 @@ from .gated_deltanet_fwd import (
     _h_recurrence_tl,
     _output_o_tl,
 )
+
+DEVICE = get_backend_name()
 
 __all__ = ["GatedDeltaNetPrefillFwdKernel"]
 
@@ -56,7 +59,7 @@ def _prefill_partition_metadata(
     torch.Tensor | None,
 ]:
     """Build shape-only partition metadata once per static workload."""
-    device = "cuda" if device_idx is None else f"cuda:{device_idx}"
+    device = DEVICE if device_idx is None else f"{DEVICE}:{device_idx}"
     raw_offsets = [0]
     for length in raw_sequence_lengths:
         raw_offsets.append(raw_offsets[-1] + length)
@@ -292,6 +295,13 @@ def _prefill_prepare_w_u_bhtd_tl(
                 w_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 u_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
 
+                T.annotate_layout(
+                    {
+                        S_shared: tilelang.layout.make_swizzled_layout(S_shared),
+                        P_shared: tilelang.layout.make_swizzled_layout(P_shared),
+                    }
+                )
+
                 T.copy(
                     k[bid, hid, by * block_C : (by + 1) * block_C, :],
                     k_shared,
@@ -354,6 +364,105 @@ def _prefill_prepare_w_u_bhtd_tl(
                 )
 
         return prefill_prepare_w_u_bhtd
+
+    return _fused_func
+
+
+@functools.lru_cache(maxsize=32)
+def _prefill_prepare_w_u_bthd_musa_tl(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str = "float32",
+):
+    """MUSA prepare path with explicit copies around shared-memory GEMMs."""
+    block_C = chunk_size
+    num_rounds = int(math.ceil(math.log2(chunk_size))) if chunk_size > 1 else 0
+
+    @tilelang.jit(
+        out_idx=[-2, -1],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _fused_func(num_stages, threads=128):
+        @T.prim_func
+        def prefill_prepare_w_u_bthd_musa(
+            k: T.Tensor([batch, seq_len, head, dim_k], dtype),
+            v: T.Tensor([batch, seq_len, head, dim_v], dtype),
+            g: T.Tensor([batch, seq_len, head], dtype),
+            beta: T.Tensor([batch, seq_len, head], dtype),
+            w: T.Tensor([batch, seq_len, head, dim_k], dtype),
+            u: T.Tensor([batch, seq_len, head, dim_v], dtype),
+        ):
+            with T.Kernel(batch, head, seq_len // block_C, threads=threads) as (bid, hid, by):
+                base = by * block_C
+                k_s = T.alloc_shared([block_C, dim_k], dtype)
+                g_s = T.alloc_shared([block_C], dtype)
+                beta_s = T.alloc_shared([block_C], dtype)
+                kb_s = T.alloc_shared([block_C, dim_k], dtype)
+                kb_g = T.alloc_shared([block_C, dim_k], dtype)
+                kb_w = T.alloc_shared([block_C, dim_k], dtype)
+                vb_s = T.alloc_shared([block_C, dim_v], dtype)
+                s_s = T.alloc_shared([block_C, block_C], dtype)
+                p_s = T.alloc_shared([block_C, block_C], dtype)
+                s_left = T.alloc_shared([block_C, block_C], dtype)
+                s_w = T.alloc_shared([block_C, block_C], dtype)
+                s_u = T.alloc_shared([block_C, block_C], dtype)
+                p_left = T.alloc_shared([block_C, block_C], dtype)
+                p_right = T.alloc_shared([block_C, block_C], dtype)
+                gp = T.alloc_shared([block_C], "float32")
+                gn = T.alloc_shared([block_C], "float32")
+                gram = T.alloc_fragment([block_C, block_C], "float32")
+                tmp = T.alloc_fragment([block_C, block_C], "float32")
+                wf = T.alloc_fragment([block_C, dim_k], "float32")
+                uf = T.alloc_fragment([block_C, dim_v], "float32")
+
+                for i, d in T.Parallel(block_C, dim_k):
+                    k_s[i, d] = k[bid, base + i, hid, d]
+                    kb_s[i, d] = k_s[i, d] * beta[bid, base + i, hid]
+                for i in T.Parallel(block_C):
+                    g_s[i] = g[bid, base + i, hid]
+                    beta_s[i] = beta[bid, base + i, hid]
+                    gp[i] = T.exp2(g_s[i] * LOG2E)
+                    gn[i] = T.exp2(-g_s[i] * LOG2E)
+                T.clear(gram)
+                T.copy(kb_s, kb_g)
+                T.gemm(kb_g, k_s, gram, transpose_B=True)
+                for i, j in T.Parallel(block_C, block_C):
+                    p_s[i, j] = T.if_then_else(i > j, -gram[i, j] * gp[i] * gn[j], T.float32(0.0))
+                T.clear(s_s)
+                for i in T.Parallel(block_C):
+                    s_s[i, i] = T.float32(1.0)
+                for _ in T.Serial(num_rounds):
+                    T.clear(tmp)
+                    T.copy(p_s, p_left)
+                    T.copy(s_s, s_left)
+                    T.gemm(p_left, s_left, tmp)
+                    for i, j in T.Parallel(block_C, block_C):
+                        s_s[i, j] = s_s[i, j] + tmp[i, j]
+                    T.clear(tmp)
+                    T.copy(p_s, p_left)
+                    T.copy(p_s, p_right)
+                    T.gemm(p_left, p_right, tmp)
+                    T.copy(tmp, p_s)
+                T.clear(wf)
+                T.copy(s_s, s_w)
+                T.copy(kb_s, kb_w)
+                T.gemm(s_w, kb_w, wf)
+                for i, d in T.Parallel(block_C, dim_k):
+                    w[bid, base + i, hid, d] = wf[i, d]
+                for i, d in T.Parallel(block_C, dim_v):
+                    vb_s[i, d] = v[bid, base + i, hid, d] * beta_s[i]
+                T.clear(uf)
+                T.copy(s_s, s_u)
+                T.gemm(s_u, vb_s, uf)
+                for i, d in T.Parallel(block_C, dim_v):
+                    u[bid, base + i, hid, d] = uf[i, d]
+
+        return prefill_prepare_w_u_bthd_musa
 
     return _fused_func
 
@@ -1061,6 +1170,13 @@ def _prefill_prepare_w_u_bthd_tl(
                 w_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 u_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
 
+                T.annotate_layout(
+                    {
+                        S_shared: tilelang.layout.make_swizzled_layout(S_shared),
+                        P_shared: tilelang.layout.make_swizzled_layout(P_shared),
+                    }
+                )
+
                 for i, d in T.Parallel(block_C, dim_k):
                     k_shared[i, d] = k[bid, base + i, hid, d]
                 for i in T.Parallel(block_C):
@@ -1112,6 +1228,80 @@ def _prefill_prepare_w_u_bthd_tl(
 
 
 @functools.lru_cache(maxsize=32)
+def _prefill_h_recurrence_bthd_musa_scalar_tl(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str = "float32",
+):
+    block_C = chunk_size
+    num_chunks = seq_len // block_C
+
+    @tilelang.jit(
+        out_idx=[-2, -1],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _func(num_stages, threads=128):
+        @T.prim_func
+        def h_recurrence_bthd_musa_scalar(
+            k: T.Tensor([batch, seq_len, head, dim_k], dtype),
+            g: T.Tensor([batch, seq_len, head], dtype),
+            w: T.Tensor([batch, seq_len, head, dim_k], dtype),
+            u: T.Tensor([batch, seq_len, head, dim_v], dtype),
+            S_0: T.Tensor([batch, head, dim_k, dim_v], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], "float32"),
+            v_new: T.Tensor([batch, seq_len, head, dim_v], dtype),
+        ):
+            with T.Kernel(1, batch, head, threads=threads) as (vid, bid, hid):
+                k_c = T.alloc_shared([block_C, dim_k], dtype)
+                g_c = T.alloc_shared([block_C], dtype)
+                w_c = T.alloc_shared([block_C, dim_k], dtype)
+                u_c = T.alloc_shared([block_C, dim_v], dtype)
+                h_c = T.alloc_shared([dim_k, dim_v], dtype)
+                v_new_c = T.alloc_shared([block_C, dim_v], dtype)
+
+                T.copy(S_0[bid, hid, :, :], h_c, disable_tma=True)
+                for i, j in T.Parallel(dim_k, dim_v):
+                    S[bid, hid, 0, i, j] = h_c[i, j]
+
+                for t in T.Pipelined(num_chunks, num_stages=num_stages):
+                    base = t * block_C
+                    for i, d in T.Parallel(block_C, dim_k):
+                        k_c[i, d] = k[bid, base + i, hid, d]
+                        w_c[i, d] = w[bid, base + i, hid, d]
+                    for i in T.Parallel(block_C):
+                        g_c[i] = g[bid, base + i, hid]
+                    for i, d in T.Parallel(block_C, dim_v):
+                        u_c[i, d] = u[bid, base + i, hid, d]
+
+                    for i, j in T.Parallel(block_C, dim_v):
+                        dot = T.alloc_var(T.float32)
+                        dot = T.float32(0.0)
+                        for d in T.Serial(dim_k):
+                            dot += w_c[i, d] * h_c[d, j]
+                        v_new_c[i, j] = u_c[i, j] - dot * T.exp2(
+                            (g_c[i] + g_c[block_C - 1]) * LOG2E
+                        )
+                        v_new[bid, base + i, hid, j] = v_new_c[i, j]
+
+                    for i, j in T.Parallel(block_C, dim_v):
+                        v_new_c[i, j] = v_new_c[i, j] * T.exp2((g_c[block_C - 1] - g_c[i]) * LOG2E)
+                    for i, j in T.Parallel(dim_k, dim_v):
+                        h_c[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * LOG2E)
+                        for n in T.Serial(block_C):
+                            h_c[i, j] += k_c[n, i] * v_new_c[n, j]
+                        S[bid, hid, t + 1, i, j] = h_c[i, j]
+
+        return h_recurrence_bthd_musa_scalar
+
+    return _func
+
+
+@functools.lru_cache(maxsize=32)
 def _prefill_h_recurrence_bthd_tl(
     batch: int,
     head: int,
@@ -1143,7 +1333,7 @@ def _prefill_h_recurrence_bthd_tl(
             w: T.Tensor([batch, seq_len, head, dim_k], dtype),
             u: T.Tensor([batch, seq_len, head, dim_v], dtype),
             S_0: T.Tensor([batch, head, dim_k, dim_v], dtype),
-            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], "float32"),
             v_new: T.Tensor([batch, seq_len, head, dim_v], dtype),
         ):
             with T.Kernel(num_v_tiles, batch, head, threads=threads) as (
@@ -1208,6 +1398,71 @@ def _prefill_h_recurrence_bthd_tl(
 
 
 @functools.lru_cache(maxsize=32)
+def _prefill_output_o_bthd_musa_scalar_tl(
+    batch: int,
+    head: int,
+    seq_len: int,
+    chunk_size: int,
+    dim_k: int,
+    dim_v: int,
+    dtype: str = "float32",
+):
+    block_C = chunk_size
+    num_chunks = seq_len // block_C
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _func(threads=128):
+        @T.prim_func
+        def output_o_bthd_musa_scalar(
+            q: T.Tensor([batch, seq_len, head, dim_k], dtype),
+            k: T.Tensor([batch, seq_len, head, dim_k], dtype),
+            g: T.Tensor([batch, seq_len, head], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], "float32"),
+            v_new: T.Tensor([batch, seq_len, head, dim_v], dtype),
+            o: T.Tensor([batch, seq_len, head, dim_v], dtype),
+        ):
+            with T.Kernel(num_chunks, batch, head, threads=threads) as (tid, bid, hid):
+                base = tid * block_C
+                q_c = T.alloc_shared([block_C, dim_k], dtype)
+                k_c = T.alloc_shared([block_C, dim_k], dtype)
+                g_c = T.alloc_shared([block_C], dtype)
+                h_c = T.alloc_shared([dim_k, dim_v], dtype)
+                v_new_c = T.alloc_shared([block_C, dim_v], dtype)
+                o_frag = T.alloc_fragment([block_C, dim_v], "float32")
+
+                for i, d in T.Parallel(block_C, dim_k):
+                    q_c[i, d] = q[bid, base + i, hid, d]
+                    k_c[i, d] = k[bid, base + i, hid, d]
+                for i in T.Parallel(block_C):
+                    g_c[i] = g[bid, base + i, hid]
+                T.copy(S[bid, hid, tid, :, :], h_c, disable_tma=True)
+                for i, d in T.Parallel(block_C, dim_v):
+                    v_new_c[i, d] = v_new[bid, base + i, hid, d]
+
+                for i, j in T.Parallel(block_C, dim_v):
+                    o_frag[i, j] = T.float32(0.0)
+                    for d in T.Serial(dim_k):
+                        o_frag[i, j] += q_c[i, d] * h_c[d, j]
+                    o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * LOG2E)
+                    for m in T.Serial(block_C):
+                        if i >= m:
+                            dot = T.alloc_var(T.float32)
+                            dot = T.float32(0.0)
+                            for d in T.Serial(dim_k):
+                                dot += q_c[i, d] * k_c[m, d]
+                            o_frag[i, j] += dot * T.exp2((g_c[i] - g_c[m]) * LOG2E) * v_new_c[m, j]
+                    o[bid, base + i, hid, j] = o_frag[i, j]
+
+        return output_o_bthd_musa_scalar
+
+    return _func
+
+
+@functools.lru_cache(maxsize=32)
 def _prefill_output_o_bthd_tl(
     batch: int,
     head: int,
@@ -1234,7 +1489,7 @@ def _prefill_output_o_bthd_tl(
             q: T.Tensor([batch, seq_len, head, dim_k], dtype),
             k: T.Tensor([batch, seq_len, head, dim_k], dtype),
             g: T.Tensor([batch, seq_len, head], dtype),
-            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], "float32"),
             v_new: T.Tensor([batch, seq_len, head, dim_v], dtype),
             o: T.Tensor([batch, seq_len, head, dim_v], dtype),
         ):
@@ -1486,7 +1741,7 @@ def _prefill_grouped_replay_bthd_tl(
             w: T.Tensor([batch, seq_len, head, dim_k], dtype),
             u: T.Tensor([batch, seq_len, head, dim_v], dtype),
             group_start: T.Tensor([batch, head, num_groups, dim_k, dim_v], dtype),
-            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], "float32"),
             v_new: T.Tensor([batch, seq_len, head, dim_v], dtype),
         ):
             with T.Kernel(num_v_tiles * num_groups, batch, head, threads=threads) as (
@@ -1583,7 +1838,11 @@ def _gated_deltanet_prefill_kernel_call(
     layout = _normalize_prefill_layout(layout)
     if layout == "bthd":
         use_blocksolve_prepare = (
-            chunk_size == 64 and dim_k == 128 and dim_v == 128 and dtype in ("float16", "bfloat16")
+            get_backend_name() != "musa"
+            and chunk_size == 64
+            and dim_k == 128
+            and dim_v == 128
+            and dtype in ("float16", "bfloat16")
         )
         use_production_pipeline = (
             os.environ.get(
@@ -1616,10 +1875,18 @@ def _gated_deltanet_prefill_kernel_call(
             )(128)
             w, u = recompute_fn(k, v, beta, A)
         else:
-            prepare_fn = _prefill_prepare_w_u_bthd_tl(
-                batch, head, seq_len, chunk_size, dim_k, dim_v, dtype
-            )(fused_num_stages, fused_threads)
-            w, u = prepare_fn(k, v, g_cum, beta)
+            prepare_builder = (
+                _prefill_prepare_w_u_bthd_musa_tl
+                if get_backend_name() == "musa"
+                else _prefill_prepare_w_u_bthd_tl
+            )
+            prepare_fn = prepare_builder(batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)(
+                fused_num_stages, fused_threads
+            )
+            if get_backend_name() == "musa":
+                w, u = prepare_fn(k, v, g_cum, beta)
+            else:
+                w, u = prepare_fn(k, v, g_cum, beta)
         group_chunks = 64
         use_scan_h = (
             batch == 1
@@ -1678,21 +1945,26 @@ def _gated_deltanet_prefill_kernel_call(
                 dim_k,
                 dim_v,
                 dtype,
-                block_v=h_block_v,
+                block_v=32 if get_backend_name() == "musa" and dim_v == 128 else h_block_v,
             )(h_num_stages, h_threads)
             S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
             states, v_new = h_fn(k, g_cum, w, u, S_0)
         o = o_fn(q, k, g_cum, states, v_new)
-        final_state = states[:, :, -1, :, :].contiguous()
+        final_state = states[:, :, -1, :, :].to(q.dtype).contiguous()
         return o, final_state
 
     if chunk_size == 64 and batch * head > 64:
         g_cum = _prefill_chunk_local_cumsum_bhtd_tl(batch, head, seq_len, chunk_size, dtype)(g)
     else:
         g_cum = _chunk_local_cumsum(g.float(), chunk_size).to(g.dtype)
-    prepare_fn = _prefill_prepare_w_u_bhtd_tl(
-        batch, head, seq_len, chunk_size, dim_k, dim_v, dtype
-    )(fused_num_stages, fused_threads)
+    prepare_builder = (
+        _prefill_prepare_w_u_bthd_musa_tl
+        if get_backend_name() == "musa"
+        else _prefill_prepare_w_u_bhtd_tl
+    )
+    prepare_fn = prepare_builder(batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)(
+        fused_num_stages, fused_threads
+    )
     h_fn = _h_recurrence_tl(
         batch,
         head,
@@ -1705,7 +1977,16 @@ def _gated_deltanet_prefill_kernel_call(
     )(h_num_stages, h_threads)
     o_fn = _output_o_tl(batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)(o_threads)
     S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-    w, u = prepare_fn(k, v, g_cum, beta)
+    if get_backend_name() == "musa":
+        k_prepare = k.permute(0, 2, 1, 3).contiguous()
+        v_prepare = v.permute(0, 2, 1, 3).contiguous()
+        g_prepare = g_cum.permute(0, 2, 1).contiguous()
+        beta_prepare = beta.permute(0, 2, 1).contiguous()
+        w, u = prepare_fn(k_prepare, v_prepare, g_prepare, beta_prepare)
+        w = w.permute(0, 2, 1, 3).contiguous()
+        u = u.permute(0, 2, 1, 3).contiguous()
+    else:
+        w, u = prepare_fn(k, v, g_cum, beta)
     states, v_new = h_fn(k, g_cum, w, u, S_0)
     o = o_fn(q, k, g_cum, states, v_new)
     final_state = states[:, :, -1, :, :].contiguous()
@@ -1729,7 +2010,7 @@ class GatedDeltaNetPrefillFwdKernel(Kernel):
         tune: Whether to autotune.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,
@@ -1796,9 +2077,17 @@ class GatedDeltaNetPrefillFwdKernel(Kernel):
         else:
             h_block_v = 0
             h_num_stages = 2
-            h_threads = 256
+            h_threads = 128 if get_backend_name() == "musa" else 256
+        # MP31 SQMMA requires Tile_N to be a multiple of 32; the generic 16-wide
+        # choice would fail compilation for dim_v=128.
+        if get_backend_name() == "musa" and self.dim_v == 128 and h_block_v == 16:
+            h_block_v = 32
         fused_threads = 128 if self.chunk_size >= 64 else 256
-        o_threads = 128 if self.chunk_size == 64 and streams > 64 else 256
+        if get_backend_name() == "musa":
+            # MP31's small-chunk layout is stable with the lower output launch width.
+            o_threads = 64 if self.chunk_size < 64 else (128 if streams > 64 else 256)
+        else:
+            o_threads = 128 if self.chunk_size == 64 and streams > 64 else 256
         return {
             "fused_num_stages": 2,
             "fused_threads": fused_threads,

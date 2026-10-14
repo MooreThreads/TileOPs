@@ -21,6 +21,7 @@ from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ..v_tile import GEMM_MIN_N
 from .gla_fwd import _gla_precompute_g_kernel
@@ -196,6 +197,25 @@ def _gla_bwd_fused_kernel(
     BT = chunk_size
     BC = sub_chunk_size
     NS = BT // BC
+    use_musa = get_backend_name() == "musa"
+
+    @T.macro
+    def fused_gemm(a, b, c, transpose_A=False, transpose_B=False, policy=None):
+        if use_musa:
+            for kk in T.Serial(a.shape[0] if transpose_A else a.shape[1]):
+                for i, j in T.Parallel(c.shape[0], c.shape[1]):
+                    c[i, j] += T.cast(a[kk, i] if transpose_A else a[i, kk], accum_dtype) * T.cast(
+                        b[j, kk] if transpose_B else b[kk, j], accum_dtype
+                    )
+        else:
+            T.gemm(
+                a,
+                b,
+                c,
+                transpose_A=transpose_A,
+                transpose_B=transpose_B,
+                policy=T.GemmWarpPolicy.FullRow,
+            )
 
     @tilelang.jit(
         out_idx=[-4, -3, -2, -1],
@@ -275,12 +295,12 @@ def _gla_bwd_fused_kernel(
                 # dv_intra = A^T @ do (keep in fragment for phase B)
                 dv_frag = T.alloc_fragment([BT, dim_v], accum_dtype)
                 T.fill(dv_frag, 0.0)
-                T.gemm(A_s, do_s, dv_frag, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
+                fused_gemm(A_s, do_s, dv_frag, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
 
                 # dA = scale * do @ v^T, causal (overwrite A_s)
                 dA_frag = T.alloc_fragment([BT, BT], accum_dtype)
                 T.fill(dA_frag, 0.0)
-                T.gemm(do_s, v_s, dA_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                fused_gemm(do_s, v_s, dA_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 for i_t, i_j in T.Parallel(BT, BT):
                     A_s[i_t, i_j] = T.cast(
                         T.if_then_else(
@@ -292,7 +312,11 @@ def _gla_bwd_fused_kernel(
                     )
 
                 # Sub-chunk tiled dq_intra (kept in fragment)
-                dq_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
+                dq_frag = (
+                    T.alloc_shared([BT, dim_k], accum_dtype)
+                    if use_musa
+                    else T.alloc_fragment([BT, dim_k], accum_dtype)
+                )
                 T.fill(dq_frag, 0.0)
                 dA_sub = T.alloc_shared([BC, BC], dtype)
                 k_shifted_sub = T.alloc_shared([BC, dim_k], dtype)
@@ -317,7 +341,9 @@ def _gla_bwd_fused_kernel(
                                     ),
                                     dtype,
                                 )
-                            T.gemm(dA_sub, k_shifted_sub, dq_sub, policy=T.GemmWarpPolicy.FullRow)
+                            fused_gemm(
+                                dA_sub, k_shifted_sub, dq_sub, policy=T.GemmWarpPolicy.FullRow
+                            )
 
                     for i_local, i_k in T.Parallel(BC, dim_k):
                         dq_sub[i_local, i_k] = dq_sub[i_local, i_k] * T.exp2(
@@ -348,7 +374,11 @@ def _gla_bwd_fused_kernel(
                         dq_frag[s_i * BC + i_local, i_k] = dq_sub[i_local, i_k]
 
                 # Sub-chunk tiled dk_intra (kept in fragment)
-                dk_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
+                dk_frag = (
+                    T.alloc_shared([BT, dim_k], accum_dtype)
+                    if use_musa
+                    else T.alloc_fragment([BT, dim_k], accum_dtype)
+                )
                 T.fill(dk_frag, 0.0)
                 q_shifted_sub = T.alloc_shared([BC, dim_k], dtype)
 
@@ -372,7 +402,7 @@ def _gla_bwd_fused_kernel(
                                     ),
                                     dtype,
                                 )
-                            T.gemm(
+                            fused_gemm(
                                 dA_sub,
                                 q_shifted_sub,
                                 dk_sub,
@@ -434,7 +464,7 @@ def _gla_bwd_fused_kernel(
                         dtype,
                     )
 
-                T.gemm(k_gated_s, dh_cast_s, dv_frag, policy=T.GemmWarpPolicy.FullRow)
+                fused_gemm(k_gated_s, dh_cast_s, dv_frag, policy=T.GemmWarpPolicy.FullRow)
                 # dv_frag now = dv_intra + dv_inter (accumulated)
                 for i_t, i_v in T.Parallel(BT, dim_v):
                     dv_out[i_b, chunk_start + i_t, i_h, i_v] = dv_frag[i_t, i_v]
@@ -443,7 +473,7 @@ def _gla_bwd_fused_kernel(
                 dq_inter_s = T.alloc_shared([BT, dim_k], accum_dtype)
                 dq_inter_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
                 T.fill(dq_inter_frag, 0.0)
-                T.gemm(
+                fused_gemm(
                     do_s, h_cast_s, dq_inter_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
                 )
                 for i_t, i_k in T.Parallel(BT, dim_k):
@@ -461,7 +491,7 @@ def _gla_bwd_fused_kernel(
                 dk_inter_s = T.alloc_shared([BT, dim_k], accum_dtype)
                 dk_inter_frag = T.alloc_fragment([BT, dim_k], accum_dtype)
                 T.fill(dk_inter_frag, 0.0)
-                T.gemm(
+                fused_gemm(
                     v_s, dh_cast_s, dk_inter_frag, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
                 )
                 for i_t, i_k in T.Parallel(BT, dim_k):
@@ -533,7 +563,7 @@ class GLABwdKernel(Kernel):
     h is read from forward's h_out (no recomputation needed).
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,

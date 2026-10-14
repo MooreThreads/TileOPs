@@ -8,11 +8,17 @@ from tests.ops.gla_test_utils import (
 )
 from tests.test_base import FixtureBase
 from tileops.ops import GLABwdOp, GLAFwdOp
+from tileops.utils import get_backend_name
+
+DEVICE = get_backend_name()
 
 
 def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
     """Compute GLA backward gradients via autograd on the differentiable forward."""
     sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
+    device = q.device
+    if device.type == "musa":
+        do, q, k, v, g = (tensor.cpu() for tensor in (do, q, k, v, g))
 
     q_ = q.float().detach().requires_grad_(True)
     k_ = k.float().detach().requires_grad_(True)
@@ -22,13 +28,15 @@ def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0):
     o = gla_fwd_chunked_torch(q_, k_, v_, g_, chunk_size, scale=sc)
     loss = (o * do.float()).sum()
     dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
-    return dq, dk, dv, dg
+    return tuple(grad.to(device) for grad in (dq, dk, dv, dg))
 
 
 try:
     from fla.ops.gla import chunk_gla
 except ImportError:
     chunk_gla = None
+
+FLA_REFERENCE_AVAILABLE = chunk_gla is not None and DEVICE == "cuda"
 
 # Pure-torch differentiable forward (BTHD layout) for autograd-based reference
 
@@ -90,11 +98,11 @@ def test_gla_bwd(
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
 
     # GLA layout: BTHD — [B, T, H, K/V]
-    q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
-    do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, T, H, K, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype) * 0.1
+    g = -torch.rand(B, T, H, K, device=DEVICE, dtype=dtype)
+    do = torch.randn(B, T, H, V, device=DEVICE, dtype=dtype) * 0.1
 
     scale = K**-0.5
 
@@ -103,7 +111,7 @@ def test_gla_bwd(
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}
 
     # --- FLA reference via autograd (if available) ---
-    if chunk_gla is not None:
+    if FLA_REFERENCE_AVAILABLE:
         fla_dq, fla_dk, fla_dv, fla_dg = _fla_autograd_bwd(do, q, k, v, g, scale=scale)
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
 
@@ -122,7 +130,7 @@ def test_gla_bwd(
     o_fwd, _ = fwd_op.forward(q, k, v, g)
     h = fwd_op.kernel._h_out  # [B, NT+1, H, K, V] in fp32
 
-    dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
+    dht = torch.zeros(B, H, K, V, device=DEVICE, dtype=torch.float32)
     bwd_op = GLABwdOp(chunk_size=BC, scale=scale, tune=tune)
     op_dq, op_dk, op_dv, op_dg = bwd_op.forward(q, k, v, g, h, do, dht)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
@@ -140,7 +148,7 @@ def test_gla_bwd(
         )
 
     # Validate TileOPs vs FLA (if available)
-    if chunk_gla is not None:
+    if FLA_REFERENCE_AVAILABLE:
         for name in ["dq", "dk", "dv", "dg"]:
             cos = cosine_sim(fla_grads[name], op_grads[name])
             print(f"  TileOPs vs FLA {name}: cosine={cos:.6f}")

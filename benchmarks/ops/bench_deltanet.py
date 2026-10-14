@@ -24,7 +24,10 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.ops import DeltaNetAutogradOp, DeltaNetBwdOp, DeltaNetFwdOp
+from tileops.utils import get_backend_name
 from workloads.linear_attention import DeltaNetFwdWorkload
+
+DEVICE = get_backend_name()
 
 
 def _to_fla_layout(q, k, v, beta):
@@ -58,6 +61,8 @@ def test_deltanet_vs_fla_fwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if DEVICE == "musa":
+        pytest.skip("FLA Triton baseline is unsupported on MUSA")
     test = DeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     inputs = test.gen_inputs()  # q, k, v, beta (BHSD)
 
@@ -93,14 +98,16 @@ def test_deltanet_vs_fla_bwd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if DEVICE == "musa":
+        pytest.skip("FLA Triton baseline is unsupported on MUSA")
     test = DeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
 
     B, H, S, DK, DV, BC = batch, heads, seq_len, dim_k, dim_v, chunk_size
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
+    beta = torch.rand(B, H, S, device=DEVICE, dtype=dtype) * 0.5
+    do = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
 
     # --- TileOPs: fwd to get S, Aw, Au, w, u; then profile bwd only ---
     fwd_op = DeltaNetFwdOp(chunk_size=BC)
@@ -145,6 +152,8 @@ def test_deltanet_vs_fla_autograd(
     dtype: torch.dtype,
     tune: bool,
 ) -> None:
+    if DEVICE == "musa":
+        pytest.skip("FLA Triton baseline is unsupported on MUSA")
     test = DeltaNetFwdWorkload(batch, heads, seq_len, dim_k, dim_v, chunk_size, dtype)
     inputs = test.gen_inputs()
 

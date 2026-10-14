@@ -18,6 +18,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.constants import LOG2E
+from tileops.utils import get_backend_name
 
 __all__ = ["fused_prepare_compute_w_u_tl"]
 
@@ -52,6 +53,8 @@ def fused_prepare_compute_w_u_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _fused_func(num_stages, threads=128):
+        use_musa = get_backend_name() == "musa"
+
         @T.macro
         def _fused_body(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),
@@ -109,11 +112,21 @@ def fused_prepare_compute_w_u_tl(
 
                 for _r in T.Serial(num_rounds):
                     T.clear(temp_frag)
-                    T.gemm(P_shared, S_shared, temp_frag)
+                    if use_musa:
+                        for k in T.Serial(block_C):
+                            for i, j in T.Parallel(block_C, block_C):
+                                temp_frag[i, j] += P_shared[i, k] * S_shared[k, j]
+                    else:
+                        T.gemm(P_shared, S_shared, temp_frag)
                     for i, j in T.Parallel(block_C, block_C):
                         S_shared[i, j] = S_shared[i, j] + temp_frag[i, j]
                     T.clear(temp_frag)
-                    T.gemm(P_shared, P_shared, temp_frag)
+                    if use_musa:
+                        for k in T.Serial(block_C):
+                            for i, j in T.Parallel(block_C, block_C):
+                                temp_frag[i, j] += P_shared[i, k] * P_shared[k, j]
+                    else:
+                        T.gemm(P_shared, P_shared, temp_frag)
                     T.copy(temp_frag, P_shared)
 
                 # S_shared = A_g^{-1}; write to both Aw and Au (same matrix)

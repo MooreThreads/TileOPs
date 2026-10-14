@@ -5,6 +5,7 @@ import torch
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla import GLABwdKernel, GLAFwdKernel
 from tileops.perf.profile import tensor_core_roof
+from tileops.utils import is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from .._validation import check_tensor_shape
@@ -21,8 +22,8 @@ def _resolve_gla_bthd(
     chunk_size: int,
     do: Optional[torch.Tensor] = None,
 ) -> tuple[int, int, int, int, int, torch.dtype]:
-    if not all(tensor.is_cuda for tensor in (q, k, v, g)):
-        raise ValueError("q, k, v, and g must be CUDA tensors")
+    if not all(is_backend_tensor(tensor) for tensor in (q, k, v, g)):
+        raise ValueError("q, k, v, and g must be backend tensors")
     if q.ndim != 4:
         raise ValueError("q must have shape [batch, seq_len, heads, dim_k]")
     batch, seq_len, heads, dim_k = q.shape

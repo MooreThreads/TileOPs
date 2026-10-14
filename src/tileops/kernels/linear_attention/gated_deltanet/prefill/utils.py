@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2025, Songlin Yang, Yu Zhang
 # Licensed under the MIT License.
-# Adapted and modified for TileOps GatedDeltaNet prefill integration.
+# Adapted and modified for TileOPs GatedDeltaNet prefill integration.
 
 import functools
 from collections import OrderedDict

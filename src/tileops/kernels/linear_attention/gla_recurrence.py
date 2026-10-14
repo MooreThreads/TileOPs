@@ -23,6 +23,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils.backend import get_backend_name
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
@@ -43,6 +44,7 @@ def _gla_decode_tl(
     scale: float = -1.0,
 ):
     accum_dtype = "float32"
+    disable_tma = get_backend_name() == "musa"
     if dim_k % k_tile != 0:
         raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
 
@@ -53,6 +55,8 @@ def _gla_decode_tl(
         out_idx=[-2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: get_backend_name() == "musa",
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: get_backend_name() != "musa",
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -96,7 +100,7 @@ def _gla_decode_tl(
                 # lower reliably without sacrificing recurrent decode numerics.
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o, disable_tma=disable_tma)
                     for kk in T.Serial(k_tile):
                         gk_val = gk_shared[kt * k_tile + kk]
                         alpha_i = T.exp2(gk_val * LOG2E)
@@ -121,7 +125,7 @@ def _gla_decode_tl(
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
                 # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
+                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=disable_tma)
                     for kk, j in T.Parallel(k_tile, dim_v):
                         new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
                             T.exp2(gk_shared[kt * k_tile + kk] * LOG2E)
@@ -193,7 +197,7 @@ class GLADecodeKernel(Kernel):
     decode numerics aligned with the fp32 reference.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,
@@ -331,6 +335,8 @@ def _gla_decode_fp32_tl(
         out_idx=[-2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: get_backend_name() == "musa",
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: get_backend_name() != "musa",
         },
         compile_flags=["-O3"],
     )
@@ -454,7 +460,7 @@ class GLADecodeFP32Kernel(Kernel):
     decode.  Intended for fp32 dtype only.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,

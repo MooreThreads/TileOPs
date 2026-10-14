@@ -1,6 +1,6 @@
 # Copyright (c) 2026 The Qwen team, Alibaba Group.
 # Licensed under the MIT License.
-# Adapted and modified for TileOps GatedDeltaNet prefill integration.
+# Adapted and modified for TileOPs GatedDeltaNet prefill integration.
 
 import functools
 

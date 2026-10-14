@@ -14,17 +14,19 @@ from tileops.linear_attention import (
     DeltaNetBwdOp,
     DeltaNetFwdOp,
 )
+from tileops.utils import get_backend_name
 
+DEVICE = get_backend_name()
 B, H, S, DK, DV, BC = 1, 2, 256, 64, 64, 64
 
 
 def _inputs(dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
     torch.manual_seed(42)
     scale = 0.1
-    q = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * scale
-    k = torch.randn(B, H, S, DK, device="cuda", dtype=dtype) * scale
-    v = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * scale
-    beta = torch.rand(B, H, S, device="cuda", dtype=dtype) * 0.5
+    q = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * scale
+    k = torch.randn(B, H, S, DK, device=DEVICE, dtype=dtype) * scale
+    v = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * scale
+    beta = torch.rand(B, H, S, device=DEVICE, dtype=dtype) * 0.5
     return q, k, v, beta
 
 
@@ -32,7 +34,7 @@ def _inputs(dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
 def test_deltanet_autograd_matches_the_ops_it_wraps() -> None:
     dtype = torch.float16
     q, k, v, beta = _inputs(dtype)
-    do = torch.randn(B, H, S, DV, device="cuda", dtype=dtype) * 0.1
+    do = torch.randn(B, H, S, DV, device=DEVICE, dtype=dtype) * 0.1
 
     o_ref, s, aw, au, w, u = DeltaNetFwdOp(chunk_size=BC).forward(q, k, v, beta)
     grads_ref = DeltaNetBwdOp(chunk_size=BC).forward(do, q, k, v, beta, s, aw, au, w, u)

@@ -25,6 +25,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ..autotune import (
     default_h_block_v,
@@ -73,6 +74,8 @@ def _h_recurrence_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(num_stages, threads=128):
+        use_musa = get_backend_name() == "musa"
+
         @T.prim_func
         def h_recurrence_kernel(
             k: T.Tensor([batch, head, seq_len, dim_k], dtype),
@@ -113,7 +116,13 @@ def _h_recurrence_tl(
 
                     # v_new_tile = u_tile - (w @ h_tile) * exp(g + g_last)
                     T.clear(ws_frag)
-                    T.gemm(w_c, h_c, ws_frag)
+                    if use_musa:
+                        for i, j in T.Parallel(block_C, BV):
+                            ws_frag[i, j] = 0.0
+                            for d in T.Serial(dim_k):
+                                ws_frag[i, j] += w_c[i, d] * h_c[d, j]
+                    else:
+                        T.gemm(w_c, h_c, ws_frag)
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j] * T.exp2(
                             (g_c[i] + g_c[block_C - 1]) * LOG2E
@@ -131,13 +140,18 @@ def _h_recurrence_tl(
                         v_new_c[n, j] = v_new_c[n, j] * T.exp2((g_c[block_C - 1] - g_c[n]) * LOG2E)
                     for i, j in T.Parallel(dim_k, BV):
                         h_next_frag[i, j] = h_c[i, j] * T.exp2(g_c[block_C - 1] * LOG2E)
-                    T.gemm(
-                        k_c,
-                        v_new_c,
-                        h_next_frag,
-                        transpose_A=True,
-                        policy=T.GemmWarpPolicy.FullRow,
-                    )
+                    if use_musa:
+                        for i, j in T.Parallel(dim_k, BV):
+                            for n in T.Serial(block_C):
+                                h_next_frag[i, j] += k_c[n, i] * v_new_c[n, j]
+                    else:
+                        T.gemm(
+                            k_c,
+                            v_new_c,
+                            h_next_frag,
+                            transpose_A=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
                     T.copy(h_next_frag, h_c)
                     for i, j in T.Parallel(dim_k, BV):
                         S[bid, hid, t + 1, i, v_offset + j] = h_c[i, j]
@@ -177,6 +191,8 @@ def _output_o_tl(
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(threads=128):
+        use_musa = get_backend_name() == "musa"
+
         @T.prim_func
         def output_o_kernel(
             q: T.Tensor([batch, head, seq_len, dim_k], dtype),
@@ -209,20 +225,40 @@ def _output_o_tl(
 
                 # o = (q @ h) * exp(g)
                 T.clear(o_frag)
-                T.gemm(q_c, h_c, o_frag)
-                for i, j in T.Parallel(block_C, dim_v):
-                    o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * LOG2E)
+                if not use_musa:
+                    T.gemm(q_c, h_c, o_frag)
+                    for i, j in T.Parallel(block_C, dim_v):
+                        o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * LOG2E)
 
                 # attn = causal(q @ k^T) * Gamma
-                T.clear(attn_frag)
-                T.gemm(q_c, k_c, attn_frag, transpose_B=True)
-                for i, j in T.Parallel(block_C, block_C):
-                    attn[i, j] = T.if_then_else(
-                        i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E), T.float32(0.0)
-                    )
+                if not use_musa:
+                    T.clear(attn_frag)
+                    T.gemm(q_c, k_c, attn_frag, transpose_B=True)
+                    for i, j in T.Parallel(block_C, block_C):
+                        attn[i, j] = T.if_then_else(
+                            i >= j,
+                            attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E),
+                            T.float32(0.0),
+                        )
 
                 # o += attn @ v_new
-                T.gemm(attn, v_new_c, o_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        o_frag[i, j] = 0.0
+                        for d in T.Serial(dim_k):
+                            o_frag[i, j] += q_c[i, d] * h_c[d, j]
+                        o_frag[i, j] = o_frag[i, j] * T.exp2(g_c[i] * LOG2E)
+                        for m in T.Serial(block_C):
+                            if i >= m:
+                                dot = T.alloc_var(T.float32)
+                                dot = T.float32(0.0)
+                                for d in T.Serial(dim_k):
+                                    dot += q_c[i, d] * k_c[m, d]
+                                o_frag[i, j] += (
+                                    dot * T.exp2((g_c[i] - g_c[m]) * LOG2E) * v_new_c[m, j]
+                                )
+                else:
+                    T.gemm(attn, v_new_c, o_frag)
                 T.copy(
                     o_frag, o[bid, hid, tid * block_C : (tid + 1) * block_C, :], disable_tma=True
                 )
@@ -295,7 +331,7 @@ def _gated_deltanet_fwd_kernel_call(
 
 
 class GatedDeltaNetFwdKernel(Kernel):
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,
@@ -414,7 +450,7 @@ class GatedDeltaNetFwdProductionKernel(Kernel):
     Runs the partitioned production prefill pipeline.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     def __init__(
         self,

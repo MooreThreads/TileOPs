@@ -1,9 +1,13 @@
 import pytest
 import torch
 
+from benchmarks.baselines import prepare_fla_import
 from tests.test_base import FixtureBase, TestBase
 from tileops.ops import GLADecodeFwdOp
+from tileops.utils import get_backend_name
 from workloads.linear_attention import GLADecodeWorkload, gla_decode_torch
+
+DEVICE = get_backend_name()
 
 
 class GLADecodeTest(GLADecodeWorkload, TestBase):
@@ -11,6 +15,7 @@ class GLADecodeTest(GLADecodeWorkload, TestBase):
 
 
 try:
+    prepare_fla_import()
     from fla.ops.gla import fused_recurrent_gla
 except ImportError:
     fused_recurrent_gla = None
@@ -75,14 +80,14 @@ def test_gla_decode_multi_step(
     op = GLADecodeFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
 
-    state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
-    state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
+    state_op = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
+    state_ref = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
 
     for _ in range(num_steps):
-        q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-        gk = -torch.rand(B, H, DK, device="cuda", dtype=dtype)
+        q = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        k = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        v = torch.randn(B, H, DV, device=DEVICE, dtype=dtype) * 0.1
+        gk = -torch.rand(B, H, DK, device=DEVICE, dtype=dtype)
 
         o_ref, state_ref = gla_decode_torch(q, k, v, gk, state_ref)
         o_ref = o_ref.to(dtype)
@@ -106,17 +111,19 @@ def test_gla_decode_vs_fla(
 ) -> None:
     """Compare TileOPs GLA decode against FLA fused_recurrent_gla with T=1."""
     if fused_recurrent_gla is None:
-        pytest.skip("FLA not installed")
+        pytest.skip("requires optional dependencies")
+    if DEVICE == "musa":
+        pytest.skip("FLA Triton baseline is unsupported on MUSA")
 
     torch.manual_seed(42)
     B, H, DK, DV = batch, heads, dim_k, dim_v
     scale = DK**-0.5
 
-    q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-    gk = -torch.rand(B, H, DK, device="cuda", dtype=dtype)
-    state = torch.randn(B, H, DK, DV, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+    k = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+    v = torch.randn(B, H, DV, device=DEVICE, dtype=dtype) * 0.1
+    gk = -torch.rand(B, H, DK, device=DEVICE, dtype=dtype)
+    state = torch.randn(B, H, DK, DV, device=DEVICE, dtype=dtype) * 0.1
 
     op = GLADecodeFwdOp(scale=scale, tune=tune)
     with torch.no_grad():

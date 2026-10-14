@@ -8,7 +8,11 @@ implementation as baseline, so CI is never blocked by a missing optional depende
 
 import torch
 
-from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
+from benchmarks.baselines import (
+    TORCH_COMPILE_TAG,
+    compiled_reference,
+    prepare_fla_import,
+)
 from benchmarks.benchmark_base import (
     ManifestBenchmark,
     then_dtype,
@@ -39,12 +43,17 @@ def gla_decode_torch(
 
     alpha = torch.exp(gk)
     new_state = alpha.unsqueeze(-1) * state + k.unsqueeze(-1) * v.unsqueeze(-2)
-    o = scale * torch.einsum("bhk,bhkv->bhv", q, new_state)
+    batch, heads = q.shape[:2]
+    q_flat = q.reshape(batch * heads, 1, DK).contiguous()
+    state_flat = new_state.reshape(batch * heads, DK, -1).contiguous()
+    o = scale * (q_flat.squeeze(1).unsqueeze(-1) * state_flat).sum(dim=1)
+    o = o.reshape(batch, heads, -1)
 
     return o, new_state
 
 
 try:
+    prepare_fla_import()
     from fla.ops.gla import fused_recurrent_gla
 except ImportError:
     fused_recurrent_gla = None

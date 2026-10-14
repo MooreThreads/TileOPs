@@ -24,6 +24,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ..v_tile import resolve_block_v
 
@@ -55,11 +56,13 @@ def _bwd_parallel_tl(
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-7, -6, -5, -4, -3, -2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TIR_DISABLE_VECTORIZE: use_musa,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -121,7 +124,12 @@ def _bwd_parallel_tl(
 
                 # Recompute forward: v_new_c, o_part, attn
                 T.clear(ws_frag)
-                T.gemm(w_c, h_c, ws_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        for d in T.Serial(dim_k):
+                            ws_frag[i, j] += w_c[i, d] * h_c[d, j]
+                else:
+                    T.gemm(w_c, h_c, ws_frag)
                 for i in T.Parallel(block_C):
                     exp_g[i] = T.exp2(g_c[i] * LOG2E)
                 for i, j in T.Parallel(block_C, dim_v):
@@ -137,12 +145,22 @@ def _bwd_parallel_tl(
                 )
 
                 T.clear(ws_frag)
-                T.gemm(q_c, h_c, ws_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        for d in T.Serial(dim_k):
+                            ws_frag[i, j] += q_c[i, d] * h_c[d, j]
+                else:
+                    T.gemm(q_c, h_c, ws_frag)
                 for i, j in T.Parallel(block_C, dim_v):
                     o_part[i, j] = ws_frag[i, j] * exp_g[i]
 
                 T.clear(attn_frag)
-                T.gemm(q_c, k_c, attn_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for d in T.Serial(dim_k):
+                            attn_frag[i, j] += q_c[i, d] * k_c[j, d]
+                else:
+                    T.gemm(q_c, k_c, attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     attn[i, j] = T.if_then_else(
                         i >= j, attn_frag[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E), T.float32(0.0)
@@ -152,12 +170,22 @@ def _bwd_parallel_tl(
 
                 # Step 2: d_v_new_c = attn^T @ do_c (partial du)
                 T.clear(d_v_new_frag)
-                T.gemm(attn, do_c, d_v_new_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        for m in T.Serial(block_C):
+                            d_v_new_frag[i, j] += attn[m, i] * do_c[m, j]
+                else:
+                    T.gemm(attn, do_c, d_v_new_frag, transpose_A=True)
                 T.copy(d_v_new_frag, d_v_new_c)
 
                 # d_attn = do_c @ v_new_c^T (causal masked)
                 T.clear(d_attn_frag)
-                T.gemm(do_c, v_new_c, d_attn_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for m in T.Serial(dim_v):
+                            d_attn_frag[i, j] += do_c[i, m] * v_new_c[j, m]
+                else:
+                    T.gemm(do_c, v_new_c, d_attn_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     d_attn[i, j] = T.if_then_else(i >= j, d_attn_frag[i, j], T.float32(0.0))
 
@@ -168,10 +196,20 @@ def _bwd_parallel_tl(
                 T.reduce_sum(o_part, dg_c, dim=1)
                 for i, j in T.Parallel(block_C, dim_v):
                     o_part[i, j] = do_c[i, j] * exp_g[i]
-                T.gemm(o_part, h_c, d_q_c_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(dim_v):
+                            d_q_c_frag[i, j] += o_part[i, m] * h_c[j, m]
+                else:
+                    T.gemm(o_part, h_c, d_q_c_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, dim_k):
                     P[i, j] = q_c[i, j] * exp_g[i]
-                T.gemm(P, do_c, dh_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(dim_k, dim_v):
+                        for m in T.Serial(block_C):
+                            dh_frag[i, j] += P[m, i] * do_c[m, j]
+                else:
+                    T.gemm(P, do_c, dh_frag, transpose_A=True)
 
                 # Step 4: dg from Γ, dq/dk from d_attn*Gamma
                 for i, j in T.Parallel(block_C, block_C):
@@ -188,23 +226,43 @@ def _bwd_parallel_tl(
                         i >= j, d_attn[i, j] * T.exp2((g_c[i] - g_c[j]) * LOG2E), T.float32(0.0)
                     )
 
-                T.gemm(d_attn, k_c, d_q_c_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(block_C):
+                            d_q_c_frag[i, j] += d_attn[i, m] * k_c[m, j]
+                else:
+                    T.gemm(d_attn, k_c, d_q_c_frag)
                 T.copy(d_q_c_frag, d_q_c)
 
                 T.clear(d_k_c_frag)
-                T.gemm(d_attn, q_c, d_k_c_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(block_C):
+                            d_k_c_frag[i, j] += d_attn[m, i] * q_c[m, j]
+                else:
+                    T.gemm(d_attn, q_c, d_k_c_frag, transpose_A=True)
                 T.copy(d_k_c_frag, d_k_c)
 
                 # Step 5: dh from w/v_new, dw, dg from P
                 for i, j in T.Parallel(block_C, dim_k):
                     P[i, j] = w_c[i, j] * T.exp2((g_c[i] + g_c[block_C - 1]) * LOG2E)
                 T.clear(dP_frag)
-                T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for m in T.Serial(dim_v):
+                            dP_frag[i, j] += d_v_new_c[i, m] * h_c[j, m]
+                else:
+                    T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, dim_k):
                     dP[i, j] = -dP_frag[i, j]
                 dh_sub_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
                 T.clear(dh_sub_frag)
-                T.gemm(P, d_v_new_c, dh_sub_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(dim_k, dim_v):
+                        for m in T.Serial(block_C):
+                            dh_sub_frag[i, j] += P[m, i] * d_v_new_c[m, j]
+                else:
+                    T.gemm(P, d_v_new_c, dh_sub_frag, transpose_A=True)
                 for i, j in T.Parallel(dim_k, dim_v):
                     dh_frag[i, j] -= dh_sub_frag[i, j]
                 for i, j in T.Parallel(block_C, dim_k):
@@ -246,9 +304,7 @@ def _bwd_parallel_tl(
     return _func
 
 
-# Split kernel: dh_recurrence_bwd (sequential backward over chunks)
-
-
+@functools.lru_cache(maxsize=32)
 def _make_dh_correction_from_carry_macro(
     block_C: int,
     dim_k: int,
@@ -264,6 +320,8 @@ def _make_dh_correction_from_carry_macro(
         v_new_c,
         h_c,
         dh_buf,
+        dh_buf_du,
+        dh_buf_dk,
         k_scaled,
         dP,
         dg_c,
@@ -289,7 +347,7 @@ def _make_dh_correction_from_carry_macro(
             k_scaled[pn, sk] = k_c[pn, sk] * T.exp2((g_c[block_C - 1] - g_c[pn]) * LOG2E)
 
         T.clear(du_corr_frag)
-        T.gemm(k_scaled, dh_buf, du_corr_frag)
+        T.gemm(k_scaled, dh_buf_du, du_corr_frag)
         T.copy(du_corr_frag, du_corr_c)
         T.copy(
             du_corr_c,
@@ -310,7 +368,7 @@ def _make_dh_correction_from_carry_macro(
             )
 
         T.clear(dP_frag)
-        T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
+        T.gemm(v_new_c, dh_buf_dk, dP_frag, transpose_B=True)
         T.copy(dP_frag, dP)
         for n, kk in T.Parallel(block_C, dim_k):
             dk_corr_partial[bid, hid, vid, chunk_offset + n, kk] = dP[n, kk] * T.exp2(
@@ -351,18 +409,7 @@ def _dh_recurrence_bwd_tl(
     dtype: str = "float32",
     block_v: int = 0,
 ):
-    """Sequential backward dh recurrence with corrections.
-
-    Grid: (num_v_tiles, batch, head) — sequential over chunks (backward),
-    parallel over V tiles.
-    Reads dh_local from bwd_parallel, propagates dh backward, and computes
-    corrections for dk, du, dg that depend on dh_buf from other chunks.
-
-    Outputs: dk_correction_partial, du_correction, dg_correction_partial,
-    dw_correction_partial. The partial dk/dg/dw outputs must be reduced over
-    the V-tile dimension by the caller. This keeps the per-CTA state buffer
-    small enough for d128.
-    """
+    """Sequential backward dh recurrence with corrections."""
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
@@ -391,7 +438,6 @@ def _dh_recurrence_bwd_tl(
             v_new: T.Tensor([batch, head, seq_len, dim_v], dtype),
             S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], dtype),
             dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], dtype),
-            # Outputs
             dk_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len, dim_k], dtype),
             du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
             dg_corr_partial: T.Tensor([batch, head, num_v_tiles, seq_len], dtype),
@@ -407,9 +453,10 @@ def _dh_recurrence_bwd_tl(
                 dP = T.alloc_shared([block_C, dim_k], dtype)
                 dg_c = T.alloc_shared([block_C], dtype)
                 du_corr_c = T.alloc_shared([block_C, BV], dtype)
-                # dh_buf carries gradient from the next chunk (backward)
                 dh_buf = T.alloc_shared([dim_k, BV], dtype)
                 dh_h_tmp = T.alloc_shared([dim_k, BV], dtype)
+                dh_buf_du = T.alloc_shared([dim_k, BV], dtype)
+                dh_buf_dk = T.alloc_shared([dim_k, BV], dtype)
                 d_g_pos = T.alloc_shared([block_C], dtype)
                 d_g_last_partial = T.alloc_shared([dim_k], dtype)
                 d_g_last_scalar1 = T.alloc_shared([1], accum_dtype)
@@ -419,14 +466,17 @@ def _dh_recurrence_bwd_tl(
                 dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 v_offset = vid * BV
 
-                # Zero dh_buf (last chunk has no successor)
                 for i, j in T.Parallel(dim_k, BV):
                     dh_buf[i, j] = T.float32(0.0)
 
-                for t in T.Pipelined(num_chunks, num_stages=num_stages):
+                for t in T.Pipelined(
+                    num_chunks, num_stages=0 if get_backend_name() == "musa" else num_stages
+                ):
                     t_bwd = num_chunks - 1 - t
                     T.copy(
-                        g[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C], g_c, disable_tma=True
+                        g[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C],
+                        g_c,
+                        disable_tma=True,
                     )
                     T.copy(
                         k[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
@@ -449,12 +499,13 @@ def _dh_recurrence_bwd_tl(
                         dh_loc,
                         disable_tma=True,
                     )
-
-                    # dh = dh_local + dh_buf * exp(g_last)
                     for i, j in T.Parallel(dim_k, BV):
                         dh_frag[i, j] = dh_loc[i, j] + dh_buf[i, j] * T.exp2(
                             g_c[block_C - 1] * LOG2E
                         )
+                    for i, j in T.Parallel(dim_k, BV):
+                        dh_buf_du[i, j] = dh_buf[i, j]
+                        dh_buf_dk[i, j] = dh_buf[i, j]
 
                     correction_from_carry(
                         g_c,
@@ -462,6 +513,8 @@ def _dh_recurrence_bwd_tl(
                         v_new_c,
                         h_c,
                         dh_buf,
+                        dh_buf_du,
+                        dh_buf_dk,
                         k_scaled,
                         dP,
                         dg_c,
@@ -483,8 +536,6 @@ def _dh_recurrence_bwd_tl(
                         t_bwd * block_C,
                         v_offset,
                     )
-
-                    # Carry dh to next iteration
                     T.copy(dh_frag, dh_buf)
 
         return dh_recurrence_bwd_kernel
@@ -676,6 +727,8 @@ def _dh_correction_from_carry_tl(
                 du_corr_c = T.alloc_shared([block_C, BV], dtype)
                 dh_buf = T.alloc_shared([dim_k, BV], dtype)
                 dh_h_tmp = T.alloc_shared([dim_k, BV], dtype)
+                dh_buf_du = T.alloc_shared([dim_k, BV], dtype)
+                dh_buf_dk = T.alloc_shared([dim_k, BV], dtype)
                 du_corr_frag = T.alloc_fragment([block_C, BV], accum_dtype)
                 dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 d_g_pos = T.alloc_shared([block_C], dtype)
@@ -684,8 +737,16 @@ def _dh_correction_from_carry_tl(
                 d_g_last_scalar2 = T.alloc_shared([1], accum_dtype)
                 v_offset = vid * BV
 
-                T.copy(g[bid, hid, cid * block_C : (cid + 1) * block_C], g_c, disable_tma=True)
-                T.copy(k[bid, hid, cid * block_C : (cid + 1) * block_C, :], k_c, disable_tma=True)
+                T.copy(
+                    g[bid, hid, cid * block_C : (cid + 1) * block_C],
+                    g_c,
+                    disable_tma=True,
+                )
+                T.copy(
+                    k[bid, hid, cid * block_C : (cid + 1) * block_C, :],
+                    k_c,
+                    disable_tma=True,
+                )
                 T.copy(
                     v_new[
                         bid,
@@ -696,8 +757,18 @@ def _dh_correction_from_carry_tl(
                     v_new_c,
                     disable_tma=True,
                 )
-                T.copy(S[bid, hid, cid, :, v_offset : v_offset + BV], h_c, disable_tma=True)
-                T.copy(dh_carry_after[bid, hid, vid, cid, :, :], dh_buf, disable_tma=True)
+                T.copy(
+                    S[bid, hid, cid, :, v_offset : v_offset + BV],
+                    h_c,
+                    disable_tma=True,
+                )
+                T.copy(
+                    dh_carry_after[bid, hid, vid, cid, :, :],
+                    dh_buf,
+                    disable_tma=True,
+                )
+                T.copy(dh_buf, dh_buf_du)
+                T.copy(dh_buf, dh_buf_dk)
 
                 correction_from_carry(
                     g_c,
@@ -705,6 +776,8 @@ def _dh_correction_from_carry_tl(
                     v_new_c,
                     h_c,
                     dh_buf,
+                    dh_buf_du,
+                    dh_buf_dk,
                     k_scaled,
                     dP,
                     dg_c,
@@ -1164,7 +1237,7 @@ class GatedDeltaNetBwdKernel(Kernel):
       5. merge: combine dk paths and apply the chunk-local reverse cumsum to dg
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,

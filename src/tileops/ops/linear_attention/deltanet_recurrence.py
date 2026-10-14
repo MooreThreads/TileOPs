@@ -9,6 +9,7 @@ from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeKernel,
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -141,8 +142,8 @@ class DeltaNetDecodeFwdOp(Op):
         for name, tensor, expected in expected_shapes:
             if tuple(tensor.shape) != expected:
                 raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
-        if not all(tensor.is_cuda for tensor in (q, k, v, beta, state)):
-            raise ValueError("q, k, v, beta, and state must be CUDA tensors")
+        if not all(is_backend_tensor(tensor) for tensor in (q, k, v, beta, state)):
+            raise ValueError(backend_tensor_error("q, k, v, beta, and state"))
         self.batch = batch
         self.heads = heads
         self.dim_k = dim_k

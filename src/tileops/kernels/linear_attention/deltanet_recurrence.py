@@ -24,6 +24,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.deltanet_call import DeltaNetDecodeCall
+from tileops.utils import get_backend_name
 
 __all__ = [
     "DeltaNetDecodeFP32Kernel",
@@ -62,7 +63,7 @@ def _deltanet_decode_raw_cuda_flastyle_tl(
     k_chunk = dim_k // raw_group_size
 
     raw_compile_flags = ["-O3", "-DENABLE_BF16", "--use_fast_math"]
-    if raw_maxrregcount > 0:
+    if raw_maxrregcount > 0 and get_backend_name() != "musa":
         raw_compile_flags.append(f"--maxrregcount={raw_maxrregcount}")
 
     @tilelang.jit(
@@ -150,6 +151,8 @@ def _deltanet_decode_tl(
         out_idx=[-2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: get_backend_name() == "musa",
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: get_backend_name() != "musa",
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
@@ -165,8 +168,6 @@ def _deltanet_decode_tl(
             new_state: T.Tensor([batch, head, dim_k, dim_v], dtype),
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
-                h_tile = T.alloc_shared([k_tile, dim_v], dtype)
-                h_tile_o = T.alloc_shared([k_tile, dim_v], dtype)
                 sk_frag = T.alloc_fragment([dim_v], accum_dtype)
                 sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 v_new = T.alloc_shared([dim_v], accum_dtype)
@@ -180,13 +181,12 @@ def _deltanet_decode_tl(
                 # lower reliably without sacrificing recurrent decode numerics.
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
-                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile_o)
+                for kt in T.Serial(dim_k // k_tile):
                     for kk in T.Serial(k_tile):
                         k_val = T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype)
                         q_val = T.cast(q[bid, hid, kt * k_tile + kk], accum_dtype)
                         for j in T.Parallel(dim_v):
-                            h_val = T.cast(h_tile_o[kk, j], accum_dtype)
+                            h_val = T.cast(state[bid, hid, kt * k_tile + kk, j], accum_dtype)
                             sk_frag[j] = sk_frag[j] + k_val * h_val
                             sq_frag[j] = sq_frag[j] + q_val * h_val
 
@@ -208,14 +208,14 @@ def _deltanet_decode_tl(
 
                 # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
-                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(state[bid, hid, kt * k_tile, 0], h_tile)
-                    for kk, j in T.Parallel(k_tile, dim_v):
-                        new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
-                            T.cast(h_tile[kk, j], accum_dtype)
-                            + T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype) * v_new[j],
-                            dtype,
-                        )
+                for kt in T.Serial(dim_k // k_tile):
+                    for kk in T.Serial(k_tile):
+                        for j in T.Parallel(dim_v):
+                            new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
+                                T.cast(state[bid, hid, kt * k_tile + kk, j], accum_dtype)
+                                + T.cast(k[bid, hid, kt * k_tile + kk], accum_dtype) * v_new[j],
+                                dtype,
+                            )
 
         @T.prim_func
         def deltanet_decode(
@@ -296,7 +296,7 @@ class DeltaNetDecodeKernel(Kernel):
     decode numerics aligned with the fp32 reference.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
     general = True
 
     @classmethod
@@ -410,7 +410,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel):
     local storage.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 90]
 
     @classmethod
     def applies(cls, call) -> bool:
@@ -576,6 +576,8 @@ def _deltanet_decode_fp32_tl(
         out_idx=[-2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: get_backend_name() == "musa",
+            tilelang.PassConfigKey.TL_ENABLE_ASYNC_COPY: get_backend_name() != "musa",
         },
         compile_flags=["-O3"],
     )
@@ -646,7 +648,7 @@ class DeltaNetDecodeFP32Kernel(Kernel):
     decode.  Intended for fp32 dtype only.
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     @classmethod
     def applies(cls, call) -> bool:

@@ -8,6 +8,7 @@ from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
+from tileops.utils import get_backend_name
 
 from ..v_tile import GEMM_MIN_N
 
@@ -121,6 +122,8 @@ def _gla_fwd_h_kernel(
         },
     )
     def _h_func(num_stages, threads=128):
+        use_musa = get_backend_name() == "musa"
+
         k_shape = [batch, seq_len, heads, dim_k]
         v_shape = [batch, seq_len, heads, dim_v]
         g_cumsum_shape = [batch, seq_len, heads, dim_k]
@@ -210,7 +213,20 @@ def _gla_fwd_h_kernel(
                     # h += k_adj^T @ v_slice (RS GEMM)
                     delta_h = T.alloc_fragment([dim_k_part, dim_v_part], accum_dtype)
                     T.fill(delta_h, 0.0)
-                    T.gemm(k_adj_f, v_s, delta_h, transpose_A=True, policy=T.GemmWarpPolicy.FullRow)
+                    if use_musa:
+                        for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
+                            for i_t in T.Serial(chunk_size):
+                                delta_h[i_k, i_v] += k_adj_f[i_t, i_k] * T.cast(
+                                    v_s[i_t, i_v], accum_dtype
+                                )
+                    else:
+                        T.gemm(
+                            k_adj_f,
+                            v_s,
+                            delta_h,
+                            transpose_A=True,
+                            policy=T.GemmWarpPolicy.FullRow,
+                        )
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         h_s[i_k, i_v] = h_s[i_k, i_v] + delta_h[i_k, i_v]
 
@@ -416,7 +432,7 @@ class GLAFwdKernel(Kernel):
         https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gla/chunk.py
     """
 
-    supported_archs: list[int] = [80, 89, 90]
+    supported_archs: list[int] = [31, 80, 89, 90]
 
     def __init__(
         self,

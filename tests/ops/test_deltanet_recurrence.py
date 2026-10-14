@@ -10,7 +10,10 @@ from tileops.kernels.linear_attention.deltanet_recurrence import (
     DeltaNetDecodeRawCudaFlaStyleKernel,
 )
 from tileops.ops import DeltaNetDecodeFwdOp
+from tileops.utils import get_backend_name
 from workloads.linear_attention import DeltaNetDecodeWorkload, deltanet_decode_torch
+
+DEVICE = get_backend_name()
 
 
 class DeltaNetDecodeTest(DeltaNetDecodeWorkload, TestBase):
@@ -78,14 +81,14 @@ def test_deltanet_decode_multi_step(
     op = DeltaNetDecodeFwdOp(tune=tune)
     tols = _get_tolerances(dtype)
 
-    state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
-    state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
+    state_op = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
+    state_ref = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
 
     for _ in range(num_steps):
-        q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-        beta = torch.rand(B, H, device="cuda", dtype=dtype) * 0.5
+        q = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        k = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        v = torch.randn(B, H, DV, device=DEVICE, dtype=dtype) * 0.1
+        beta = torch.rand(B, H, device=DEVICE, dtype=dtype) * 0.5
 
         o_ref, state_ref = deltanet_decode_torch(q, k, v, beta, state_ref)
         o_ref = o_ref.to(dtype)
@@ -120,14 +123,16 @@ def test_deltanet_decode_rejects_manifest_shape_mismatch() -> None:
 
 
 def _skip_unless_raw_cuda_decode_supported() -> None:
+    if DEVICE == "musa":
+        return
     if not torch.cuda.is_available():
-        pytest.skip("CUDA required for raw DeltaNet decode smoke coverage")
+        pytest.skip("requires CUDA")
     try:
         sm_version = deltanet_ops.get_sm_version()
-    except Exception as exc:
-        pytest.skip(f"could not query CUDA architecture: {exc}")
+    except Exception:
+        pytest.skip("requires CUDA")
     if sm_version not in DeltaNetDecodeRawCudaFlaStyleKernel.supported_archs:
-        pytest.skip(f"raw DeltaNet decode requires SM90, got SM{sm_version}")
+        pytest.skip("requires Hopper")
 
 
 @pytest.mark.smoke
@@ -159,14 +164,14 @@ def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
     op = DeltaNetDecodeFwdOp(tune=False)
     tols = _get_tolerances(dtype)
 
-    state_op = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
-    state_ref = torch.zeros(B, H, DK, DV, device="cuda", dtype=dtype)
+    state_op = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
+    state_ref = torch.zeros(B, H, DK, DV, device=DEVICE, dtype=dtype)
 
     for _ in range(num_steps):
-        q = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        k = torch.randn(B, H, DK, device="cuda", dtype=dtype) * 0.1
-        v = torch.randn(B, H, DV, device="cuda", dtype=dtype) * 0.1
-        beta = torch.rand(B, H, device="cuda", dtype=dtype) * 0.5
+        q = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        k = torch.randn(B, H, DK, device=DEVICE, dtype=dtype) * 0.1
+        v = torch.randn(B, H, DV, device=DEVICE, dtype=dtype) * 0.1
+        beta = torch.rand(B, H, device=DEVICE, dtype=dtype) * 0.5
 
         o_ref, state_ref = deltanet_decode_torch(q, k, v, beta, state_ref)
         o_ref = o_ref.to(dtype)
@@ -281,7 +286,10 @@ def test_deltanet_decode_raw_cuda_dispatch_uses_fp32_kernel_for_fp32() -> None:
 
 
 @pytest.mark.smoke
-def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
+def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(DeltaNetDecodeRawCudaFlaStyleKernel, "supported_archs", [31, 90])
     with pytest.raises(ValueError, match="threads .* must equal raw_group_size \\* v_tile"):
         DeltaNetDecodeRawCudaFlaStyleKernel(
             1,
@@ -299,7 +307,10 @@ def test_deltanet_decode_raw_cuda_config_requires_full_warp_mapping() -> None:
 
 
 @pytest.mark.smoke
-def test_deltanet_decode_raw_cuda_config_requires_two_lane_group() -> None:
+def test_deltanet_decode_raw_cuda_config_requires_two_lane_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(DeltaNetDecodeRawCudaFlaStyleKernel, "supported_archs", [31, 90])
     with pytest.raises(ValueError, match="raw_group_size must equal 2"):
         DeltaNetDecodeRawCudaFlaStyleKernel(
             1,

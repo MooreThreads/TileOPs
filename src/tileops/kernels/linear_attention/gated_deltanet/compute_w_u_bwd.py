@@ -16,6 +16,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.constants import LOG2E
+from tileops.utils import get_backend_name
 
 __all__ = ["compute_w_u_bwd_full_tl"]
 
@@ -33,6 +34,7 @@ def compute_w_u_bwd_full_tl(
     """Complete Gated DeltaNet prepare backward for one independent chunk."""
     accum_dtype = "float32"
     block_C = chunk_size
+    use_musa = get_backend_name() == "musa"
 
     @tilelang.jit(
         out_idx=[-4, -3, -2, -1],
@@ -97,15 +99,32 @@ def compute_w_u_bwd_full_tl(
                     v_work_s[i, j] = v_s[i, j] * beta_s[i]
 
                 T.clear(matrix_frag)
-                T.gemm(dw_s, k_work_s, matrix_frag, transpose_B=True)
-                T.gemm(du_s, v_work_s, matrix_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for k in T.Serial(dim_k):
+                            matrix_frag[i, j] += dw_s[i, k] * k_work_s[j, k]
+                        for k in T.Serial(dim_v):
+                            matrix_frag[i, j] += du_s[i, k] * v_work_s[j, k]
+                else:
+                    T.gemm(dw_s, k_work_s, matrix_frag, transpose_B=True)
+                    T.gemm(du_s, v_work_s, matrix_frag, transpose_B=True)
                 T.copy(matrix_frag, matrix_a_s)
 
                 T.clear(vector_frag)
-                T.gemm(A_s, dw_s, vector_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for k in T.Serial(block_C):
+                            vector_frag[i, j] += A_s[k, i] * dw_s[k, j]
+                else:
+                    T.gemm(A_s, dw_s, vector_frag, transpose_A=True)
                 T.copy(vector_frag, k_work_s)
                 T.clear(dv_frag)
-                T.gemm(A_s, du_s, dv_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_v):
+                        for k in T.Serial(block_C):
+                            dv_frag[i, j] += A_s[k, i] * du_s[k, j]
+                else:
+                    T.gemm(A_s, du_s, dv_frag, transpose_A=True)
                 T.copy(dv_frag, v_work_s)
 
                 for i, j in T.Parallel(block_C, dim_k):
@@ -117,10 +136,20 @@ def compute_w_u_bwd_full_tl(
 
                 # If A = (I + L)^-1, then dL = -A^T @ dA @ A^T.
                 T.clear(matrix_frag)
-                T.gemm(matrix_a_s, A_s, matrix_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for k in T.Serial(block_C):
+                            matrix_frag[i, j] += matrix_a_s[i, k] * A_s[j, k]
+                else:
+                    T.gemm(matrix_a_s, A_s, matrix_frag, transpose_B=True)
                 T.copy(matrix_frag, matrix_b_s)
                 T.clear(matrix_frag)
-                T.gemm(A_s, matrix_b_s, matrix_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for k in T.Serial(block_C):
+                            matrix_frag[i, j] += A_s[k, i] * matrix_b_s[k, j]
+                else:
+                    T.gemm(A_s, matrix_b_s, matrix_frag, transpose_A=True)
                 for i, j in T.Parallel(block_C, block_C):
                     matrix_a_s[i, j] = T.if_then_else(i > j, -matrix_frag[i, j], T.float32(0.0))
 
@@ -130,9 +159,19 @@ def compute_w_u_bwd_full_tl(
                         matrix_a_s[i, j] * beta_s[i] * T.exp2((g_s[i] - g_s[j]) * LOG2E)
                     )
                 T.clear(dk_A_frag)
-                T.gemm(matrix_b_s, k_s, dk_A_frag)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for k in T.Serial(block_C):
+                            dk_A_frag[i, j] += matrix_b_s[i, k] * k_s[k, j]
+                else:
+                    T.gemm(matrix_b_s, k_s, dk_A_frag)
                 T.clear(vector_frag)
-                T.gemm(matrix_b_s, k_s, vector_frag, transpose_A=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, dim_k):
+                        for k in T.Serial(block_C):
+                            vector_frag[i, j] += matrix_b_s[k, i] * k_s[k, j]
+                else:
+                    T.gemm(matrix_b_s, k_s, vector_frag, transpose_A=True)
                 for i, j in T.Parallel(block_C, dim_k):
                     dk[bid, hid, offset + i, j] = (
                         k_work_s[i, j] * beta_s[i] + dk_A_frag[i, j] + vector_frag[i, j]
@@ -142,7 +181,12 @@ def compute_w_u_bwd_full_tl(
 
                 # dbeta_A and dg_A use dL * exp(g_i-g_j) * <k_i,k_j>.
                 T.clear(matrix_frag)
-                T.gemm(k_s, k_s, matrix_frag, transpose_B=True)
+                if use_musa:
+                    for i, j in T.Parallel(block_C, block_C):
+                        for k in T.Serial(dim_k):
+                            matrix_frag[i, j] += k_s[i, k] * k_s[j, k]
+                else:
+                    T.gemm(k_s, k_s, matrix_frag, transpose_B=True)
                 for i, j in T.Parallel(block_C, block_C):
                     matrix_b_s[i, j] = (
                         matrix_a_s[i, j] * T.exp2((g_s[i] - g_s[j]) * LOG2E) * matrix_frag[i, j]

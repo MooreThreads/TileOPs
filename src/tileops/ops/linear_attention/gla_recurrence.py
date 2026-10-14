@@ -4,6 +4,7 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.gla_recurrence import GLADecodeFP32Kernel, GLADecodeKernel
+from tileops.utils import backend_tensor_error, is_backend_tensor
 
 from .._compile_boundary_codegen import OperatorSpec
 from ..op_base import Op
@@ -141,8 +142,8 @@ class GLADecodeFwdOp(Op):
         for name, tensor, expected in expected_shapes:
             if tuple(tensor.shape) != expected:
                 raise ValueError(f"{name} must have shape {expected}, got {tuple(tensor.shape)}")
-        if not all(tensor.is_cuda for tensor in (q, k, v, gk, state)):
-            raise ValueError("q, k, v, gk, and state must be CUDA tensors")
+        if not all(is_backend_tensor(tensor) for tensor in (q, k, v, gk, state)):
+            raise ValueError(backend_tensor_error("q, k, v, gk, and state"))
         self.batch = batch
         self.heads = heads
         self.dim_k = dim_k
@@ -207,6 +208,18 @@ class GLADecodeFwdOp(Op):
         """
         self._validate_dtypes(q, k, v, gk, state)
         self._validate_shapes(q, k, v, gk, state)
+        self.batch, self.heads, self.dim_k = q.shape
+        self.dim_v = v.shape[-1]
+        self.dtype = q.dtype
+        self.kernel = self._get_kernel(
+            (q, k, v, gk, state),
+            self.batch,
+            self.heads,
+            self.dim_k,
+            self.dim_v,
+            self.dtype,
+            q.device.index,
+        )
         o, new_state = self.kernel(q, k, v, gk, state)
         self._validate_output_shapes(o, new_state)
         return o, new_state
