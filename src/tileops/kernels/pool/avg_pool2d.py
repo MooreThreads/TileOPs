@@ -83,7 +83,7 @@ def _avg_pool2d_kernel(window: AvgPoolWindow, dtype: str):
 class _AvgPool2dKernelBase(Kernel):
     """Shape, launch planning and dispatch shared by the two avg_pool2d kernels."""
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    supported_archs: ClassVar[list[int]] = [31, 80, 86, 89, 90]
     # One output per thread, so the block size is the whole launch space: a parallel loop
     # wider than the block serializes it, and one narrower idles lanes.
     _THREAD_CHOICES: ClassVar[tuple[int, ...]] = (128, 256, 512)

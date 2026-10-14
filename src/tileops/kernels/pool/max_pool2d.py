@@ -8,6 +8,7 @@ import torch
 
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool.common import pool_output_dim
+from tileops.utils import get_backend_name
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
 
@@ -47,8 +48,6 @@ def _max_pool2d_kernel(
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
     rows = n * c_in
-    rows_inside = _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-    cols_inside = _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool2d_func(block_m: int, threads: int, tile_h: int, tile_w: int):
@@ -57,6 +56,9 @@ def _max_pool2d_kernel(
         band_w = (tile_w - 1) * stride_w + (kernel_w - 1) * dilation_w + 1
         tiles_h = -(-out_h // tile_h)
         tiles_w = -(-out_w // tile_w)
+        # Even a partial output tile loads its full input band.
+        rows_inside = _axis_inside(h_in, tiles_h * tile_h, kernel_h, stride_h, pad_h, dilation_h)
+        cols_inside = _axis_inside(w_in, tiles_w * tile_w, kernel_w, stride_w, pad_w, dilation_w)
         total = rows * tiles_h * tiles_w
         tile_full = total % block_m == 0
         tile_exact = out_h % tile_h == 0 and out_w % tile_w == 0
@@ -318,7 +320,7 @@ class _MaxPool2dKernelBase(Kernel):
     _build: ClassVar[Callable[..., Any]]
     _dispatch: ClassVar[Callable[..., Any]]
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    supported_archs: ClassVar[list[int]] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,
@@ -474,6 +476,7 @@ class MaxPool2dKernel(_MaxPool2dKernelBase):
             }
             for block_m, threads, tile_h, tile_w in space
             if threads <= block_m
+            and (get_backend_name() != "musa" or block_m == threads)
             and self._band(tile_h, self.stride_h, self.kernel_h, self.dilation_h) * tile_w
             + self._band(tile_w, self.stride_w, self.kernel_w, self.dilation_w)
             <= _MAX_TILE_REGISTERS

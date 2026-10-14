@@ -316,7 +316,7 @@ class _MaxPool3dKernelBase(Kernel):
     _build: ClassVar[Callable[..., Any]]
     _dispatch: ClassVar[Callable[..., Any]]
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    supported_archs: ClassVar[list[int]] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,

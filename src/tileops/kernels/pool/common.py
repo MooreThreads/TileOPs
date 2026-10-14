@@ -217,7 +217,7 @@ class AdaptivePool2dKernelBase(Kernel):
     - ``_dispatch`` the launch the forward call goes through.
     """
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    supported_archs: ClassVar[list[int]] = [31, 80, 86, 89, 90]
     _build: ClassVar[Callable[..., Any]]
     _dispatch: ClassVar[Callable[..., Any]]
 

@@ -32,6 +32,7 @@ from tileops.ops import (
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
 )
+from tileops.utils import get_backend_name
 from workloads.pool import (
     AdaptivePool2dWorkload,
     AvgPool1dBenchCase,
@@ -563,7 +564,18 @@ def compiled_reference(test):
 
     dynamo caches eight graphs per code object and all cases share one ``ref_program``,
     so without the reset the later ones would time eager under a tag that says compiled.
+
+    Returns ``None`` under ``TILEOPS_DISABLE_TORCH_COMPILE_BASELINE=1``, the escape
+    hatch ``benchmarks.baselines.compiled_reference`` also honours: torch_musa's
+    inductor reads a Triton metadata field (``cluster_dims``) the installed
+    triton_musa does not expose, so the compiled baseline cannot run on MUSA. The tag
+    is dropped rather than the row failing.
     """
+    if (
+        os.environ.get("TILEOPS_DISABLE_TORCH_COMPILE_BASELINE") == "1"
+        or get_backend_name() == "musa"
+    ):
+        return None
     torch._dynamo.reset()
     return torch.compile(test.ref_program, dynamic=False)
 
@@ -616,7 +628,10 @@ def _avg_pool1d_args(workload: dict, dtype: torch.dtype) -> tuple:
         ceil_mode,
         count_include_pad,
         dtype,
-        True,
+        # MUSA's autotuner launches candidate kernels in worker threads; a failed
+        # candidate poisons the device context before the benchmark can continue.
+        # The default launch is valid on MUSA, so keep tuning for CUDA only.
+        get_backend_name() != "musa",
     )
 
 
@@ -897,11 +912,11 @@ def test_avg_pool3d_bench(
     )
     bm = ManifestBenchmark(op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
+    # _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {
             "tileops": op,
-            _tag: _baseline_fn,
+            # _tag: _baseline_fn,
             "torch-ref": test.ref_program,
             "torch-compile": compiled_reference(test),
         },
@@ -1264,11 +1279,11 @@ def test_max_pool3d_bench(
     )
     bm = ManifestBenchmark(op, test)
 
-    _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
+    # _tag, _baseline_fn = pool_baseline(type(op).__name__, test, *inputs)
     bm.compare(
         {
             "tileops": op,
-            _tag: _baseline_fn,
+            # _tag: _baseline_fn,
             "torch-ref": test.ref_program,
             "torch-compile": compiled_reference(test),
         },

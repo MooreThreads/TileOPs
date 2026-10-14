@@ -207,7 +207,7 @@ def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
 class _AvgPool3dKernelBase(Kernel):
     """Shape, launch planning and dispatch shared by the two avg_pool3d kernels."""
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    supported_archs: ClassVar[list[int]] = [31, 80, 86, 89, 90]
     # One output per thread, so the block size is the whole launch space: a parallel loop
     # wider than the block serializes it, and one narrower idles lanes.
     # Why a policy and not a tuned knob: these launches are too short for the autotuner

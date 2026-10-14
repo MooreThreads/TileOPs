@@ -14,6 +14,7 @@ from tileops.kernels.pool.common import (
     dtype_itemsize,
     window_span,
 )
+from tileops.utils import get_backend_name
 
 __all__ = ["AvgPool1dKernel", "AvgPool1dSpatialKernel"]
 
@@ -117,6 +118,49 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     clean_lo = -(-pad_l // stride_l)
     clean_hi = min((l_in + pad_l - kernel_l) // stride_l, out_l - 1)
 
+    if get_backend_name() == "musa":
+
+        @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
+        def _avg_pool1d_musa_func(block_ol: int, threads: int):
+            @T.prim_func
+            def _avg_pool1d_musa_main(
+                x: T.Tensor((rows, l_in), dtype),  # type: ignore
+                out: T.Tensor((rows, out_l), dtype),  # type: ignore
+            ):
+                with T.Kernel(
+                    (out_l + block_ol - 1) // block_ol, rows, threads=threads
+                ) as (bx, by):
+                    for j in T.Parallel(block_ol):
+                        ol = bx * block_ol + j
+                        if ol < out_l:
+                            total = T.alloc_var(T.float32)
+                            total = T.cast(0.0, ACCUM_DTYPE)
+                            start = ol * stride_l - pad_l
+                            for k in T.serial(kernel_l):
+                                idx = start + k
+                                if (idx >= 0) and (idx < l_in):
+                                    total += T.cast(x[by, idx], ACCUM_DTYPE)
+                            if whole_window_divides:
+                                divisor = kernel_l
+                            elif count_include_pad:
+                                divisor = T.max(
+                                    T.min(start + kernel_l, l_in + pad_l)
+                                    - T.max(start, -pad_l),
+                                    1,
+                                )
+                            else:
+                                divisor = T.max(
+                                    T.min(start + kernel_l, l_in) - T.max(start, 0),
+                                    1,
+                                )
+                            out[by, ol] = T.cast(
+                                total / T.cast(divisor, ACCUM_DTYPE), dtype
+                            )
+
+            return _avg_pool1d_musa_main
+
+        return _avg_pool1d_musa_func
+
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _avg_pool1d_func(block_ol: int, threads: int):
         # A warp taking one output each reads one short stretch of the row `kernel_l`
@@ -207,6 +251,9 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
                         _stage_inside(tile, x, origin, by)
                     else:
                         _stage_edge(tile, x, origin, by)
+                # Every lane contributes to the staged window; synchronize before
+                # the reduction reads values written by the other lanes.
+                T.sync_threads()
                 _reduce(tile, bx, out, by)
 
         return _avg_pool1d_main
@@ -222,7 +269,7 @@ class _AvgPool1dKernelBase(Kernel):
             stages it in, which takes a ``kernel_size`` in the tens of thousands.
     """
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    supported_archs: ClassVar[list[int]] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,

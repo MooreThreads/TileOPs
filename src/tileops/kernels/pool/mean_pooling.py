@@ -231,7 +231,7 @@ def _(
 
 
 class MeanPoolingFwdKernel(Kernel):
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [31, 80, 86, 89, 90]
 
     def __init__(
         self,

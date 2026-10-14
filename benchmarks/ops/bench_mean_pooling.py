@@ -17,7 +17,10 @@ from benchmarks.benchmark_base import (
 )
 from tileops.manifest import load_workloads
 from tileops.pool import MeanPoolingFwdOp
+from tileops.utils import get_backend_name
 from workloads.pool import MeanPoolingWorkload
+
+DEVICE = get_backend_name()
 
 # Autotuning is a bench-run policy; manifest workloads do not carry it.
 _TUNE = True
