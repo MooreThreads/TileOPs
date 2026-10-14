@@ -4,8 +4,8 @@ Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
 Workload shapes and roofline formulas are loaded from the ops manifest
 (src/tileops/manifest/).
 
-cumsum is timed against flag_gems' Triton scan as well as torch, eager and
-compiled. cumprod has no flag_gems entry point in 5.0.2.
+cumsum is timed against flag_gems' Triton scan. cumprod has no flag_gems entry
+point in 5.0.2.
 """
 
 import pytest
@@ -48,9 +48,10 @@ def test_cumsum_bench(shape: tuple, dtype: torch.dtype) -> None:
     flaggems_cumsum = flaggems_op("cumsum")
 
     def flaggems_fn(x):
-        return flaggems_cumsum(x, -1)
+        return flaggems_cumsum(x.float(), -1).to(x.dtype)
 
     assert_matches_reference(flaggems_fn, test.ref_program, *inputs, **reference_tolerance(dtype))
+    assert_matches_reference(op, test.ref_program, *inputs, **reference_tolerance(dtype))
 
     bm.compare(
         {
@@ -71,11 +72,23 @@ def test_cumprod_bench(shape: tuple, dtype: torch.dtype) -> None:
     op = CumprodFwdOp(dim=-1)
     bm = ManifestBenchmark(op, test)
 
+    def reference_fn(x):
+        x_cpu = x.cpu().float()
+        return x_cpu.cumprod(dim=-1).to(x.dtype).to(x.device)
+
+    def baseline_fn(x):
+        return x.float().cumprod(dim=-1).to(x.dtype)
+
+    assert_matches_reference(op, reference_fn, *inputs, **reference_tolerance(dtype))
+
+    assert_matches_reference(baseline_fn, reference_fn, *inputs, **reference_tolerance(dtype))
+    functors = {
+        "tileops": op,
+        "torch": baseline_fn,
+        TORCH_COMPILE_TAG: compiled_reference(baseline_fn),
+    }
+
     bm.compare(
-        {
-            "tileops": op,
-            "torch": test.ref_program,
-            TORCH_COMPILE_TAG: compiled_reference(test.ref_program),
-        },
+        functors,
         *inputs,
     )
